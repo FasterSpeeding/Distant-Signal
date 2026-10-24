@@ -23,8 +23,8 @@ export const DEFAULT_JOURNEY_ENTRY_MODE: JourneyEntryMode = 'plan';
  * the option of that name; `pick` and `window` are `/track`'s values, and
  * open "I know my route" on that half of its form, so a link written for
  * one page works on the other. Anything else, a repeated value's later
- * copies included, means absent: the default. (`?mode=plan` itself never
- * reaches the page: `next.config.mjs` sends it to `/plan`.) */
+ * copies included, means absent: the default. (`?mode=plan` stays on the
+ * page, on the planner, rather than going to `/plan`.) */
 export function parseJourneyEntryMode(mode: string | string[] | undefined): JourneyEntryStart {
   const value = Array.isArray(mode) ? mode[0] : mode;
   switch (value) {

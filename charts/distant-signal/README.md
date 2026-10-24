@@ -763,7 +763,7 @@ workload's rollout is now:
 | Workload | Rollout | Per-service limit |
 |---|---|---|
 | trust-backlog-consumer, trust-consumer, full-coverage-consumer, enricher | `<component>.updateStrategy`, default `Recreate` | (replicas + maxSurge) × pool + 1; maxSurge is 0 under Recreate |
-| aggregator, notifier, ingest-writer, schedulefeed (schedule-ingest, schedule-reference), every poller | fixed `Recreate` (two copies would double-write) | pool + 1 (writer: pool + lock session) |
+| aggregator, notifier, ingest-writer, schedulefeed (schedule-ingest, schedule-reference), every poller | fixed `Recreate` (two copies would double-write) | pool + 1 (writer: pool + lock session + 1) |
 | api | `api.strategy.type`, Recreate or RollingUpdate (maxSurge 1, maxUnavailable 0) | (replicas + 1) × pool + 2 + the api-maintenance pool |
 | movement-relay | RollingUpdate, maxSurge 1 (no Postgres) | none |
 
@@ -1551,7 +1551,7 @@ StatefulSet with no replication, backup or restore story.
 | `postgresql.roles.perService.writer.password` | `""` | Password. |
 | `postgresql.roles.perService.writer.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
 | `postgresql.roles.perService.writer.existingSecretPasswordKey` | `postgres-writer-password` | Key within `existingSecret` (and in the chart's Secret). |
-| `postgresql.roles.perService.writer.connectionLimit` | `""` | CONNECTION LIMIT. Empty: `ingestWriter.database.maxConnections` + 1 (the loop-lock session). |
+| `postgresql.roles.perService.writer.connectionLimit` | `""` | CONNECTION LIMIT. Empty: its pool (`ingestWriter.database.maxConnections`), plus 1 for the loop-lock session, plus the 1 every role has for a probe or brief overlap (pool 6, limit 8). |
 | `postgresql.roles.perService.schedule_ingest.connect` | `true` | Connect schedule-ingest (`scheduleFeed.enabled`) as `distant_signal_schedule_ingest`: a narrow role, not a member of app, with only the CORPUS and feed-marker grants. Created with the others whenever `perService.enabled`, unused until then. Default since release A (2026-10-09; docs/ingest-phase5-runbook.md, "Release A"): takes effect only while the component is deployed, and then needs `perService.enabled`, `postgresql.roles.enabled` and `setupJob.enabled` (the render fails otherwise, never falling back to the app role). |
 | `postgresql.roles.perService.schedule_ingest.password` | `""` | Password. |
 | `postgresql.roles.perService.schedule_ingest.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
@@ -1900,9 +1900,12 @@ Used only when `postgresql.enabled` is `false`.
 | `api.tflArrivals.enabled` | `true` | Live arrivals on `/tfl/stops/{id}` (`GET /public/tfl/stops/{id}/arrivals`), fetched from TfL on demand. Off, that route answers 503. Needs egress to `baseUrl`; the api's internet rule allows it and gains `baseUrl`'s port. |
 | `api.tflArrivals.baseUrl` | `https://api.tfl.gov.uk` | TfL Unified API root. |
 | `api.tflArrivals.useTflPollerKey` | `true` | Send `pollers.tfl`'s subscription key (its Secret, when `pollers.tfl` is enabled or has an `existingSecret`; `optional`). Without a key the api calls TfL anonymously, at TfL's lower rate limit. |
-| `api.tflArrivals.cacheSecs` | `30` | How long one stop's arrivals are served from the api's in-memory cache (per pod; one upstream call per stop at a time). |
+| `api.tflArrivals.cacheSecs` | `30` | How long one stop's arrivals are served from the cache (one upstream call per stop at a time, across every replica with `sharedCache`). |
 | `api.tflArrivals.errorCacheSecs` | `10` | How long a failed TfL fetch is remembered before the next try. |
 | `api.tflArrivals.timeoutSecs` | `5` | Per-request timeout for the TfL call. |
+| `api.tflArrivals.sharedCache` | `true` | Share each stop's answer between the api's replicas through Postgres (`tfl_arrivals_cache`, an UNLOGGED table): the replica that finds it stale claims a short lease and fetches, the others serve the previous answer (up to `staleSecs` old) or wait for the new one. Off, or with Postgres unreachable, each pod caches on its own. |
+| `api.tflArrivals.memoryCacheSecs` | `5` | With `sharedCache`: how long a pod keeps a shared answer in memory before reading the row again (never past the answer's own `cacheSecs`). |
+| `api.tflArrivals.staleSecs` | `120` | With `sharedCache`: how old an answer may be and still be served while another replica fetches its replacement. |
 | `api.fullCoverageEnabledDefault` | `true` | Treat every catalogued line as `full_coverage_enabled`, whatever its `lines/*.toml` entry says, so TRUST-vs-schedule delay and cancellation data is used everywhere. Set `aggregator.fullCoverageEnabledDefault` to the same value: both services gate on it. |
 | `api.malloc.arenaMax` | `"2"` | `MALLOC_ARENA_MAX`: caps glibc's retained per-arena memory. |
 | `api.malloc.mmapThreshold` | `"131072"` | `MALLOC_MMAP_THRESHOLD_` in bytes: allocations at least this large are returned to the OS on free. |
@@ -1971,7 +1974,7 @@ Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-
 | `ingestWriter.streams.full-coverage` | `apply` | Mode of `ds:ingest:full-coverage`, as `station-samples` (handlers: plan 3a.6). Default since release A (2026-10-09; docs/ingest-phase5-runbook.md, "Release A"), as `station-samples`. |
 | `ingestWriter.streams.tfl` | `apply` | Mode of `ds:ingest:tfl`, as `station-samples` (handlers: plan 3c). `apply` needs `postgresql.roles.perService.writer.connect` (security review M4: `line_status`'s row policy binds only the writer's own role; the render fails otherwise). Default since release A (2026-10-09; docs/ingest-phase5-runbook.md, "Release A"), as `station-samples`. |
 | `ingestWriter.streams.reference` | `apply` | Mode of `ds:ingest:reference` (tocs), as `station-samples` (handlers: plan 3c). Default since release A (2026-10-09; docs/ingest-phase5-runbook.md, "Release A"), as `station-samples`. |
-| `ingestWriter.streams.tfl-stops` | `off` | Mode of `ds:ingest:tfl-stops` (`tfl-stops`, poller-tfl's daily stops job; `pollers.tfl.stops.enabled` needs `apply`). `apply` needs `postgresql.roles.perService.writer.connect`, as `tfl` (the writer's `ingest_freshness` row policy binds its own role only). |
+| `ingestWriter.streams.tfl-stops` | `off` | Mode of `ds:ingest:tfl-stops` (`tfl-stops` and `tfl-line-routes`, poller-tfl's daily stops and route-sequences jobs; `pollers.tfl.stops.enabled` needs `apply`). `apply` needs `postgresql.roles.perService.writer.connect`, as `tfl` (the writer's `ingest_freshness` row policy binds its own role only). |
 | `ingestWriter.streams.ioi-gtfs` | `off` | Mode of `ds:ingest:ioi-gtfs` (`pollerIrishRailGtfs`: `ioi-stations`, `ioi-lines`), as `station-samples` (handlers: plan 3c). One stream per island-of-Ireland poller (security review H1): the writer applies only the schemas each stream carries. The old shared `island-of-ireland` key fails the render unless `off`. |
 | `ingestWriter.streams.ioi-nir` | `off` | Mode of `ds:ingest:ioi-nir` (`pollerNirStations`: `ioi-stations`, `ioi-lines`), as `ioi-gtfs`. |
 | `ingestWriter.streams.ioi-live` | `off` | Mode of `ds:ingest:ioi-live` (`pollerIrishRailLive`: `ioi-station-samples`), as `ioi-gtfs`. |
@@ -2617,6 +2620,7 @@ separate top-level values (`pollerIrishRailGtfs`, `pollerIrishRailLive`,
 | `pollers.tfl.stops.enabled` | `false` | tfl only: the daily Tube, DLR and tram stops job (`TFL_STOPS_ENABLED`; docs/superpowers/specs/2026-10-20-tfl-stop-lookup-design.md), which reads TfL's StopPoint API with the same key and XADDs one `tfl-stops/1` snapshot to `ds:ingest:tfl-stops` as the `poller-tfl` ACL user. Needs `ingestWriter.streams.tfl-stops: apply` (the render fails otherwise). |
 | `pollers.tfl.stops.intervalSecs` | `86400` | tfl only: seconds between stops runs (`TFL_STOPS_INTERVAL_SECS`). |
 | `pollers.tfl.stops.maxDropFraction` | `0.2` | tfl only: the stops feed guard (`TFL_STOPS_MAX_DROP_FRACTION`): a run whose stop count fell by more than this fraction of the last snapshot's is refused (`tfl_stops_refused_total{reason="sharp_drop"}`) and the stored stops stay. |
+| `pollers.tfl.stops.routes` | `false` | tfl only, with `pollers.tfl.stops.enabled`: the daily route-sequences job (`TFL_ROUTES_ENABLED`, DS-151), each Tube, DLR and tram line's routes in stop order as `tfl-line-routes/1` on `ds:ingest:tfl-stops`, at the stops job's interval and drop fraction (`tfl_routes_refused_total{reason}`; `cycle="tfl-routes"`). The planner's Tube access legs measure rides along them and charge a change between branches. Re-run the grants job after the migration (`tfl_line_routes`, the writer's `tfl-line-routes` freshness row). |
 | `pollers.ldbws.numRows` | `10` | ldbws only: LDBWS `numRows` query parameter. |
 | `pollers.ldbws.hourlyRequestBudget` | `0` | ldbws only (LEG-18): max LDBWS requests per rolling hour, spread evenly over cycles; skipped stations count in `ldbws_budget_skipped_polls_total`. `0` = no budget, env not rendered. |
 | `pollers.ldbws.samplePinnedLinesOnly` | `false` | ldbws only (LEG-18): sample only stations on lines some user has pinned. |

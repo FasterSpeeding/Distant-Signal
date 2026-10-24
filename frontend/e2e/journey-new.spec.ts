@@ -21,6 +21,14 @@ test.describe('/journeys/new', () => {
     await expect(page.getByRole('button', { name: 'Find routes' })).toBeVisible();
   });
 
+  test('stays on New journey for ?mode=plan, on the planner', async ({ page }) => {
+    await page.goto('/journeys/new?mode=plan');
+    await expect(page).toHaveURL(/\/journeys\/new\?mode=plan$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'New journey' })).toBeVisible();
+    await expect(entryModes(page).getByRole('radio', { name: 'Plan a route for me' })).toBeChecked();
+    await expect(page.getByRole('button', { name: 'Find routes' })).toBeVisible();
+  });
+
   test('honours ?mode=window, opening the train form on a time window search', async ({ page }) => {
     await page.goto('/journeys/new?mode=window');
     await expect(entryModes(page).getByRole('radio', { name: 'I know my route' })).toBeChecked();

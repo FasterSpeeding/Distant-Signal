@@ -88,8 +88,14 @@ const SCHEME_BLIND_FILLED_COLORS = new Set(['gray', 'blue']);
  *
  * Also pins gray/blue filled surfaces via `light-dark()` -- see
  * `SCHEME_BLIND_FILLED_COLORS` above for why. Every other colour keeps
- * going through plain `autoContrast`, which is what fixes the severity
- * badges and the red delete buttons. */
+ * going through plain `autoContrast`, which is what fixes the red delete
+ * buttons.
+ *
+ * The severity `StatusBadge` no longer goes through any of this: it paints
+ * its own `--ds-status-badge-*` fill and label tokens (`app/globals.css`).
+ * autoContrast's black text on red, blue, gray and green passed WCAG 2's
+ * ratio but was reported unreadable at badge size, and the comments in
+ * this file that still name `StatusBadge` describe how it used to work. */
 const variantColorResolver: VariantColorsResolver = (input) => {
   const resolved = defaultVariantColorsResolver(input);
   if (input.color === 'grape' && input.variant === 'filled') {
