@@ -18,6 +18,12 @@ import { codeStationLabel, isTflStopCode } from './stationLabel';
  * place this trio can be assembled, so a future field either uses it (and
  * gets all three pieces, always in sync) or has to visibly opt out.
  *
+ * Since DS-158 the single-value station, stop and operator fields are
+ * `components/CodeLookupField.tsx` (`StationField`, `OperatorField`),
+ * which show the picked name instead of the bare code; this trio remains
+ * for the list and place pickers (`StationListPicker`,
+ * `UntrackedLegFields`).
+ *
  * Two requirements this enforces for every caller, uniformly:
  *
  * 1. Display -- every option always shows `CODE · Name` (the bare code

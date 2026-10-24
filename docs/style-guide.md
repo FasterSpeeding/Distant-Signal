@@ -506,6 +506,12 @@ used, rather than as a literal in a component.
   hidden `role="status"`. Not hide-on-scroll.
 - **Form fields**: Mantine `TextInput`/`Autocomplete`: label 14/500,
   description xs dimmed, error in `--mantine-color-error`.
+- **Code lookup fields** (`StationField`, `OperatorField`, both
+  `CodeLookupField`): pick or type a station, stop or operator and the
+  field reads "London Euston (EUS)" ("Old Street (Tube)" for a stop) while
+  the form holds the code. The dropdown rows stay code first ("EUS · London
+  Euston"). A clear button names the field ("Clear From"), and a polite
+  live region says what was picked.
 - **Footer credits** (`OpenDataAttribution.tsx`): credit wording is licence
   text; copy it exactly, including "NationalRail" as one word.
 - **Pride mode** (`PrideMode.tsx`): decorative, off by default. Each
