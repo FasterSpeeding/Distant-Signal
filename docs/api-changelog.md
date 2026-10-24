@@ -3,6 +3,24 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-26: `predictedStart` prefers Darwin's next-working links; joins and divides cap it (DS-152)
+
+Additive; no new field. DS-MCP needs no change. Pre-departure prediction
+phases 2 and 3 (docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md,
+sections 3a and 4).
+
+- `predictedStart.previousWorking.link` (train level: `GET /Train/{id}`,
+  the by-uid endpoint and journey legs) may now be `"association"`: the
+  incoming train is Darwin's live next-working link for this train
+  (Darwin Push Port, off by default), which is preferred over the
+  timetable inference (`"inferred"`) whenever it exists. Clients that
+  ignore `link` keep working. An association link is never capped by
+  operator, so Thameslink and Chiltern trains can reach `high` on it.
+- An `"inferred"` link where either train joins or divides that day (a
+  timetable `JJ`/`VV` association) is capped at `confidence: "medium"`:
+  it is still shown with its minutes, but never `high`, so it never
+  pushes.
+
 ## 2026-10-26: arrival boards give alighting stops a live platform (DS-152)
 
 Additive; no new field. DS-MCP needs no change. Pre-departure prediction

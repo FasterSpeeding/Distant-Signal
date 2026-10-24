@@ -20,6 +20,7 @@ pub(crate) const NETWORK_DEPARTURES: &str = "schedule-network-departures";
 pub(crate) const DESTINATION_DEPARTURES: &str = "schedule-destination-departures";
 pub(crate) const CALLING_POINTS_FULL: &str = "schedule-calling-points-full";
 pub(crate) const SERVICES: &str = "schedule-services";
+pub(crate) const ASSOCIATIONS: &str = "schedule-associations";
 /// The durable completion marker's write.
 pub(crate) const PUBLISHES: &str = "schedule-reference-publishes";
 /// The completion marker's read (the startup seed).
@@ -67,7 +68,7 @@ pub(crate) struct Call {
     pub body: serde_json::Value,
     /// The chunk protocol's parameters as the retired route's query string
     /// (`first_chunk=true&publish_id=...`), `service_date=...` for
-    /// `schedule_services`, else empty.
+    /// `schedule_services` and `schedule_associations`, else empty.
     pub query: String,
 }
 
@@ -251,6 +252,15 @@ impl PublishSink for FakePublishSink {
     ) -> impl Future<Output = Answer> {
         let body = serde_json::Value::Array(rows.to_vec());
         ready(self.answer(SERVICES, body, format!("service_date={service_date}")))
+    }
+
+    fn associations(
+        &self,
+        service_date: chrono::NaiveDate,
+        rows: &[serde_json::Value],
+    ) -> impl Future<Output = Answer> {
+        let body = serde_json::Value::Array(rows.to_vec());
+        ready(self.answer(ASSOCIATIONS, body, format!("service_date={service_date}")))
     }
 
     fn record_completed_publish(&self, delivery: &str) -> impl Future<Output = Answer> {

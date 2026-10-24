@@ -164,6 +164,14 @@ pub(crate) trait PublishSink {
         rows: &[serde_json::Value],
     ) -> Result<(), SinkError>;
 
+    /// `service_date`'s whole `schedule_associations` set (empty clears it;
+    /// DS-152). Best effort: its caller logs a failure.
+    async fn associations(
+        &self,
+        service_date: chrono::NaiveDate,
+        rows: &[serde_json::Value],
+    ) -> Result<(), SinkError>;
+
     /// Writes this service's durable "delivery fully published" marker.
     async fn record_completed_publish(&self, delivery: &str) -> Result<(), SinkError>;
 
