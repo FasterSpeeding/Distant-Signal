@@ -413,13 +413,13 @@ async fn seed_branch(pool: &PgPool, routes: bool) {
     }
     let trunk = [UXB, "940GZZTSMID", "940GZZTSHOH"];
     let branch = ["940GZZTSHOH", BRANCH_STOP];
-    let mut index = 0_i16;
-    for (direction, stops) in [
+    let rows: [(&str, Vec<&str>); 4] = [
         ("outbound", trunk.to_vec()),
         ("inbound", trunk.iter().rev().copied().collect()),
         ("outbound", branch.to_vec()),
         ("inbound", branch.iter().rev().copied().collect()),
-    ] {
+    ];
+    for (index, (direction, stops)) in (0_i16..).zip(rows) {
         sqlx::query(
             "INSERT INTO tfl_line_routes (line_id, direction, route_index, name, stop_ids, fetched_at) \
              VALUES ('testmet135', $1, $2, 'Test', $3, now())",
@@ -430,7 +430,6 @@ async fn seed_branch(pool: &PgPool, routes: bool) {
         .execute(pool)
         .await
         .expect("seed a route");
-        index += 1;
     }
 }
 
@@ -477,14 +476,12 @@ async fn branch_change_costs_a_change_at_the_junction() {
         describe(&after["segments"][0]["itineraries"][0]),
         [format!("TUBE {UXB}-ZTH origin"), "TTUP1".to_string()]
     );
-    let routed = candidate(&after, "ZTR");
-    assert_eq!(routed["changeAt"]["id"], "940GZZTSHOH", "{routed:?}");
-    assert_eq!(routed["stopCount"], 3);
-    // 5 in, the ride, 5 to change, 5 waiting, 3 out.
-    let metres = routed["distanceMetres"].as_f64().unwrap();
-    let ride = (metres / 1000.0 / 30.0 * 60.0).ceil();
-    assert_eq!(routed["minutes"].as_f64().unwrap(), 5.0 + ride + 10.0 + 3.0);
-    assert!(routed["minutes"].as_i64().unwrap() > tree_minutes + 10);
+    let branched = candidate(&after, "ZTR");
+    assert_eq!(branched["changeAt"]["id"], "940GZZTSHOH", "{branched:?}");
+    assert_eq!(branched["stopCount"], 3);
+    // About 18 km: 5 in, 36 riding, 5 to change, 5 waiting, 3 out.
+    assert_eq!(branched["minutes"], 54, "{branched:?}");
+    assert!(branched["minutes"].as_i64().unwrap() > tree_minutes + 10);
     let harrow = candidate(&after, "ZTH");
     assert!(harrow.get("changeAt").is_none());
     assert_eq!(harrow["stopCount"], 2);

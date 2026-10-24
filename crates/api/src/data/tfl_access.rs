@@ -534,12 +534,12 @@ fn rides(
     best.extend(changed);
 
     // Stops of the line that no route has: the tree's estimate.
-    let routed: std::collections::HashSet<usize> = line_routes
+    let on_routes: std::collections::HashSet<usize> = line_routes
         .iter()
         .flat_map(|route| route.stops.iter().copied())
         .collect();
     let mut out: Vec<(usize, Ride)> = best.into_iter().collect();
-    out.extend(tree(&|index| index != from && !routed.contains(&index)));
+    out.extend(tree(&|index| index != from && !on_routes.contains(&index)));
     out
 }
 

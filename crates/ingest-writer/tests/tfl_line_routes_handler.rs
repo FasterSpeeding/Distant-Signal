@@ -169,7 +169,12 @@ async fn a_snapshot_replaces_the_routes() {
         ),
         // An exact repeat is kept once; a bad one is refused.
         branch_a,
-        route("Test Line", "inbound", "Bad", &["940GZZTESTA", "940GZZTESTB"]),
+        route(
+            "Test Line",
+            "inbound",
+            "Bad",
+            &["940GZZTESTA", "940GZZTESTB"],
+        ),
     ];
     let t1 = at_millis(Utc::now() - TimeDelta::hours(2));
     let entry = db.entry("one", t1, &first);
