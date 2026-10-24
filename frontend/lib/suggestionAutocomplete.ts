@@ -46,6 +46,18 @@ export function suggestionOptionLabel(suggestion: Suggestion): string {
   return codeStationLabel(suggestion.code, suggestion.name);
 }
 
+/** One dropdown row of a code lookup field (`components/CodeLookupField.tsx`)
+ * or a code-filling `Autocomplete`: `CODE · Name`, or a stop's name and
+ * detail. */
+export function suggestionDropdownLabel(suggestion: Suggestion): string {
+  // A stop that is not a National Rail station (`place`) has no CRS to
+  // show: its name and mode.
+  if (suggestion.place) return suggestion.detail ? `${suggestion.name} · ${suggestion.detail}` : suggestion.name;
+  // A TfL stop in the planner's From and To (DS-135): its name and lines.
+  if (isTflStopCode(suggestion.code) && suggestion.detail) return `${suggestion.name} · ${suggestion.detail}`;
+  return suggestionOptionLabel(suggestion);
+}
+
 export function suggestionAutocompleteProps(
   suggestions: Suggestion[],
   {
@@ -90,12 +102,8 @@ export function suggestionAutocompleteProps(
       if (placeholder) return placeholder;
       const match = suggestions.find((s) => s.code === option.value);
       if (!match) return option.value;
-      // A stop that is not a National Rail station (`place`) has no CRS to
-      // show: its name and mode, and its name is what picking it writes.
-      if (fill === 'name' || match.place) return match.detail ? `${match.name} · ${match.detail}` : match.name;
-      // A TfL stop in the planner's From and To (DS-135): its name and lines.
-      if (isTflStopCode(match.code) && match.detail) return `${match.name} · ${match.detail}`;
-      return suggestionOptionLabel(match);
+      if (fill === 'name') return match.detail ? `${match.name} · ${match.detail}` : match.name;
+      return suggestionDropdownLabel(match);
     },
   };
 }
