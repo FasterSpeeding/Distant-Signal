@@ -250,5 +250,16 @@
       "matchUpdateTypes": ["major", "minor", "patch"],
       "enabled": false,
     },
+    {
+      // The github-actions manager also reads that `toolchain: 1.88.0` input
+      // itself (depName "rust", depType "uses-with"), which the docker rule
+      // above does not match: it proposed 1.88.0 -> 1.99.1 in every job,
+      // the msrv job included. Same reason: move the toolchain on purpose.
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["rust"],
+      "matchDepTypes": ["uses-with"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "enabled": false,
+    },
   ],
 }
