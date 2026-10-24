@@ -5,7 +5,7 @@ SET LOCAL lock_timeout = '5s';
 -- which pushes are held and delivered when it ends. Cancellations still go
 -- through, and the grant-created security notice is never held. All three
 -- columns or none (no quiet hours), start <> end; the CHECK goes in NOT
--- VALID and 20261026090300 validates it. NULLs, and a missing row, mean
+-- VALID and 20261026110300 validates it. NULLs, and a missing row, mean
 -- no quiet hours: today's behaviour.
 --
 -- `notification_holds` is what a held push leaves behind until quiet hours

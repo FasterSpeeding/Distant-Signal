@@ -19,7 +19,7 @@ SET LOCAL lock_timeout = '5s';
 -- Expand-only. Each ADD COLUMN has a constant default (or none), so it
 -- changes the catalog only; its brief ACCESS EXCLUSIVE is bounded by the
 -- 5 s lock_timeout. The threshold's CHECK is added NOT VALID (new writes
--- are checked at once) and validated by 20261026090100 under SHARE UPDATE
+-- are checked at once) and validated by 20261026110100 under SHARE UPDATE
 -- EXCLUSIVE. Code before this change never reads the columns.
 -- -------------------------------------------------------------------------
 

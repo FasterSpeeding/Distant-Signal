@@ -1,7 +1,7 @@
 SET LOCAL lock_timeout = '5s';
 
 -- -------------------------------------------------------------------------
--- Validates the quiet hours CHECK 20261026090200 added NOT VALID, under
+-- Validates the quiet hours CHECK 20261026110200 added NOT VALID, under
 -- SHARE UPDATE EXCLUSIVE, so the api keeps writing while the (few) rows
 -- are scanned. The columns are new and every write since was checked, so
 -- this cannot fail.
