@@ -78,7 +78,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: 1.99.1
+          toolchain: 1.88.0
           components: clippy
 
       - name: Install rdkafka build dependencies
@@ -117,7 +117,7 @@ jobs:
       - name: Install Rust 1.88.0
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: 1.99.1
+          toolchain: 1.88.0
 
       - name: Install rdkafka build dependencies
         run: |
@@ -150,7 +150,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: 1.99.1
+          toolchain: 1.88.0
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
@@ -207,7 +207,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: 1.99.1
+          toolchain: 1.88.0
           components: rustfmt
 
       - name: cargo fmt --check
@@ -228,7 +228,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: 1.99.1
+          toolchain: 1.88.0
 
       # trust-consumer's `rdkafka` dependency needs a real, dynamically
       # linked libsasl2 to build+run (see docker/trust-consumer.Dockerfile,
@@ -369,7 +369,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: 1.99.1
+          toolchain: 1.88.0
 
       # The same packages as rust-test (see there for each one's reason).
       # Only libssl-dev/pkg-config (openssl-sys, via native-tls) matter to
@@ -782,7 +782,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: 1.99.1
+          toolchain: 1.88.0
 
       # See rust-test's cache step for save-if.
       - name: Cache cargo registry/target
@@ -1081,7 +1081,7 @@ jobs:
       - name: Install Rust 1.88.0
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: 1.99.1
+          toolchain: 1.88.0
 
       - name: ds-store and ds-migrate dependency boundary
         run: uv run --no-sync scripts/check-crate-deps.py
