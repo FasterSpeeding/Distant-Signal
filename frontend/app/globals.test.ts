@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { DEFAULT_THEME } from '@mantine/core';
+import { DEFAULT_THEME, getCSSColorVariables, toRgba } from '@mantine/core';
 import { theme } from '@/lib/theme';
-import { SEVERITY_GROUP_COLORS, SEVERITY_GROUPS_BY_RANK } from '@/lib/severity';
+import { SEVERITY_GROUP_COLORS, SEVERITY_GROUPS_BY_RANK, statusBadgeColors, type SeverityGroup } from '@/lib/severity';
+import { STATE_TONE_COLOR } from '@/components/StateBadge';
+import { DELAY_TONE_COLOR } from '@/components/DelayBadge';
 
 // Vitest runs with `frontend/` as its root (see vitest.config.ts).
 const css = readFileSync('app/globals.css', 'utf8');
@@ -879,5 +881,181 @@ describe('AllLinesTable wrapper and sticky header (2026-10-14)', () => {
   it('only sticks, bleeds and fixes the height of the sticky variant', () => {
     // A bare `.listFilterBar` rule would also pin IssueList's in-section bar.
     expect(css).not.toMatch(/\.listFilterBar\s*\{/);
+  });
+});
+
+// Every status pill, in both schemes: the severity `StatusBadge` (filled,
+// `--ds-status-badge-*`), every `StateBadge` tone and every `DelayBadge`
+// tone (Mantine's `light` variant, with the light-scheme `-light-color`
+// overrides above). The pairs are resolved the way the browser resolves
+// them: this file's own scheme blocks first, then the variables Mantine
+// itself generates per scheme (`getCSSColorVariables`), then the palette.
+// So a pill can't fail unnoticed because no seeded page happens to show it.
+describe('status pill contrast', () => {
+  type Scheme = 'light' | 'dark';
+
+  /** A declared value from this file's scheme block, else Mantine's own
+   * generated value for that scheme, else undefined. */
+  function declared(scheme: Scheme, name: string): string | undefined {
+    const ours = new RegExp(`${name}:\\s*([^;]+);`).exec(schemeBlock(scheme));
+    if (ours) return ours[1]!.trim();
+    const palette = /^--mantine-color-([a-z]+)-/.exec(name)?.[1];
+    if (palette === undefined || !(palette in DEFAULT_THEME.colors)) return undefined;
+    const generated: Record<string, string> = getCSSColorVariables({
+      theme: DEFAULT_THEME,
+      color: palette,
+      colorScheme: scheme,
+    });
+    return generated[name];
+  }
+
+  /** A CSS colour value (hex, `rgba()`, `var(--...)`) as a `#rrggbb` hex. */
+  function resolveColor(scheme: Scheme, value: string): string {
+    const variable = /^var\((--[a-z0-9-]+)\)$/.exec(value)?.[1];
+    if (variable === undefined) {
+      const { r, g, b, a } = toRgba(value);
+      expect(a, `${value} is opaque`).toBe(1);
+      return `#${[r, g, b].map((c) => c.toString(16).padStart(2, '0')).join('')}`;
+    }
+    if (variable === '--mantine-color-white') return WHITE;
+    if (variable === '--mantine-color-black') return BLACK;
+    const shade = /^--mantine-color-([a-z]+)-(\d)$/.exec(variable);
+    if (shade) return DEFAULT_THEME.colors[shade[1]!]![Number(shade[2])]!;
+    const next = declared(scheme, variable);
+    expect(next, `${variable} is defined in the ${scheme} scheme`).toBeDefined();
+    return resolveColor(scheme, next!);
+  }
+
+  // APCA-W3 0.0.98G-4g lightness contrast (Lc). WCAG 2's ratio, which is
+  // what axe checks, overrates dark text on a saturated mid-tone: black on
+  // red 8 is 4.65:1, a pass, at Lc 34, and that pill was reported as
+  // unreadable. Lc is signed (negative is light text on a dark fill).
+  function apca(text: string, background: string): number {
+    const y = (hex: string) => {
+      const [r, g, b] = [1, 3, 5].map((i) => (parseInt(hex.slice(i, i + 2), 16) / 255) ** 2.4);
+      const value = 0.2126729 * r! + 0.7151522 * g! + 0.072175 * b!;
+      return value > 0.022 ? value : value + (0.022 - value) ** 1.414;
+    };
+    const [t, bg] = [y(text), y(background)];
+    if (Math.abs(bg - t) < 0.0005) return 0;
+    if (bg > t) {
+      const sapc = (bg ** 0.56 - t ** 0.57) * 1.14;
+      return sapc < 0.1 ? 0 : (sapc - 0.027) * 100;
+    }
+    const sapc = (bg ** 0.65 - t ** 0.62) * 1.14;
+    return sapc > -0.1 ? 0 : (sapc + 0.027) * 100;
+  }
+
+  const SCHEMES: Scheme[] = ['light', 'dark'];
+
+  // Badge text is 11px (12px on `StatusBadge`) at weight 700: not WCAG
+  // "large text" (18.66px bold), so 4.5:1 applies to every pill.
+  const lightVariantPills: [pill: string, colour: string][] = [
+    ...Object.entries(STATE_TONE_COLOR).map(([tone, colour]): [string, string] => [`StateBadge ${tone}`, colour]),
+    ...Object.entries(DELAY_TONE_COLOR).map(([tone, colour]): [string, string] => [`DelayBadge ${tone}`, colour]),
+  ];
+  const lightVariantCases = SCHEMES.flatMap((scheme) =>
+    lightVariantPills.map(([pill, colour]): [string, Scheme, string] => [pill, scheme, colour]),
+  );
+
+  it.each(lightVariantCases)('%s (%s scheme) clears 4.5:1', (_pill, scheme, colour) => {
+    const surface = resolveColor(scheme, `var(--mantine-color-${colour}-light)`);
+    const text = resolveColor(scheme, `var(--mantine-color-${colour}-light-color)`);
+    expect(contrast(text, surface)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+  });
+
+  const statusCases = SCHEMES.flatMap((scheme) =>
+    SEVERITY_GROUPS_BY_RANK.map((group): [SeverityGroup, Scheme] => [group, scheme]),
+  );
+
+  // The severity pill gets a margin on both measures: at least 5:1, and
+  // |Lc| 75, APCA's floor for fluent text. Every pair that used to put
+  // black on red, blue, gray or green sat at Lc 34 to 58.
+  it.each(statusCases)('StatusBadge %s (%s scheme) clears 5:1 and Lc 75', (group, scheme) => {
+    const { fill, text } = statusBadgeColors(group);
+    const fillHex = resolveColor(scheme, fill);
+    const textHex = resolveColor(scheme, text);
+    expect(contrast(textHex, fillHex)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    expect(contrast(textHex, fillHex)).toBeGreaterThanOrEqual(5);
+    expect(Math.abs(apca(textHex, fillHex))).toBeGreaterThanOrEqual(75);
+  });
+
+  it.each(statusCases)('StatusBadge %s (%s scheme) keeps its group hue', (group, scheme) => {
+    const fill = declared(scheme, `--ds-status-badge-${group}-fill`);
+    // Green has no palette shade that takes white text, so its fill is the
+    // one hex, pinned to its derivation below; every other group's fill is
+    // a palette shade of the group's hue.
+    if (group === 'good') {
+      expect(fill).toMatch(/^#[0-9a-f]{6}$/);
+      return;
+    }
+    expect(fill).toMatch(new RegExp(`^var\\(--mantine-color-${SEVERITY_GROUP_COLORS[group]}-\\d\\)$`));
+  });
+
+  it('derives the good fill from green 9, scaled toward black to 92%', () => {
+    const green9 = DEFAULT_THEME.colors.green[9];
+    const scale = (factor: number) =>
+      `#${[1, 3, 5]
+        .map((i) =>
+          Math.round(parseInt(green9.slice(i, i + 2), 16) * factor)
+            .toString(16)
+            .padStart(2, '0'),
+        )
+        .join('')}`;
+    expect(declared('light', '--ds-status-badge-good-fill')).toBe(scale(0.92));
+    expect(declared('dark', '--ds-status-badge-good-fill')).toBe(scale(0.92));
+    // The smallest whole percentage that clears 5:1: 93% does not.
+    expect(contrast(scale(0.93), WHITE)).toBeLessThan(5);
+  });
+
+  // The nav's data freshness panel (`DataFreshnessInfo`) and every other
+  // tooltip: Mantine's own tooltip surface and text, read from its
+  // stylesheet so a re-cut can't slip past, and dimmed text inside it.
+  describe('tooltip text contrast', () => {
+    const mantineCss = readFileSync('node_modules/@mantine/core/styles.css', 'utf8');
+    function mantineTooltip(scheme: Scheme): { surface: string; text: string } {
+      const rule = new RegExp(
+        `:where\\(\\[data-mantine-color-scheme='${scheme}'\\]\\) \\.m_1b3c8819 \\{\\s*background-color: var\\(--tooltip-bg, (var\\([^)]+\\))\\);\\s*color: var\\(--tooltip-color, (var\\([^)]+\\))\\);`,
+      ).exec(mantineCss);
+      expect(rule, `Mantine's ${scheme} tooltip colours`).not.toBeNull();
+      return { surface: resolveColor(scheme, rule![1]!), text: resolveColor(scheme, rule![2]!) };
+    }
+
+    it('points dimmed text inside every tooltip at the tooltip token', () => {
+      expect(css).toMatch(
+        /\.mantine-Tooltip-tooltip\s*\{\s*--mantine-color-dimmed: var\(--ds-tooltip-dimmed-text\);\s*\}/,
+      );
+    });
+
+    it.each(SCHEMES)('confirms the page dimmed shade was unreadable on the %s tooltip', (scheme) => {
+      const { surface } = mantineTooltip(scheme);
+      const pageDimmed = resolveColor(scheme, 'var(--mantine-color-dimmed)');
+      expect(contrast(pageDimmed, surface)).toBeLessThan(2); // 1.89:1 light, 1.67:1 dark
+    });
+
+    it.each(SCHEMES)('clears 4.5:1 and Lc 75 for both text styles in the %s tooltip', (scheme) => {
+      const { surface, text } = mantineTooltip(scheme);
+      const dimmed = resolveColor(scheme, 'var(--ds-tooltip-dimmed-text)');
+      for (const colour of [text, dimmed]) {
+        expect(contrast(colour, surface)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+        expect(Math.abs(apca(colour, surface))).toBeGreaterThanOrEqual(75);
+      }
+      // Still dimmer than the tooltip's own text, or it isn't dimmed.
+      expect(contrast(text, surface)).toBeGreaterThan(contrast(dimmed, surface));
+    });
+  });
+
+  it('records the pairs that were replaced: they passed WCAG 2 but not Lc 60', () => {
+    // Mantine's filled shade with the black text autoContrast chose.
+    for (const [fill, ratio] of [
+      [RED_8, 4.65], // dark severe, the worst
+      [RED_6, 6.39], // light severe
+      ['#228be6', 5.9], // light planned (blue 6)
+      [GRAY_6, 6.32], // light informational
+      ['#2f9e44', 6.1], // dark good (green 8)
+    ] as const) {
+      expect(contrast(BLACK, fill)).toBeCloseTo(ratio, 1);
+      expect(apca(BLACK, fill)).toBeLessThan(60);
+    }
   });
 });
