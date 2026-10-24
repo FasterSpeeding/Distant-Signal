@@ -245,6 +245,45 @@ html:root[data-mantine-color-scheme='light'] {
   --ds-severity-planned-text: var(--mantine-color-blue-9);
   --ds-severity-mild-text: var(--mantine-color-yellow-light-color);
   --ds-severity-severe-text: var(--mantine-color-red-9);
+
+  /* ---- `StatusBadge`, the filled severity pill -------------------------
+     The one place a severity group becomes a pill's fill and label colour
+     (`statusBadgeColors` in `lib/severity.ts` reads these). It used to be
+     Mantine's filled shade 6 with `autoContrast` choosing the label, which
+     put BLACK text on every fill here: black on red 6 (#fa5252), blue 6,
+     gray 6 and green 6. Those pass WCAG 2's formula (6.39, 5.90, 6.32,
+     8.90:1), which is all axe checks, yet were the pills people reported
+     as unreadable at 11px: the formula overrates dark text on a saturated
+     mid-tone, and APCA, which models it better, puts them at Lc 45, 42, 43
+     and 58, under the Lc 60 a short bold label needs.
+
+     So every fill now carries the label colour that reads best on it, and
+     `app/globals.test.ts` asserts both measures for each group in each
+     scheme (WCAG >= 5:1, APCA |Lc| >= 75):
+       good           #287f39 + white   5.02:1  Lc -79.7
+       informational  gray 7  + white   8.18:1  Lc -92.9
+       planned        blue 9  + white   6.09:1  Lc -85.1
+       mild           yellow 5 + black 13.05:1  Lc  76.7
+       severe         red 9   + white   5.46:1  Lc -81.0
+     Palette tokens wherever one clears the bar. Green has none (green 9
+     with white is 4.37:1), so it is green 9 scaled toward black by the
+     smallest whole percentage that does (92%), the same rule as the
+     light-variant hexes above. Yellow keeps black text, the one pairing
+     that stays yellow and reads well; it moves to the lighter shade 5. */
+  --ds-status-badge-good-fill: #287f39;
+  --ds-status-badge-good-text: var(--mantine-color-white);
+  --ds-status-badge-informational-fill: var(--mantine-color-gray-7);
+  --ds-status-badge-informational-text: var(--mantine-color-white);
+  --ds-status-badge-planned-fill: var(--mantine-color-blue-9);
+  --ds-status-badge-planned-text: var(--mantine-color-white);
+  --ds-status-badge-mild-fill: var(--mantine-color-yellow-5);
+  --ds-status-badge-mild-text: var(--mantine-color-black);
+  --ds-status-badge-severe-fill: var(--mantine-color-red-9);
+  --ds-status-badge-severe-text: var(--mantine-color-white);
+
+  /* Dimmed text inside a tooltip (gray 9 here): see the
+     `.mantine-Tooltip-tooltip` rule below. */
+  --ds-tooltip-dimmed-text: var(--mantine-color-gray-4);
 }
 
 /* The dark scheme is NOT the "already fine" case the light-scheme comments
@@ -301,6 +340,25 @@ html:root[data-mantine-color-scheme='dark'] {
   --ds-severity-planned-text: var(--mantine-color-blue-4);
   --ds-severity-mild-text: var(--mantine-color-yellow-4);
   --ds-severity-severe-text: var(--mantine-color-red-4);
+  /* The dark half of the `StatusBadge` fills (see the light block). Gray
+     and blue keep Mantine's dark filled shade 8 with white text, which
+     already read well (11.51:1 Lc -100.2, 5.02:1 Lc -79.6). Green, yellow
+     and red had black text on shade 8 (6.10:1 Lc 42.5, 8.46:1 Lc 55.7,
+     4.65:1 Lc 34.4, the worst pill in the app), so they take the light
+     scheme's fills. */
+  --ds-status-badge-good-fill: #287f39;
+  --ds-status-badge-good-text: var(--mantine-color-white);
+  --ds-status-badge-informational-fill: var(--mantine-color-gray-8);
+  --ds-status-badge-informational-text: var(--mantine-color-white);
+  --ds-status-badge-planned-fill: var(--mantine-color-blue-8);
+  --ds-status-badge-planned-text: var(--mantine-color-white);
+  --ds-status-badge-mild-fill: var(--mantine-color-yellow-5);
+  --ds-status-badge-mild-text: var(--mantine-color-black);
+  --ds-status-badge-severe-fill: var(--mantine-color-red-9);
+  --ds-status-badge-severe-text: var(--mantine-color-white);
+  /* Dimmed text inside a tooltip (gray 2 here): see the
+     `.mantine-Tooltip-tooltip` rule below. */
+  --ds-tooltip-dimmed-text: var(--mantine-color-gray-7);
 }
 
 /* Exactly the same defect as `--mantine-color-dimmed` above, in a place
@@ -327,6 +385,26 @@ html:root[data-mantine-color-scheme='dark'] {
 
 :where([data-mantine-color-scheme='dark']) .mantine-Notification-description:where([data-with-title]) {
   color: var(--mantine-color-dark-1);
+}
+
+/* Dimmed text inside a `Tooltip`. Mantine's tooltip inverts the page: gray
+   9 (#212529) with white text in the light scheme, gray 2 (#e9ecef) with
+   black in the dark one. `--mantine-color-dimmed` is tuned for the PAGE
+   (gray 7 in light, dark 1 in dark, above), so `c="dimmed"` text inside a
+   tooltip came out at 1.89:1 (light) and 1.67:1 (dark): every row of the
+   nav's data freshness panel (`DataFreshnessInfo`, its `LastUpdated` rows)
+   and `JourneyProgress`'s "Did not stop here" caption. Axe never saw it,
+   because a tooltip only exists while it is open.
+
+   So inside a tooltip, dimmed means the tooltip's own dimmed shade,
+   `--ds-tooltip-dimmed-text`, set in each scheme block above: gray 4 on
+   gray 9 (10.32:1, Lc -77.2) and gray 7 on gray 2 (6.90:1, Lc 76.8). Both
+   stay visibly dimmer than the tooltip's main text (15.43:1 and 17.71:1).
+   Redefining the variable rather than the rule's colour means every
+   `c="dimmed"` in any tooltip, present or future, gets it.
+   `app/globals.test.ts` ("tooltip text contrast") measures all four. */
+.mantine-Tooltip-tooltip {
+  --mantine-color-dimmed: var(--ds-tooltip-dimmed-text);
 }
 
 /* `components/TextLink.tsx` opts in via `data-text-link`. The colour above

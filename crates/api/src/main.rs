@@ -755,6 +755,17 @@ fn api_loop_runner(app: &App) -> ds_store::loops::LoopRunner {
             tracing::error!(error = ?err, "background loop not started");
         }
     }
+    // The api's track routes queue backlog replays in train_event_outbox
+    // (DS-118), which the writer's outbox loop applies. Where the api still
+    // runs the loops (no writer loops), it applies them itself, under the
+    // writer's lock, so with both on one process applies at a time. Not
+    // with a narrowed api role: that needs API_BACKGROUND_LOOPS=false.
+    if let Err(err) = runner.register(ds_store::loops::train_event_outbox(
+        ds_store::loops::TRAIN_EVENT_OUTBOX_DEFAULT_INTERVAL,
+        ds_store::tracking::outbox::OutboxPolicy::default(),
+    )) {
+        tracing::error!(error = ?err, "train-event outbox loop not started");
+    }
     runner
 }
 
