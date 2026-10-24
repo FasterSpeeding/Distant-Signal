@@ -20,6 +20,21 @@ routes. DS-MCP needs no change.
 - `GET /Train/{trackingId}` and the owner's `GET /Journeys/{id}` (each
   leg's `trackedTrainState`) gain `notificationsEnabled`. Absent on every
   other reader's view.
+- `GET /public/preferences/notifications` gains a switch per kind of
+  push, each `true` unless turned off: `lineStatus`, `trainDelay`,
+  `trainCancel`, `predictedStart`, `stationSkip` and `templateAttention`
+  (beside `journeySuggestions`); `delayThresholdMinutes` (`5`, `10`, `15`
+  or `30`, `null` for the default, 15); and `quietHours` (`{start, end,
+  timezone}`: `HH:MM` local times, `end` may be before `start`, and an
+  IANA zone; `null` for none). In quiet hours line and train pushes are
+  held and the latest state is sent when they end; cancellations still go
+  through, and the "app connected" notice is never held.
+- `PUT /public/preferences/notifications` takes any of those fields and
+  changes only the ones present (`journeySuggestions` is no longer
+  required; `null` clears the threshold or the quiet hours), and answers
+  with every setting instead of echoing the body. `400` for a threshold
+  outside the four, quiet hours that start and end at the same time or
+  an unknown zone; unknown fields are still refused (`422`).
 
 ## 2026-10-23: `/Trips/plan` takes a TfL stop as its origin or destination
 

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Stack, Switch, Text } from '@mantine/core';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
-import type { NotificationPreferences } from '@/lib/types';
+import type { NotificationPreferences, NotificationPreferencesUpdate } from '@/lib/types';
 
 /** "Suggest other trains when a journey breaks" (mid-journey changes spec
  * 2026-10-22 §6.5): the account's `journeySuggestions` preference, read on
@@ -47,7 +47,7 @@ export function JourneySuggestionsToggle() {
       const response = await fetch('/api/preferences/notifications', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ journeySuggestions: next } satisfies NotificationPreferences),
+        body: JSON.stringify({ journeySuggestions: next } satisfies NotificationPreferencesUpdate),
       });
       if (!response.ok) {
         setValue(previous);

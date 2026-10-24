@@ -1675,10 +1675,32 @@ export interface RevisionsResponse {
   revisions: Revision[];
 }
 
-/** `GET`/`PUT /preferences/notifications`. */
+/** Quiet hours: `HH:MM` local times in an IANA `timezone`; `end` may be
+ * before `start` (through midnight). */
+export interface QuietHours {
+  start: string;
+  end: string;
+  timezone: string;
+}
+
+/** `GET /preferences/notifications` (and the `PUT`'s answer): a switch per
+ * kind of push, the delay threshold (`null`: the default, 15 minutes) and
+ * the quiet hours (`null`: none). The fields after `journeySuggestions`
+ * are absent from an older backend. */
 export interface NotificationPreferences {
   journeySuggestions: boolean;
+  lineStatus?: boolean;
+  trainDelay?: boolean;
+  trainCancel?: boolean;
+  predictedStart?: boolean;
+  stationSkip?: boolean;
+  templateAttention?: boolean;
+  delayThresholdMinutes?: 5 | 10 | 15 | 30 | null;
+  quietHours?: QuietHours | null;
 }
+
+/** A `PUT /preferences/notifications` body: only the fields sent change. */
+export type NotificationPreferencesUpdate = Partial<NotificationPreferences>;
 
 /** One leg of a `GET /Trips/plan` itinerary
  * (`crates/api/src/data/trip_planning_itinerary.rs::PlannedLeg`,

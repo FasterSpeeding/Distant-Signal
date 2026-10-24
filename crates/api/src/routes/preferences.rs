@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
-use crate::data::{custom_lines, preferences, queries, reference};
+use crate::data::{custom_lines, notification_settings, preferences, queries, reference};
 
 pub fn router() -> Router {
     Router::new()
@@ -38,41 +38,169 @@ pub fn router() -> Router {
 }
 
 /// `GET`/`PUT /public/preferences/notifications`: the user's push
-/// preferences beyond the browser's own permission (mid-journey changes
-/// spec 2026-10-22 §6.5). `journeySuggestions`: push suggested trains when
-/// one of their journeys breaks (on unless turned off).
-#[derive(Debug, serde::Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// settings beyond the browser's own permission (mid-journey changes spec
+/// 2026-10-22 §6.5; DS-153). A switch per kind of push, each on unless
+/// turned off: `journeySuggestions` (suggested trains when a journey
+/// breaks), `lineStatus`, `trainDelay`, `trainCancel`, `predictedStart`,
+/// `stationSkip` and `templateAttention`; `delayThresholdMinutes` (5, 10,
+/// 15 or 30; `null` for the default, 15); `quietHours` (`{start, end,
+/// timezone}`, `HH:MM` local times and an IANA zone, or `null` for none).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one switch per kind of push, as the wire has them"
+)]
 struct NotificationPreferences {
     journey_suggestions: bool,
+    line_status: bool,
+    train_delay: bool,
+    train_cancel: bool,
+    predicted_start: bool,
+    station_skip: bool,
+    template_attention: bool,
+    delay_threshold_minutes: Option<i16>,
+    quiet_hours: Option<QuietHoursBody>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct QuietHoursBody {
+    start: String,
+    end: String,
+    timezone: String,
+}
+
+/// A `PUT` body: only the fields present change, so a client that knows
+/// only `journeySuggestions` keeps working. `null` clears the threshold
+/// (back to the default) or the quiet hours. Unknown fields are refused.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[expect(
+    clippy::option_option,
+    reason = "absent (unchanged) and null (cleared) are different requests"
+)]
+struct NotificationPreferencesUpdate {
+    journey_suggestions: Option<bool>,
+    line_status: Option<bool>,
+    train_delay: Option<bool>,
+    train_cancel: Option<bool>,
+    predicted_start: Option<bool>,
+    station_skip: Option<bool>,
+    template_attention: Option<bool>,
+    #[serde(default, deserialize_with = "present")]
+    delay_threshold_minutes: Option<Option<i16>>,
+    #[serde(default, deserialize_with = "present")]
+    quiet_hours: Option<Option<QuietHoursBody>>,
+}
+
+/// A field that is present, `null` or not: `Some(None)` for `null`.
+#[expect(
+    clippy::option_option,
+    reason = "absent (unchanged) and null (cleared) are different requests"
+)]
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    <Option<T> as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+
+const QUIET_TIME_FORMAT: &str = "%H:%M";
+
+fn parse_quiet_time(value: &str) -> Option<chrono::NaiveTime> {
+    chrono::NaiveTime::parse_from_str(value.trim(), QUIET_TIME_FORMAT).ok()
+}
+
+/// Checks a `PUT` body and turns it into the change to store, or the
+/// sentence a 400 says.
+fn validate_notification_update(
+    body: NotificationPreferencesUpdate,
+) -> Result<notification_settings::NotificationSettingsChange, String> {
+    if let Some(Some(minutes)) = body.delay_threshold_minutes
+        && !notification_settings::DELAY_THRESHOLDS.contains(&minutes)
+    {
+        return Err("The delay threshold must be 5, 10, 15 or 30 minutes.".to_string());
+    }
+    let quiet_hours = match body.quiet_hours {
+        None => None,
+        Some(None) => Some(None),
+        Some(Some(quiet)) => {
+            let (Some(start), Some(end)) =
+                (parse_quiet_time(&quiet.start), parse_quiet_time(&quiet.end))
+            else {
+                return Err("Quiet hours need a start and an end time, such as 22:00.".to_string());
+            };
+            if start == end {
+                return Err("Quiet hours can't start and end at the same time.".to_string());
+            }
+            let timezone = quiet.timezone.trim();
+            if timezone.parse::<chrono_tz::Tz>().is_err() {
+                return Err("That time zone isn't one we know.".to_string());
+            }
+            Some(Some(notification_settings::QuietHours {
+                start,
+                end,
+                timezone: timezone.to_string(),
+            }))
+        }
+    };
+    Ok(notification_settings::NotificationSettingsChange {
+        journey_suggestions: body.journey_suggestions,
+        line_status: body.line_status,
+        train_delay: body.train_delay,
+        train_cancel: body.train_cancel,
+        predicted_start: body.predicted_start,
+        station_skip: body.station_skip,
+        template_attention: body.template_attention,
+        delay_threshold_minutes: body.delay_threshold_minutes,
+        quiet_hours,
+    })
+}
+
+impl From<notification_settings::NotificationSettings> for NotificationPreferences {
+    fn from(settings: notification_settings::NotificationSettings) -> Self {
+        Self {
+            journey_suggestions: settings.journey_suggestions,
+            line_status: settings.line_status,
+            train_delay: settings.train_delay,
+            train_cancel: settings.train_cancel,
+            predicted_start: settings.predicted_start,
+            station_skip: settings.station_skip,
+            template_attention: settings.template_attention,
+            delay_threshold_minutes: settings.delay_threshold_minutes,
+            quiet_hours: settings.quiet_hours.map(|quiet| QuietHoursBody {
+                start: quiet.start.format(QUIET_TIME_FORMAT).to_string(),
+                end: quiet.end.format(QUIET_TIME_FORMAT).to_string(),
+                timezone: quiet.timezone,
+            }),
+        }
+    }
 }
 
 async fn get_notification_preferences(
     State(app): State<App>,
     user: AuthenticatedUser,
 ) -> Result<Json<NotificationPreferences>, (StatusCode, String)> {
-    let journey_suggestions =
-        crate::data::journey_breaks::journey_suggestions_enabled(&app.database, &user.id)
-            .await
-            .map_err(internal_error)?;
-    Ok(Json(NotificationPreferences {
-        journey_suggestions,
-    }))
+    let settings = notification_settings::get(&app.database, &user.id)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(settings.into()))
 }
 
+/// `PUT`: applies the fields present and answers with every setting.
 async fn put_notification_preferences(
     State(app): State<App>,
     user: AuthenticatedUser,
-    Json(body): Json<NotificationPreferences>,
+    Json(body): Json<NotificationPreferencesUpdate>,
 ) -> Result<Json<NotificationPreferences>, (StatusCode, String)> {
-    crate::data::journey_breaks::set_journey_suggestions(
-        &app.database,
-        &user.id,
-        body.journey_suggestions,
-    )
-    .await
-    .map_err(internal_error)?;
-    Ok(Json(body))
+    let change =
+        validate_notification_update(body).map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    let settings = notification_settings::update(&app.database, &user.id, &change)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(settings.into()))
 }
 
 #[derive(Debug, Serialize)]
@@ -339,6 +467,61 @@ fn filter_known_pinned_operators(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn update(json: serde_json::Value) -> Result<NotificationPreferencesUpdate, serde_json::Error> {
+        serde_json::from_value(json)
+    }
+
+    #[test]
+    fn a_notification_update_changes_only_the_fields_present() {
+        let change = validate_notification_update(
+            update(serde_json::json!({ "journeySuggestions": false })).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            change,
+            notification_settings::NotificationSettingsChange {
+                journey_suggestions: Some(false),
+                ..Default::default()
+            }
+        );
+        // null clears the threshold and the quiet hours; absent leaves them.
+        let change = validate_notification_update(
+            update(serde_json::json!({ "delayThresholdMinutes": null, "quietHours": null }))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(change.delay_threshold_minutes, Some(None));
+        assert_eq!(change.quiet_hours, Some(None));
+    }
+
+    #[test]
+    fn a_notification_update_checks_the_threshold_and_the_quiet_hours() {
+        let check = |json| validate_notification_update(update(json).unwrap());
+        assert!(check(serde_json::json!({ "delayThresholdMinutes": 30 })).is_ok());
+        assert!(check(serde_json::json!({ "delayThresholdMinutes": 20 })).is_err());
+        let quiet = |start: &str, end: &str, zone: &str| serde_json::json!({ "quietHours": { "start": start, "end": end, "timezone": zone } });
+        let ok = check(quiet("22:00", "07:00", "Europe/London")).unwrap();
+        assert_eq!(
+            ok.quiet_hours,
+            Some(Some(notification_settings::QuietHours {
+                start: "22:00:00".parse().unwrap(),
+                end: "07:00:00".parse().unwrap(),
+                timezone: "Europe/London".to_string(),
+            }))
+        );
+        assert!(check(quiet("22:00", "22:00", "Europe/London")).is_err());
+        assert!(check(quiet("25:00", "07:00", "Europe/London")).is_err());
+        assert!(check(quiet("22:00", "07:00", "Mars/Olympus")).is_err());
+        // Unknown fields are refused, at the top level and inside.
+        assert!(update(serde_json::json!({ "everything": false })).is_err());
+        assert!(
+            update(serde_json::json!({
+                "quietHours": { "start": "22:00", "end": "07:00", "timezone": "UTC", "days": 1 }
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn a_pinned_tfl_line_survives_the_known_ids_filter() {

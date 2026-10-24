@@ -303,3 +303,105 @@ async fn the_owner_turns_a_tracked_trains_pushes_off_and_on() {
     assert_eq!(status, StatusCode::OK);
     assert!(notifications_enabled(&pool, tracking_id).await);
 }
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database)"]
+async fn notification_preferences_read_as_defaults_and_change_only_what_is_sent() {
+    const USER: &str = "TEST-NOTIFSET-PREFS";
+    const URI: &str = "/public/preferences/notifications";
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool, &[USER]).await;
+    let token = seed_session(&pool, USER).await;
+    let router = router(pool.clone());
+
+    let (status, _) = call(&router, "GET", URI, None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // No row: every switch on, the default threshold, no quiet hours.
+    let defaults = json!({
+        "journeySuggestions": true,
+        "lineStatus": true,
+        "trainDelay": true,
+        "trainCancel": true,
+        "predictedStart": true,
+        "stationSkip": true,
+        "templateAttention": true,
+        "delayThresholdMinutes": null,
+        "quietHours": null,
+    });
+    let (status, body) = call(&router, "GET", URI, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, defaults);
+
+    // An older client's body still works, and changes only its field.
+    let (status, body) = call(
+        &router,
+        "PUT",
+        URI,
+        Some(&token),
+        Some(json!({ "journeySuggestions": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["journeySuggestions"], json!(false));
+    assert_eq!(body["trainDelay"], json!(true));
+
+    let (status, body) = call(
+        &router,
+        "PUT",
+        URI,
+        Some(&token),
+        Some(json!({
+            "trainDelay": false,
+            "delayThresholdMinutes": 10,
+            "quietHours": { "start": "22:30", "end": "06:45", "timezone": "Europe/London" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, read) = call(&router, "GET", URI, Some(&token), None).await;
+    assert_eq!(read, body, "the PUT answers with what a GET then reads");
+    assert_eq!(read["journeySuggestions"], json!(false), "kept");
+    assert_eq!(read["trainDelay"], json!(false));
+    assert_eq!(read["delayThresholdMinutes"], json!(10));
+    assert_eq!(
+        read["quietHours"],
+        json!({ "start": "22:30", "end": "06:45", "timezone": "Europe/London" })
+    );
+
+    // Refusals change nothing.
+    for (bad, expected) in [
+        (
+            json!({ "delayThresholdMinutes": 20 }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({ "quietHours": { "start": "22:00", "end": "22:00", "timezone": "UTC" } }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({ "quietHours": { "start": "22:00", "end": "07:00", "timezone": "Nowhere/Here" } }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (json!({ "allOff": true }), StatusCode::UNPROCESSABLE_ENTITY),
+    ] {
+        let (status, body) = call(&router, "PUT", URI, Some(&token), Some(bad.clone())).await;
+        assert_eq!(status, expected, "{bad}: {body}");
+    }
+    let (_, after) = call(&router, "GET", URI, Some(&token), None).await;
+    assert_eq!(after, read);
+
+    // null goes back to the default threshold and no quiet hours.
+    let (status, body) = call(
+        &router,
+        "PUT",
+        URI,
+        Some(&token),
+        Some(json!({ "delayThresholdMinutes": null, "quietHours": null })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["delayThresholdMinutes"], Value::Null);
+    assert_eq!(body["quietHours"], Value::Null);
+    assert_eq!(body["trainDelay"], json!(false), "kept");
+}
