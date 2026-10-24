@@ -1050,6 +1050,13 @@ jobs:
       - name: schedulefeed chart sources
         run: uv run --no-sync scripts/check-schedulefeed-chart.py
 
+      # charts/distant-signal's darwin-relay (DS-152): off renders nothing,
+      # on reads every Kafka value from the Push Port Secret's own keys, has
+      # its own Redis user, egress, PodMonitor and alerts, and a missing
+      # prerequisite refuses to render.
+      - name: darwin-relay chart
+        run: uv run --no-sync scripts/check-darwin-chart.py
+
       # Ingest architecture phase 0 (postgresql.roles.perService and
       # redis.acl): both off by default and rendering nothing then; each
       # switch changes only what it should; the role-limit budget; the
