@@ -1,8 +1,9 @@
 # Transit networks in the trip planner: Metrolink, London Trams and after
 
-Design, 2026-10-24. Status: **proposed**, not started. Work log DS-162 (a
-subtask of DS-153). Nothing here is built; the open questions in
-[§16](#16-open-questions-for-the-user) need the user's answers first.
+Design, 2026-10-24. Status: **accepted**. Work log DS-162 (a subtask of
+DS-153). The user accepted every proposed default of
+[§16](#16-open-questions-for-the-user) on 2026-10-24; the decisions are
+recorded there.
 
 This is the "trip planner" item of the transit networks spec's later work
 ([2026-10-09-transit-networks-design.md](2026-10-09-transit-networks-design.md)
@@ -967,17 +968,20 @@ chart.
 
 ## 16. Open questions for the user
 
-| # | Question | Proposed default |
+**Decided 2026-10-24.** The user accepted every proposed default. The
+decisions below are binding on the M and LT phases.
+
+| # | Question | Decision |
 |---|---|---|
-| Q1 | Should replacement-bus trips from a tram timetable be planned (labelled "Replacement bus", with the bus change buffer)? In the closure week of §3.1 they were half of Metrolink's trips. | Yes |
-| Q2 | The planner needs walk minutes for rail-to-tram changes, worked out from coordinates and shown as estimates on the walk leg. Stop pages stay without them (transit spec Q10). Is that acceptable? | Yes, as estimates |
-| Q3 | A new `kind: "transit"` leg, opt-in by `transit=true`, or tram legs as `kind: "train"` with `serviceMode: "tram"`, as buses and ferries are (fewer client changes, but saving and tracking would treat them as trains)? | `kind: "transit"` |
-| Q4 | Tram ends in URLs as bare NaPTAN codes (`9400ZZMAPIC`, `940GZZCRWMB`) or with a network prefix (`metrolink:9400ZZMAPIC`)? | Bare codes |
-| Q5 | A tram leg counts as a change, so rail-tram-rail is 2 changes, the default cap. Keep that, or raise the default cap to 3 when the plan has transit legs? | Keep; `maxChanges` raises it |
-| Q6 | The extra change time on the tram side of a tram-to-rail change. | 2 minutes |
-| Q7 | London Trams from the BODS London GTFS, as a planner-only network (321 MB download a day)? And later: the DLR the same way, and in the long run the Underground timetable from the same feed to replace the modelled Tube legs? | London Trams yes; DLR after; Tube later, as its own decision |
-| Q8 | On a London tram leg, link to the TfL stop page's live arrivals ("Live arrivals"), clearly apart from the leg's scheduled times? | Yes |
-| Q9 | Tram stations as waypoints, vias and avoids. | Not now |
-| Q10 | Past a network's 60-day horizon, plans have no trams and say "Tram times aren't available for this date". Keep the horizon, or store more for planning? | Keep 60 days |
-| Q11 | Should a tram-only plan (Piccadilly to Altrincham) be selectable and saved as a journey of untracked legs? Today a plan with no train cannot be picked. | No, for now |
-| Q12 | Build the LT0 stopgap (modelled tram links between rail hubs, §12.4) before the London Trams timetable, or go straight to LT1? | Straight to LT1 |
+| Q1 | Should replacement-bus trips from a tram timetable be planned (labelled "Replacement bus", with the bus change buffer)? In the closure week of §3.1 they were half of Metrolink's trips. | **Yes.** Planned from the tram timetable, labelled "Replacement bus" (`serviceMode: "replacementBus"`), with the bus change buffer. |
+| Q2 | The planner needs walk minutes for rail-to-tram changes, worked out from coordinates and shown as estimates on the walk leg. Stop pages stay without them (transit spec Q10). Is that acceptable? | **Yes, as estimates.** The walk leg says the minutes are estimated. Stop pages stay without them. |
+| Q3 | A new `kind: "transit"` leg, opt-in by `transit=true`, or tram legs as `kind: "train"` with `serviceMode: "tram"`, as buses and ferries are (fewer client changes, but saving and tracking would treat them as trains)? | **`kind: "transit"`**, opt-in by `transit=true`. |
+| Q4 | Tram ends in URLs as bare NaPTAN codes (`9400ZZMAPIC`, `940GZZCRWMB`) or with a network prefix (`metrolink:9400ZZMAPIC`)? | **Bare NaPTAN codes.** |
+| Q5 | A tram leg counts as a change, so rail-tram-rail is 2 changes, the default cap. Keep that, or raise the default cap to 3 when the plan has transit legs? | **Keep the cap.** A tram leg counts as a change; `maxChanges` raises it. |
+| Q6 | The extra change time on the tram side of a tram-to-rail change. | **2 minutes** (`TRIP_PLAN_TRANSIT_CHANGE_MINUTES`). |
+| Q7 | London Trams from the BODS London GTFS, as a planner-only network (321 MB download a day)? And later: the DLR the same way, and in the long run the Underground timetable from the same feed to replace the modelled Tube legs? | **London Trams next, then the DLR.** The Underground timetable is its own later decision. |
+| Q8 | On a London tram leg, link to the TfL stop page's live arrivals ("Live arrivals"), clearly apart from the leg's scheduled times? | **Yes**, in phase LT2. |
+| Q9 | Tram stations as waypoints, vias and avoids. | **Not now.** |
+| Q10 | Past a network's 60-day horizon, plans have no trams and say "Tram times aren't available for this date". Keep the horizon, or store more for planning? | **Keep the 60-day horizon.** |
+| Q11 | Should a tram-only plan (Piccadilly to Altrincham) be selectable and saved as a journey of untracked legs? Today a plan with no train cannot be picked. | **No, for now.** Tram-only plans are neither selectable nor saveable. |
+| Q12 | Build the LT0 stopgap (modelled tram links between rail hubs, §12.4) before the London Trams timetable, or go straight to LT1? | **Skip LT0**; go straight to LT1. |
