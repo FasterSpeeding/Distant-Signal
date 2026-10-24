@@ -84,16 +84,10 @@ describe('next.config.mjs static Content-Security-Policy headers', () => {
 });
 
 describe('next.config.mjs redirects', () => {
-  it('sends the /journeys/new?mode=plan deep link to the /plan page', async () => {
+  it('leaves /journeys/new?mode=plan on New journey, its planner option', async () => {
     if (!nextConfig.redirects) throw new Error('next.config.mjs defines no redirects()');
     const entries = await nextConfig.redirects();
-    const planRedirect = entries.find((entry) => entry.source === '/journeys/new');
-    expect(planRedirect).toEqual({
-      source: '/journeys/new',
-      has: [{ type: 'query', key: 'mode', value: 'plan' }],
-      destination: '/plan',
-      permanent: false,
-    });
+    expect(entries.filter((entry) => entry.source.startsWith('/journeys/new'))).toEqual([]);
   });
 
   it.each(['/track/mine', '/track/tickets'])(
