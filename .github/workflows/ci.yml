@@ -2988,6 +2988,24 @@ jobs:
           grep -A1 'name: HOURLY_REQUEST_BUDGET$' <<<"${on}" | grep -q 'value: "5000"'
           grep -A1 'name: SAMPLE_PINNED_LINES_ONLY$' <<<"${on}" | grep -q 'value: "true"'
           grep -A1 'name: SAMPLE_MAX_STATIONS$' <<<"${on}" | grep -q 'value: "150"'
+          # DS-152: the arrivals sub-lane is off by default (no env, no
+          # Secret reference); on, it reads the arrivals product's url and
+          # consumer key from the existing Secret's exact keys.
+          if grep -nE 'name: (TRACKED_STOP_ARRIVALS_ENABLED|LDBWS_ARRIVALS_URL|LDBWS_ARRIVALS_CONSUMER_KEY)$' <<<"${off}" \
+            || grep -n 'distant-signal-ldbws-arrivals' <<<"${off}"; then
+            echo "the arrivals sub-lane is off by default but its env rendered" >&2; exit 1
+          fi
+          arrivals=$(helm template distant-signal charts/distant-signal "${base[@]}" \
+            --set pollers.ldbws.trackedStopArrivals.enabled=true \
+            --show-only templates/poller-deployments.yaml)
+          grep -A1 'name: TRACKED_STOP_ARRIVALS_ENABLED$' <<<"${arrivals}" | grep -q 'value: "true"'
+          grep -A1 'name: TRACKED_STOP_ARRIVALS_MAX_REQUESTS_PER_CYCLE$' <<<"${arrivals}" | grep -q 'value: "10"'
+          for pair in LDBWS_ARRIVALS_URL:url LDBWS_ARRIVALS_CONSUMER_KEY:consumer-key \
+            LDBWS_ARRIVALS_CONSUMER_SECRET:consumer-secret; do
+            env="${pair%%:*}" key="${pair#*:}"
+            grep -A5 "name: ${env}\$" <<<"${arrivals}" | grep -q 'name: "distant-signal-ldbws-arrivals"'
+            grep -A5 "name: ${env}\$" <<<"${arrivals}" | grep -q "key: \"${key}\""
+          done
 
       # The PodMonitor must select every workload that serves a port named
       # "metrics". trust-backlog-consumer was missing (INF-6), so the

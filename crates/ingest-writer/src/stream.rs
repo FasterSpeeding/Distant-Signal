@@ -105,8 +105,13 @@ pub const STREAMS: [StreamSpec; 9] = [
     StreamSpec {
         name: "station-samples",
         stream: streams::STATION_SAMPLES,
-        // poller-ldbws's tracked-stop lane rides the same stream (DS-127).
-        schemas: &["station-samples", common::TRACKED_STOP_BOARDS_SCHEMA],
+        // poller-ldbws's tracked-stop lane rides the same stream (DS-127),
+        // and its arrivals sub-lane (DS-152).
+        schemas: &[
+            "station-samples",
+            common::TRACKED_STOP_BOARDS_SCHEMA,
+            common::TRACKED_STOP_ARRIVAL_BOARDS_SCHEMA,
+        ],
     },
     StreamSpec {
         name: "full-coverage",

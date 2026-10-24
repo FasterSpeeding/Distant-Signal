@@ -150,6 +150,8 @@ async fn each_producer_writes_only_its_own_freshness_rows() {
         ds_store::samples::sources::FULL_COVERAGE_STATS,
         ds_store::samples::sources::FULL_COVERAGE_WINDOW_STATS,
         ds_store::samples::sources::STATION_FULL_COVERAGE_SAMPLES,
+        ds_store::samples::sources::TRACKED_STOP_BOARDS,
+        ds_store::samples::sources::TRACKED_STOP_ARRIVAL_BOARDS,
         ds_store::samples::island_of_ireland::sources::STATIONS_GTFS,
         ds_store::samples::island_of_ireland::sources::LINES_GTFS,
         ds_store::samples::island_of_ireland::sources::STATIONS_NIR,

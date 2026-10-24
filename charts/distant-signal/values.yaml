@@ -1355,6 +1355,43 @@ pollers:
       # -- The lane's own budget: at most this many requests a cycle,
       # soonest departure first (TRACKED_STOP_MAX_REQUESTS_PER_CYCLE).
       maxRequestsPerCycle: 20
+    # Pre-departure prediction phase 3 (DS-152): the tracked-stop lane's
+    # arrivals sub-lane. Departure boards never list a stop where the train
+    # terminates or only sets down (usually the user's destination), so it
+    # also asks the LDBWS arrivals product (GetArrBoardWithDetails, its own
+    # RDM subscription) for each tracked train's alighting stops with a
+    # booked arrival, narrowed to that arrival, on the same cadence. The
+    # api then shows the arrival board's platform there (platformBasis
+    # board). Independent of trackedStops.enabled. Off by default: it adds
+    # requests on the arrivals product. Needs
+    # ingestWriter.streams.station-samples: apply (its boards ride that
+    # stream as tracked-stop-arrival-boards/1). The product's URL and
+    # consumer key come from an existing Secret (never from values): url is
+    # the product's base (up to /LDBWS/api/20220120; the poller appends
+    # /GetArrBoardWithDetails/{crs}), an operation URL (ending in
+    # /Get...; the poller appends /{crs}) or a URL with a {crs}
+    # placeholder. Its host is reached by the internet egress rule on 443
+    # (networkPolicy.egress.internetPorts); a URL on another port needs
+    # networkPolicy.components.poller-ldbws.internetPorts.
+    trackedStopArrivals:
+      # -- Poll tracked trains' alighting stops' arrival boards
+      # (TRACKED_STOP_ARRIVALS_ENABLED).
+      enabled: false
+      # -- The sub-lane's own budget: at most this many requests a cycle,
+      # soonest arrival first (TRACKED_STOP_ARRIVALS_MAX_REQUESTS_PER_CYCLE).
+      maxRequestsPerCycle: 10
+      # -- The existing Secret holding the arrivals product's credentials
+      # (created out of band; the chart never renders it).
+      secretName: distant-signal-ldbws-arrivals
+      # -- Its key with the product URL (LDBWS_ARRIVALS_URL).
+      urlKey: url
+      # -- Its key with the consumer key, sent as x-apikey
+      # (LDBWS_ARRIVALS_CONSUMER_KEY).
+      consumerKeyKey: consumer-key
+      # -- Its key with the consumer secret (LDBWS_ARRIVALS_CONSUMER_SECRET).
+      # Wired but not sent: RDM API products authenticate with the consumer
+      # key alone.
+      consumerSecretKey: consumer-secret
     # Ingest architecture plan 4.5/4.7: the station list is computed by the
     # poller from the line catalogue in its image and the views
     # `ingest_custom_line_stations` and `ingest_sample_station_pins`, as the

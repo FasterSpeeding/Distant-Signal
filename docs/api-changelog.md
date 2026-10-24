@@ -3,6 +3,26 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-26: arrival boards give alighting stops a live platform (DS-152)
+
+Additive; no new field. DS-MCP needs no change. Pre-departure prediction
+phase 3 (docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md,
+section 6.2 item 3), off by default (`pollers.ldbws.trackedStopArrivals`).
+
+- On `JourneyStop` (tracked trains' journey legs, `GET /Train/{id}` and the
+  by-uid endpoint), a stop with a booked arrival where the train terminates
+  or only sets down (usually the user's destination) can now have a live
+  `platform`, `platformStatus` and `displayPlatform`, with `platformBasis:
+  "board"`: the platform from that station's LDBWS arrival board, polled
+  for the tracked train. Before, such a stop only ever had its booked
+  platform (`platformBasis: "booked"`), because departure boards never list
+  it.
+- Only a unique, fresh (at most 10 minutes old) match counts, by RSID and
+  booked arrival time (else operator, origin and time), as for departure
+  boards. A cancelled arrival keeps its platform with `platformStatus:
+  "cancelled"`. `platformChanged` compares it with `bookedPlatform`.
+  `board` (the departure board's row) is unchanged and stays `null` there.
+
 ## 2026-10-24: Tube access legs charge a change between branches
 
 Additive fields, changed estimates. DS-MCP needs no change. See

@@ -499,7 +499,20 @@ pub async fn build_journey_stops_batch(
         trains.dedup();
         crate::data::stop_board::tracked_boards_for_trains(pool, &trains).await?
     };
-    let board_index = crate::data::stop_board::BoardIndex::with_tracked(&board_rows, &tracked_rows);
+    // And their alighting stops' arrival boards (DS-152).
+    let tracked_arrivals = {
+        let mut trains: Vec<(String, NaiveDate)> = requests
+            .iter()
+            .zip(&built)
+            .filter(|(_, stops)| matches!(stops, Ok(Some(_))))
+            .map(|(request, _)| (request.train_uid.to_string(), request.service_date))
+            .collect();
+        trains.sort();
+        trains.dedup();
+        crate::data::stop_board::tracked_arrivals_for_trains(pool, &trains).await?
+    };
+    let board_index = crate::data::stop_board::BoardIndex::with_tracked(&board_rows, &tracked_rows)
+        .with_tracked_arrivals(&tracked_arrivals);
     // The train's own RSID and operator, only when there is a board to
     // match against.
     let board_keys = if board_index.is_empty() {
