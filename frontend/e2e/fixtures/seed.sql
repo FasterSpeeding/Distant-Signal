@@ -96,7 +96,15 @@ ON CONFLICT (line_id) DO UPDATE SET
 INSERT INTO line_status_history (line_id, statuses, computed_at)
 VALUES
   ('lner-ecml', '[{"severity":9,"reason":"Fixture: signalling problems near Peterborough","validity":{"from_date":"2026-09-17T06:00:00Z","to_date":null,"is_now":true}}]'::jsonb, NOW() - INTERVAL '2 hours'),
-  ('lner-ecml', '[{"severity":10,"reason":"Good Service","validity":{"from_date":"2026-09-16T00:00:00Z","to_date":"2026-09-17T06:00:00Z","is_now":false}}]'::jsonb, NOW() - INTERVAL '1 day');
+  ('lner-ecml', '[{"severity":10,"reason":"Good Service","validity":{"from_date":"2026-09-16T00:00:00Z","to_date":"2026-09-17T06:00:00Z","is_now":false}}]'::jsonb, NOW() - INTERVAL '1 day'),
+  -- Past statuses in the three severity groups no current status shows
+  -- (severe, planned, informational), so the history page renders a
+  -- `StatusBadge` in all five and accessibility.spec.ts's axe sweep checks
+  -- every severity pill's contrast in both schemes. History only: the
+  -- line's current status, and so every other page, is unchanged.
+  ('lner-ecml', '[{"severity":6,"reason":"Fixture: a points failure at Grantham","validity":{"from_date":"2026-09-15T16:00:00Z","to_date":"2026-09-15T19:00:00Z","is_now":false}}]'::jsonb, NOW() - INTERVAL '1 day 3 hours'),
+  ('lner-ecml', '[{"severity":4,"reason":"Fixture: engineering work between Peterborough and Grantham","validity":{"from_date":"2026-09-15T00:00:00Z","to_date":"2026-09-15T05:00:00Z","is_now":false}}]'::jsonb, NOW() - INTERVAL '1 day 6 hours'),
+  ('lner-ecml', '[{"severity":0,"reason":"Fixture: a special timetable for an event at York","validity":{"from_date":"2026-09-14T18:00:00Z","to_date":"2026-09-14T23:00:00Z","is_now":false}}]'::jsonb, NOW() - INTERVAL '1 day 9 hours');
 
 -- ---------------------------------------------------------------------
 -- One TOC, so /operators has a card to search (list-filters.spec.ts)
