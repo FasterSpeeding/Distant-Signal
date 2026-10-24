@@ -212,8 +212,8 @@ ON CONFLICT (incident_id) DO UPDATE SET
 -- order matters) + live state + one event
 -- ---------------------------------------------------------------------
 -- The origin platform (`trains.platform`/`planned_platform`) has changed,
--- 6 to 9, so the train page shows the longest platform badge there is
--- ("Platform 9 (changed from 6)") in both the progress line and the
+-- 6 to 9, so the train page shows a changed platform badge (6 struck
+-- through, then 9; `PlatformBadge`) in both the progress line and the
 -- calling-point table: e2e/journey-timeline.spec.ts checks no badge is
 -- cut short at phone widths.
 INSERT INTO trains (train_uid, service_date, origin_crs, scheduled_departure, destination_crs, calling_points, matched_line_id, schedule_matched_at, train_id, resolved_at, created_at, platform, planned_platform)
