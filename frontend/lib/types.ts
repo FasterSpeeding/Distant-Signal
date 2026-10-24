@@ -3276,7 +3276,7 @@ export interface TransitLineTimetable {
 
 /** A delegated-access scope a connected app may hold
  * (`crates/api/src/auth/delegated.rs::Scope`). */
-export type ConnectedAppScope = 'journeys:read' | 'journeys:write' | 'journeys:delete';
+export type ConnectedAppScope = 'journeys:read' | 'journeys:write' | 'journeys:delete' | 'preferences:read';
 
 /** One app the user connected (`GET /public/account/connected-apps`,
  * `crates/api/src/routes/connected_apps.rs::GrantView`). */

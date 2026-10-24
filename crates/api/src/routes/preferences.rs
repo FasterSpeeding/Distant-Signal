@@ -14,6 +14,7 @@ use serde::Serialize;
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
+use crate::auth::delegated::{DelegatedOrSessionUser, PreferencesReadScope};
 use crate::data::{custom_lines, notification_settings, preferences, queries, reference};
 
 pub fn router() -> Router {
@@ -197,11 +198,13 @@ impl From<notification_settings::NotificationSettings> for NotificationPreferenc
     }
 }
 
+/// Also a delegated route (`preferences:read`, DS-153): a connected app the
+/// user granted it may read these settings, never change them.
 async fn get_notification_preferences(
     State(app): State<App>,
-    user: AuthenticatedUser,
+    user: DelegatedOrSessionUser<PreferencesReadScope>,
 ) -> Result<Json<NotificationPreferences>, (StatusCode, String)> {
-    let settings = notification_settings::get(&app.database, &user.id)
+    let settings = notification_settings::get(&app.database, &user.user_id)
         .await
         .map_err(internal_error)?;
     Ok(Json(settings.into()))

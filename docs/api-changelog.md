@@ -39,6 +39,11 @@ routes. DS-MCP needs no change.
   `snoozedUntil` (RFC 3339, at most a week ahead, else `400`; `null` to
   resume): pushes are held as in quiet hours until then. It reads as
   `null` once past.
+- New delegated scope `preferences:read`: a connected app holding it may
+  read `GET /public/preferences/notifications` on the delegated listener
+  (read only). Additive; DS-MCP needs it in its client's `maxScopes`, in
+  its token request and in a tool before it can use it
+  (docs/connected-apps.md).
 - **New: `PUT /public/preferences/pinned-lines/{lineId}/alerts`**
   `{notify}`: whether a pinned line's status changes are pushed. Pinning
   and alerting are separate; every existing pin alerts, and so does a new

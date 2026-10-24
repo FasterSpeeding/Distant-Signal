@@ -85,6 +85,24 @@ and every delegated bearer is refused.
   with Disconnect, and "Recently deleted by the assistant": what a client
   deleted in the last 30 days.
 
+## Reading notification settings (`preferences:read`)
+
+DS-153 adds a fourth scope, read only: `preferences:read` lets a client
+read `GET /public/preferences/notifications` (every push switch, the delay
+threshold, quiet hours and any pause) on the delegated listener. It cannot
+change them; there is no delegated write to preferences.
+
+To turn it on for ds-mcp:
+
+1. Add `preferences:read` to the client's `maxScopes` in the chart values
+   and deploy. Nothing else in DS changes.
+2. ds-mcp requests the scope in its token exchange (the token's `scope`
+   must include it) and adds a tool that calls the route. That is ds-mcp's
+   change, not this repo's.
+3. Existing grants do not include it. A user who wants it connects the app
+   again from the consent page, which lists "See your notification
+   settings" among the scopes; the grant notice says so too.
+
 ## Revocation
 
 | Trigger | Effect |

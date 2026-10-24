@@ -643,6 +643,77 @@ async fn delegated_reads_need_an_active_grant_and_the_scope() {
     cleanup(&pool, prefix).await;
 }
 
+/// DS-153: `preferences:read` reads the notification settings, and only
+/// reads them.
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
+async fn a_delegated_client_may_read_the_notification_settings_with_their_scope() {
+    let pool = connect().await;
+    let prefix = "TEST-DLG-PREFS-";
+    cleanup(&pool, prefix).await;
+    let h = harness(pool.clone()).await;
+    let user = format!("{prefix}user");
+    let cookie = seed_user(&pool, &user, &format!("{prefix}s1")).await;
+    let uri = "/public/preferences/notifications";
+    let reply = send(
+        &h,
+        "PUT",
+        uri,
+        &Auth::Cookie(&cookie),
+        Some(json!({ "trainDelay": false })),
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+
+    // A grant without the scope, then a token without it: refused.
+    grant(&h, &cookie, &["journeys:read"]).await;
+    let reply = send(
+        &h,
+        "GET",
+        uri,
+        &Auth::Bearer(&token(&h, &user, "journeys:read preferences:read", 0)),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.text);
+    assert_eq!(reply.error(), "insufficient_scope");
+
+    grant(&h, &cookie, &["journeys:read", "preferences:read"]).await;
+    let reply = send(
+        &h,
+        "GET",
+        uri,
+        &Auth::Bearer(&token(&h, &user, "journeys:read", 0)),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.text);
+    assert_eq!(reply.error(), "insufficient_scope");
+
+    let read = token(&h, &user, "preferences:read", 0);
+    let reply = send(&h, "GET", uri, &Auth::Bearer(&read), None, &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+    assert_eq!(reply.json()["trainDelay"], json!(false));
+    assert_eq!(reply.json()["journeySuggestions"], json!(true));
+
+    // Read only: the PUT is not a delegated route.
+    let reply = send(
+        &h,
+        "PUT",
+        uri,
+        &Auth::Bearer(&read),
+        Some(json!({ "trainDelay": true })),
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.text);
+    assert_eq!(reply.error(), "insufficient_scope");
+    cleanup(&pool, prefix).await;
+}
+
 #[tokio::test]
 #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
 async fn revocation_takes_effect_on_the_next_request() {

@@ -861,24 +861,33 @@ async fn sample_forward_queue(pool: &PgPool, now: DateTime<Utc>) {
 /// The push a new delegated-access grant sends to each of the user's
 /// devices: who can now do what, and where to disconnect it.
 fn grant_notice_payload(grant: &queries::NewGrantRow) -> NotificationPayload {
+    let has = |scope: &str| grant.scopes.iter().any(|s| s == scope);
     let abilities: Vec<&str> = [
         ("journeys:write", "save"),
         ("journeys:read", "read"),
         ("journeys:delete", "delete"),
     ]
     .into_iter()
-    .filter(|(scope, _)| grant.scopes.iter().any(|s| s == scope))
+    .filter(|(scope, _)| has(scope))
     .map(|(_, verb)| verb)
     .collect();
-    let what = match abilities.as_slice() {
-        [] => "use".to_string(),
-        [only] => (*only).to_string(),
-        [first @ .., last] => format!("{} and {last}", first.join(", ")),
+    let journeys = match abilities.as_slice() {
+        [] => None,
+        [only] => Some(format!("{only} your journeys")),
+        [first @ .., last] => Some(format!("{} and {last} your journeys", first.join(", "))),
+    };
+    // `preferences:read` (DS-153): read only.
+    let settings = has("preferences:read").then_some("see your notification settings");
+    let what = match (journeys, settings) {
+        (Some(journeys), Some(settings)) => format!("{journeys}, and {settings}"),
+        (Some(journeys), None) => journeys,
+        (None, Some(settings)) => settings.to_string(),
+        (None, None) => "use your journeys".to_string(),
     };
     NotificationPayload {
         title: format!("{} connected", grant.client_display_name),
         body: format!(
-            "{} can now {what} your journeys. Not you? Disconnect it in Connected apps.",
+            "{} can now {what}. Not you? Disconnect it in Connected apps.",
             grant.client_display_name
         ),
         url: "/account/connected-apps".to_string(),
@@ -3284,6 +3293,26 @@ mod grant_notice_tests {
         assert!(
             all.body
                 .contains("can now save, read and delete your journeys.")
+        );
+    }
+
+    #[test]
+    fn the_notice_names_reading_the_notification_settings() {
+        let both = grant_notice_payload(&grant(&["journeys:read", "preferences:read"]));
+        assert!(
+            both.body.contains(
+                "can now read your journeys, and see your notification settings. Not you?"
+            ),
+            "{}",
+            both.body
+        );
+        let alone = grant_notice_payload(&grant(&["preferences:read"]));
+        assert!(
+            alone
+                .body
+                .contains("can now see your notification settings. Not you?"),
+            "{}",
+            alone.body
         );
     }
 }
