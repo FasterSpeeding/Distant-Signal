@@ -628,8 +628,11 @@ mod db_tests {
         }
 
         // A clear before the current rail day's 02:00 is no longer listed.
-        let tomorrow = now + Duration::days(1);
-        let rows = recently_cleared(&pool, tomorrow, &Placement::Everywhere)
+        // Two days on, not one: 24 hours after a clear made in the hour
+        // after 02:00 BST on the night the clocks go back is 01:xx GMT,
+        // still the same rail day.
+        let later = now + Duration::days(2);
+        let rows = recently_cleared(&pool, later, &Placement::Everywhere)
             .await
             .expect("query");
         assert_eq!(ids(&rows), Vec::<String>::new());
