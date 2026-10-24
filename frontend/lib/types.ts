@@ -418,6 +418,10 @@ export interface Preferences {
   pinnedLines: string[];
   pinnedStations: string[];
   pinnedOperators: string[];
+  /** Of `pinnedLines`, those whose status changes are not pushed
+   * (`PUT /preferences/pinned-lines/{id}/alerts`). Absent from an older
+   * backend. */
+  silentPinnedLines?: string[];
 }
 
 export interface LineSummary {

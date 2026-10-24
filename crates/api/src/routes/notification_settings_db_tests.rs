@@ -405,3 +405,105 @@ async fn notification_preferences_read_as_defaults_and_change_only_what_is_sent(
     assert_eq!(body["quietHours"], Value::Null);
     assert_eq!(body["trainDelay"], json!(false), "kept");
 }
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database)"]
+async fn a_pinned_lines_alerts_switch_survives_repinning() {
+    const USER: &str = "TEST-NOTIFSET-LINE-ALERTS";
+    const OTHER: &str = "TEST-NOTIFSET-LINE-ALERTS-OTHER";
+    const LINE: &str = "test-notifset-tfl-a";
+    const SECOND: &str = "test-notifset-tfl-b";
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool, &[USER, OTHER]).await;
+    let _lines = FixtureCleanup::new(
+        &pool,
+        [format!(
+            "DELETE FROM line_status WHERE line_id IN ('{LINE}', '{SECOND}')"
+        )],
+    )
+    .await;
+    for line in [LINE, SECOND] {
+        exec(
+            &pool,
+            &format!(
+                "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, source) \
+                 VALUES ('{line}', '{line}', 'tube', '{{TfL}}', '[]', 'tfl')"
+            ),
+        )
+        .await;
+    }
+    let token = seed_session(&pool, USER).await;
+    let other_token = seed_session(&pool, OTHER).await;
+    let router = router(pool.clone());
+    let alerts = format!("/public/preferences/pinned-lines/{LINE}/alerts");
+
+    let (status, _) = call(
+        &router,
+        "PUT",
+        "/public/preferences/pinned-lines",
+        Some(&token),
+        Some(json!([LINE])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, prefs) = call(&router, "GET", "/public/preferences", Some(&token), None).await;
+    assert_eq!(prefs["pinnedLines"], json!([LINE]));
+    assert_eq!(prefs["silentPinnedLines"], json!([]), "a new pin alerts");
+
+    // Not pinned by the caller: 404. An unknown field: refused.
+    let (status, _) = call(
+        &router,
+        "PUT",
+        &alerts,
+        Some(&other_token),
+        Some(json!({ "notify": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &router,
+        "PUT",
+        &alerts,
+        Some(&token),
+        Some(json!({ "notify": false, "pinned": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let (status, _) = call(
+        &router,
+        "PUT",
+        &alerts,
+        Some(&token),
+        Some(json!({ "notify": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // Pinning another line (the whole list is PUT again) keeps it silent.
+    let (status, _) = call(
+        &router,
+        "PUT",
+        "/public/preferences/pinned-lines",
+        Some(&token),
+        Some(json!([SECOND, LINE])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, prefs) = call(&router, "GET", "/public/preferences", Some(&token), None).await;
+    assert_eq!(prefs["pinnedLines"], json!([SECOND, LINE]), "order kept");
+    assert_eq!(prefs["silentPinnedLines"], json!([LINE]));
+
+    // Unpinned and pinned again: a fresh pin, which alerts.
+    for list in [json!([SECOND]), json!([SECOND, LINE])] {
+        call(
+            &router,
+            "PUT",
+            "/public/preferences/pinned-lines",
+            Some(&token),
+            Some(list),
+        )
+        .await;
+    }
+    let (_, prefs) = call(&router, "GET", "/public/preferences", Some(&token), None).await;
+    assert_eq!(prefs["silentPinnedLines"], json!([]));
+}

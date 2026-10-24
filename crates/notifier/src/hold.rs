@@ -286,7 +286,7 @@ pub(crate) struct HoldRow {
     pub quiet_hours_timezone: Option<String>,
     /// The user's switches still allow this push (and, for a train, its
     /// subscription still has its pushes on; for a line, it is still
-    /// pinned).
+    /// pinned with its alerts on).
     pub still_wanted: bool,
     /// The rank of the last line push delivered for this line.
     pub line_last_rank: Option<i16>,
@@ -365,7 +365,8 @@ async fn held_rows(pool: &PgPool) -> anyhow::Result<Vec<HoldRow>> {
                 p.quiet_hours_start, p.quiet_hours_end, p.quiet_hours_timezone, \
                 CASE WHEN h.line_id IS NOT NULL THEN \
                          EXISTS (SELECT 1 FROM pinned_lines pl \
-                                 WHERE pl.user_id = h.user_id AND pl.line_id = h.line_id) \
+                                 WHERE pl.user_id = h.user_id AND pl.line_id = h.line_id \
+                                   AND pl.notify) \
                          AND COALESCE(p.line_status, TRUE) \
                      ELSE COALESCE(ts.notifications_enabled, FALSE) \
                          AND CASE h.train_status \

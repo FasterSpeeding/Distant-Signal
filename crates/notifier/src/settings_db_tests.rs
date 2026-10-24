@@ -261,6 +261,53 @@ async fn line_pushes_respect_the_line_status_switch() {
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL (a migrated database)"]
+async fn a_pinned_line_with_its_alerts_off_sends_no_line_push() {
+    const USER: &str = "TEST-NOTIFSET-LINE-NOTIFY";
+    const UID: &str = "TEST-NOTIFSET-LINE2";
+    const LINE: &str = "test-notifset-line-notify";
+    const OTHER_LINE: &str = "test-notifset-line-notify-2";
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool, USER, UID).await;
+    seed(&pool, USER, UID).await;
+    // The column's default is the backfill: a pin made without it alerts.
+    exec(
+        &pool,
+        &format!(
+            "INSERT INTO pinned_lines (user_id, line_id) VALUES ('{USER}', '{LINE}'), \
+             ('{USER}', '{OTHER_LINE}')"
+        ),
+    )
+    .await;
+    assert_eq!(
+        queries::pinned_users_for_line(&pool, LINE)
+            .await
+            .expect("users"),
+        [USER]
+    );
+    exec(
+        &pool,
+        &format!(
+            "UPDATE pinned_lines SET notify = FALSE WHERE user_id = '{USER}' AND line_id = '{LINE}'"
+        ),
+    )
+    .await;
+    assert!(
+        queries::pinned_users_for_line(&pool, LINE)
+            .await
+            .expect("users")
+            .is_empty()
+    );
+    assert_eq!(
+        queries::pinned_users_for_line(&pool, OTHER_LINE)
+            .await
+            .expect("users"),
+        [USER],
+        "only that line is silenced"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database)"]
 async fn the_needs_attention_switch_reaches_the_template_sweep() {
     const USER: &str = "TEST-NOTIFSET-TEMPLATE";
     const UID: &str = "TEST-NOTIFSET-TPL1";

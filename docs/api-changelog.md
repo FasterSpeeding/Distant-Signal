@@ -35,6 +35,14 @@ routes. DS-MCP needs no change.
   with every setting instead of echoing the body. `400` for a threshold
   outside the four, quiet hours that start and end at the same time or
   an unknown zone; unknown fields are still refused (`422`).
+- **New: `PUT /public/preferences/pinned-lines/{lineId}/alerts`**
+  `{notify}`: whether a pinned line's status changes are pushed. Pinning
+  and alerting are separate; every existing pin alerts, and so does a new
+  one until this says otherwise. `204`; `404` when the caller has not
+  pinned that line. `PUT /public/preferences/pinned-lines` keeps the
+  switch of every line it keeps pinned.
+- `GET /public/preferences` gains `silentPinnedLines`: the pinned lines
+  whose alerts are off.
 
 ## 2026-10-23: `/Trips/plan` takes a TfL stop as its origin or destination
 

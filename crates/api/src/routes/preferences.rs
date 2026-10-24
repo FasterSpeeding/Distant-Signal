@@ -24,6 +24,10 @@ pub fn router() -> Router {
             axum::routing::put(put_pinned_lines),
         )
         .route(
+            "/preferences/pinned-lines/{line_id}/alerts",
+            axum::routing::put(put_pinned_line_alerts),
+        )
+        .route(
             "/preferences/pinned-stations",
             axum::routing::put(put_pinned_stations),
         )
@@ -213,6 +217,9 @@ struct PreferencesResponse {
     pinned_lines: Vec<String>,
     pinned_stations: Vec<String>,
     pinned_operators: Vec<String>,
+    /// Of `pinned_lines`, the ones whose status pushes are off
+    /// (`PUT /preferences/pinned-lines/{lineId}/alerts`, DS-153). Additive.
+    silent_pinned_lines: Vec<String>,
 }
 
 async fn get_preferences(
@@ -269,6 +276,12 @@ async fn get_preferences(
         readable_custom_ids,
         tfl.into_iter().map(|l| l.id).chain(transit),
     );
+    let silent_pinned_lines = preferences::list_silent_pinned_line_ids(&app.database, &user.id)
+        .await
+        .map_err(internal_error)?
+        .into_iter()
+        .filter(|id| pinned_lines.contains(id))
+        .collect();
 
     let pinned_station_candidates = preferences::list_pinned_station_crs(&app.database, &user.id)
         .await
@@ -301,6 +314,7 @@ async fn get_preferences(
         pinned_lines,
         pinned_stations,
         pinned_operators,
+        silent_pinned_lines,
     }))
 }
 
@@ -364,6 +378,36 @@ async fn put_pinned_lines(
         .await
         .map_err(internal_error)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT /preferences/pinned-lines/{lineId}/alerts` `{notify}`: whether a
+/// pinned line's status changes are pushed (DS-153). Pinning and alerting
+/// are separate: a line can stay on the home page without pushes. 204;
+/// 404 when the caller has not pinned that line. Unknown fields are
+/// refused.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PinnedLineAlerts {
+    notify: bool,
+}
+
+async fn put_pinned_line_alerts(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    axum::extract::Path(line_id): axum::extract::Path<String>,
+    Json(body): Json<PinnedLineAlerts>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if line_id.len() > MAX_PINNED_ID_LENGTH {
+        return Err((StatusCode::NOT_FOUND, "That line isn't pinned.".to_string()));
+    }
+    if preferences::set_pinned_line_notify(&app.database, &user.id, &line_id, body.notify)
+        .await
+        .map_err(internal_error)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, "That line isn't pinned.".to_string()))
+    }
 }
 
 async fn put_pinned_stations(

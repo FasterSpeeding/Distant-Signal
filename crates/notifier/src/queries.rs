@@ -1143,9 +1143,9 @@ pub(crate) fn register_forward_queue_metrics() {
     );
 }
 
-/// The users to tell about `line_id`'s change: everyone who pinned it,
-/// unless they turned line pushes off (`notification_preferences.line_status`,
-/// DS-153).
+/// The users to tell about `line_id`'s change: everyone who pinned it with
+/// its alerts on (`pinned_lines.notify`), unless they turned line pushes
+/// off altogether (`notification_preferences.line_status`, DS-153).
 pub(crate) async fn pinned_users_for_line(
     pool: &PgPool,
     line_id: &str,
@@ -1153,7 +1153,7 @@ pub(crate) async fn pinned_users_for_line(
     let rows = sqlx::query_scalar::<_, String>(
         "SELECT pl.user_id FROM pinned_lines pl \
          LEFT JOIN notification_preferences np ON np.user_id = pl.user_id \
-         WHERE pl.line_id = $1 AND COALESCE(np.line_status, TRUE)",
+         WHERE pl.line_id = $1 AND pl.notify AND COALESCE(np.line_status, TRUE)",
     )
     .bind(line_id)
     .fetch_all(pool)
