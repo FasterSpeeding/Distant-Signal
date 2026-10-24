@@ -477,8 +477,8 @@ pub enum PlatformBasis {
     /// A live departure board shows it (`platform`). Boards show the
     /// booked platform until it changes, so this is not a confirmation.
     Board,
-    /// Confirmed by the operator. Needs the Darwin Push Port (phase 3);
-    /// never served yet.
+    /// Confirmed by the operator: the Darwin Push Port's `conf` flag for
+    /// this stop's platform (DS-152, phase 3).
     Confirmed,
 }
 
@@ -597,11 +597,24 @@ pub struct JourneyStop {
     /// field -- "not known", never guessed. Since DS-127 it is what
     /// `platform_changed` compares against when both are known.
     pub booked_platform: Option<String>,
-    /// What `display_platform` rests on (DS-127): `board` when a live board
-    /// shows `platform`, `booked` when only `booked_platform` is known
+    /// What `display_platform` rests on (DS-127): `confirmed` when the
+    /// Darwin Push Port confirmed `platform` (DS-152), `board` when a live
+    /// board or the Push Port shows it unconfirmed, `booked` when only
+    /// `booked_platform` is known
     /// (show it as provisional), `None` when neither is. Set by
     /// `api::data::journey::apply_platform_basis`.
     pub platform_basis: Option<PlatformBasis>,
+    /// Darwin's Push Port has a platform for this stop but suppresses it
+    /// from public display (`platsup`, or a station CIS's `cisPlatsup`;
+    /// DS-152). That platform is not served: `platform` stays as any board
+    /// shows it (boards hide it too), and `displayPlatform` falls back to
+    /// the booked one. So "hidden" and "not allocated" differ: `true` here
+    /// means a platform exists but is not yet public.
+    pub platform_suppressed: bool,
+    /// The Push Port confirmed `platform` (`conf`); turns `platform_basis`
+    /// into `confirmed`. Internal: the wire has `platformBasis`.
+    #[serde(skip)]
+    pub platform_confirmed: bool,
     /// The platform to show (DS-127): the live `platform` when known, else
     /// `booked_platform`. A server-side convenience so every client applies
     /// the same precedence; `platform` and `booked_platform` keep their
@@ -691,6 +704,8 @@ impl JourneyStop {
             booked_platform: cp.platform.clone(),
             // Both set by `apply_platform_basis`, after the board overlay.
             platform_basis: None,
+            platform_suppressed: false,
+            platform_confirmed: false,
             display_platform: None,
             live_status: None,
             late_minutes: None,

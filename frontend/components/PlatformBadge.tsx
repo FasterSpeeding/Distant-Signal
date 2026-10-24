@@ -51,12 +51,22 @@ import { PhoneLabel } from './PhoneLabel';
  * too ("Platform 4 (booked, not confirmed)"). `data-platform-basis`
  * marks it for tests.
  *
+ * A live platform on `platformBasis` `confirmed` (DS-152: the Darwin
+ * Push Port's confirmed flag) keeps the board style plus a check glyph,
+ * with the tooltip "Platform confirmed by the operator" and a visually
+ * hidden ", confirmed" ("Platform 4, confirmed"); the glyph itself is
+ * hidden from screen readers. A changed platform that is also confirmed
+ * stays blue, with the check.
+ *
  * `compact` (under a "Platform" column header, `JourneyTimeline`) shows
  * the short form below `sm`: "4", or "9 (was 6)" for a change, so the
  * change is still in words. Screen readers keep the full label
  * (`PhoneLabel`). `data-platform-badge` opts the badge out of Mantine's
  * ellipsis (`app/globals.css`): it is never cut short, whatever its
  * width. */
+/** The confirmed badge's tooltip (DS-152). */
+export const CONFIRMED_PLATFORM_TOOLTIP = 'Platform confirmed by the operator';
+
 /** The booked badge's tooltip (DS-127). */
 export const BOOKED_PLATFORM_TOOLTIP = 'Booked platform, not yet shown on station boards';
 
@@ -120,6 +130,7 @@ export function PlatformBadge({
     );
   }
 
+  const confirmed = platformBasis === 'confirmed';
   return (
     <Badge
       color={changed ? 'blue' : 'gray'}
@@ -127,9 +138,12 @@ export function PlatformBadge({
       tt="none"
       data-platform-badge
       data-platform-changed={changed}
-      data-platform-basis="board"
+      data-platform-basis={confirmed ? 'confirmed' : 'board'}
+      title={confirmed ? CONFIRMED_PLATFORM_TOOLTIP : undefined}
+      leftSection={confirmed ? <span aria-hidden="true">✓</span> : undefined}
     >
       {label}
+      {confirmed && <VisuallyHidden>, confirmed</VisuallyHidden>}
     </Badge>
   );
 }

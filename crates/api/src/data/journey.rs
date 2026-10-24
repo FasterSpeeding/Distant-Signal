@@ -528,6 +528,19 @@ pub async fn build_journey_stops_batch(
         trains.dedup();
         crate::data::stop_board::board_keys_for_trains(pool, &trains).await?
     };
+    // The Darwin Push Port's locations for these trains (DS-152); empty
+    // while darwin-relay is off.
+    let darwin_calls = {
+        let mut trains: Vec<(String, NaiveDate)> = requests
+            .iter()
+            .zip(&built)
+            .filter(|(_, stops)| matches!(stops, Ok(Some(_))))
+            .map(|(request, _)| (request.train_uid.to_string(), request.service_date))
+            .collect();
+        trains.sort();
+        trains.dedup();
+        ds_store::darwin::calls_for_trains(pool, &trains).await?
+    };
     let now = Utc::now();
 
     for (request, stops) in requests.iter().zip(built.iter_mut()) {
@@ -557,6 +570,14 @@ pub async fn build_journey_stops_batch(
             Some((request.train_uid, request.service_date)),
             now,
         );
+        // The Push Port (DS-152): every stop Darwin knows, with its
+        // confirmed and suppressed flags. After the board match, whose
+        // older rows it replaces.
+        if let Some(calls) =
+            darwin_calls.get(&(request.train_uid.to_string(), request.service_date))
+        {
+            crate::data::pushport_platform::apply_pushport_platforms(stops, calls);
+        }
         apply_platform_basis(stops);
         match request.current_delay_minutes {
             Some(delay) => apply_delay_estimates(stops, Some(delay)),
@@ -1249,7 +1270,8 @@ const MAY_HAVE_ARRIVED_THRESHOLD: Duration = Duration::minutes(15);
 /// `platform_changed` (DS-127, spec section 6.2). Run after every platform
 /// overlay (`apply_origin_platform`, the board match).
 ///
-/// - A live `platform` is shown, on basis `board`.
+/// - A live `platform` is shown, on basis `confirmed` when the Darwin
+///   Push Port confirmed it (DS-152, `pushport_platform`), else `board`.
 /// - Else the `booked_platform`, on basis `booked`: provisional, nothing
 ///   live has shown it.
 /// - `platform_changed`: against `booked_platform` when both are known
@@ -1266,6 +1288,9 @@ pub fn apply_platform_basis(stops: &mut [JourneyStop]) {
             stop.platform_changed = platforms_differ(live, booked);
         }
         (stop.platform_basis, stop.display_platform) = match (&stop.platform, booked) {
+            (Some(live), _) if stop.platform_confirmed => {
+                (Some(PlatformBasis::Confirmed), Some(live.clone()))
+            }
             (Some(live), _) => (Some(PlatformBasis::Board), Some(live.clone())),
             (None, Some(booked)) => (Some(PlatformBasis::Booked), Some(booked.to_string())),
             (None, None) => (None, None),
@@ -1507,6 +1532,8 @@ pub(crate) mod test_support {
             platform_status: None,
             booked_platform: None,
             platform_basis: None,
+            platform_suppressed: false,
+            platform_confirmed: false,
             display_platform: None,
             live_status: None,
             late_minutes: None,
@@ -1549,6 +1576,8 @@ mod tests {
             platform_status: None,
             booked_platform: None,
             platform_basis: None,
+            platform_suppressed: false,
+            platform_confirmed: false,
             display_platform: None,
             live_status: None,
             late_minutes: None,

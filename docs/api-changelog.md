@@ -3,6 +3,31 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-26: `platformBasis: "confirmed"` and `platformSuppressed` from the Darwin Push Port (DS-152)
+
+Additive. DS-MCP needs no change; it may show "confirmed". Pre-departure
+prediction phase 3 (docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md,
+section 6.2 item 4), off by default (`darwinRelay.enabled`).
+
+- On `JourneyStop` (tracked trains' journey legs, `GET /Train/{id}` and the
+  by-uid endpoint), `platform` can now come from the Darwin Push Port for
+  any stop of the train, terminating and set-down stops included, not
+  only from a station's departure board. A board row polled after
+  Darwin's last change that shows another platform still wins.
+- `platformBasis` is now served as `"confirmed"` (reserved since DS-127)
+  when the operator confirmed that platform. `"board"` stays the value for
+  a live, unconfirmed one.
+- `platformChanged` compares that platform with `bookedPlatform` as before;
+  without a booked platform, with Darwin's planned one (`plannedPlatform`
+  falls back to it).
+- `platformStatus` is `"cancelled"` when Darwin cancelled the train's call
+  there.
+- New `platformSuppressed: boolean`: Darwin has a platform for this stop
+  but suppresses it from public display (as station screens do). That
+  platform is not served: `platform` stays as any board shows it and
+  `displayPlatform` falls back to the booked one. So a hidden platform and
+  one not yet allocated are told apart. `false` without Push Port data.
+
 ## 2026-10-26: `predictedStart` prefers Darwin's next-working links; joins and divides cap it (DS-152)
 
 Additive; no new field. DS-MCP needs no change. Pre-departure prediction

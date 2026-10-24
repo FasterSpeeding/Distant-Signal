@@ -47,6 +47,42 @@ describe('PlatformBadge', () => {
     });
   });
 
+  // DS-152: a platform the operator confirmed (Darwin Push Port) says so in
+  // words, beside a check glyph that screen readers skip.
+  describe('a confirmed platform', () => {
+    it('shows a check and a "confirmed" label', () => {
+      renderWithMantine(
+        <PlatformBadge
+          platform="4"
+          plannedPlatform="4"
+          platformChanged={false}
+          bookedPlatform="4"
+          platformBasis="confirmed"
+        />,
+      );
+      const badge = screen.getByText('Platform 4').closest('[data-platform-badge]');
+      expect(badge).toHaveAttribute('data-platform-basis', 'confirmed');
+      expect(badge).toHaveAttribute('title', 'Platform confirmed by the operator');
+      expect(badge).toHaveTextContent('Platform 4, confirmed');
+      expect(screen.getByText('✓')).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    it('keeps a changed platform blue and in words', () => {
+      renderWithMantine(
+        <PlatformBadge
+          platform="9"
+          plannedPlatform="6"
+          platformChanged={true}
+          bookedPlatform="6"
+          platformBasis="confirmed"
+        />,
+      );
+      const badge = screen.getByText('Platform 9 (changed from 6)').closest('[data-platform-badge]');
+      expect(badge).toHaveAttribute('data-platform-changed', 'true');
+      expect(badge).toHaveAttribute('data-platform-basis', 'confirmed');
+    });
+  });
+
   it('renders nothing when no platform is known', () => {
     renderWithMantine(<PlatformBadge platform={null} plannedPlatform={null} platformChanged={false} />);
     expect(screen.queryByText(/Platform/)).not.toBeInTheDocument();

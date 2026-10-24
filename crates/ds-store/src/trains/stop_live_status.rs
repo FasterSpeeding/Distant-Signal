@@ -151,6 +151,8 @@ mod tests {
             platform_status: None,
             booked_platform: None,
             platform_basis: None,
+            platform_suppressed: false,
+            platform_confirmed: false,
             display_platform: None,
             live_status: None,
             late_minutes: None,

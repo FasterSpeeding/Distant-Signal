@@ -31,6 +31,7 @@ pub mod line_train_summaries;
 pub mod notifications;
 pub mod operators;
 pub mod preferences;
+pub mod pushport_platform;
 pub mod queries;
 pub mod recently_cleared;
 pub mod reconciliation;
