@@ -137,7 +137,19 @@ async fn list_networks(State(app): State<App>) -> Reply {
     let networks = read::list_networks(&app.database, &enabled(&app))
         .await
         .map_err(internal_error)?;
-    reply(NETWORKS_CACHE, json!({ "networks": to_json(&networks)? }))
+    // `tripPlanning` (DS-164): whether `/Trips/plan` plans with the network
+    // (`API_TRIP_PLAN_TRANSIT_NETWORKS`), so the planner offers its stops.
+    // Absent while that list is empty, so the body is as before.
+    let planner = crate::data::transit_planning::enabled_networks();
+    let mut body = to_json(&networks)?;
+    if !planner.is_empty()
+        && let Some(list) = body.as_array_mut()
+    {
+        for (entry, network) in list.iter_mut().zip(&networks) {
+            entry["tripPlanning"] = Value::Bool(planner.contains(&network.id));
+        }
+    }
+    reply(NETWORKS_CACHE, json!({ "networks": body }))
 }
 
 #[derive(Debug, Deserialize)]

@@ -833,6 +833,7 @@ mod tests {
             origin_stop: Some(Box::new(stop(from, &[]))),
             destination_stop: Some(Box::new(stop(to, &[]))),
             access: None,
+            transit_walk: None,
         }
     }
 
@@ -863,6 +864,7 @@ mod tests {
                         },
                     )
                     .collect(),
+                scheduled_only: None,
             }],
             capped_by_max_changes: false,
             depart_after_min: None,
@@ -1259,6 +1261,7 @@ mod db_tests {
             origin_stop: None,
             destination_stop: None,
             access: None,
+            transit_walk: None,
         }
     }
 
@@ -1289,6 +1292,7 @@ mod db_tests {
                 live_feasible: None,
                 continues_previous_train: false,
                 via_satisfied_by: Vec::new(),
+                scheduled_only: None,
             }],
             capped_by_max_changes: false,
             depart_after_min: None,
@@ -1351,6 +1355,7 @@ mod db_tests {
                 origin_stop: Some(Box::new(stops[from].clone())),
                 destination_stop: Some(Box::new(stops[to].clone())),
                 access: None,
+                transit_walk: None,
             },
             PlannedLeg::Train { .. } => unreachable!(),
         };
@@ -1369,6 +1374,7 @@ mod db_tests {
                 live_feasible: None,
                 continues_previous_train: false,
                 via_satisfied_by: Vec::new(),
+                scheduled_only: None,
             }],
             capped_by_max_changes: false,
             depart_after_min: None,

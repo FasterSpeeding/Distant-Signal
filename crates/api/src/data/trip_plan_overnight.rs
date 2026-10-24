@@ -225,6 +225,7 @@ mod tests {
             departure_min: dep,
             arrival_min: arr,
             live: None,
+            transit: None,
         }
     }
 
@@ -248,6 +249,7 @@ mod tests {
             live_feasible: None,
             continues_previous_train: false,
             via_satisfied_by: Vec::new(),
+            scheduled_only: None,
         }
     }
 
