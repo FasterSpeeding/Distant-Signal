@@ -432,6 +432,10 @@ fn read_profile(node: &Node) -> Result<Profile, FeedError> {
 }
 
 /// Easter Sunday (the anonymous Gregorian computus).
+#[expect(
+    clippy::many_single_char_names,
+    reason = "the computus's own variable names"
+)]
 fn easter(year: i32) -> Option<NaiveDate> {
     let a = year % 19;
     let b = year / 100;
@@ -751,7 +755,7 @@ fn documents<R: Read + Seek>(
     for name in names {
         let extension = std::path::Path::new(&name)
             .extension()
-            .map(|e| e.to_ascii_lowercase());
+            .map(std::ffi::OsStr::to_ascii_lowercase);
         match extension.as_ref().and_then(|e| e.to_str()) {
             Some("xml") => {}
             Some("zip") => {
@@ -794,9 +798,7 @@ fn documents<R: Read + Seek>(
 /// `OperatingPeriod` start, to its end or the day before a later
 /// document of the same `ServiceCode` starts (a new timetable takes over).
 /// Keyed by (document index, service code).
-fn service_periods(
-    docs: &[Document],
-) -> Result<HashMap<(usize, String), (NaiveDate, NaiveDate)>, FeedError> {
+fn service_periods(docs: &[Document]) -> Result<ServicePeriods, FeedError> {
     let mut by_code: BTreeMap<String, Vec<(NaiveDate, String, usize, NaiveDate)>> = BTreeMap::new();
     for (i, doc) in docs.iter().enumerate() {
         let revision = doc
@@ -858,6 +860,30 @@ fn route_kind(network: &NetworkConfig, name: &str) -> Result<RouteKind, FeedErro
     }
 }
 
+/// The first and last day each (document, service code) serves.
+type ServicePeriods = HashMap<(usize, String), (NaiveDate, NaiveDate)>;
+
+/// A journey pattern of a document, read.
+struct Pattern<'a> {
+    direction: Direction,
+    destination: Option<&'a str>,
+    sections: Vec<&'a str>,
+    profile: Option<&'a Node>,
+}
+
+/// A service of a document, read.
+struct Service<'a> {
+    lines: HashMap<&'a str, RouteKind>,
+    only_line: Option<RouteKind>,
+    patterns: HashMap<&'a str, Pattern<'a>>,
+    profile: Option<&'a Node>,
+    period: (NaiveDate, NaiveDate),
+}
+
+/// A pattern's identity: line, direction and calls (platform, arrival
+/// and departure offsets, pickup, drop-off).
+type PatternKey = (Option<usize>, Direction, Vec<(String, i32, i32, u8, u8)>);
+
 /// Reads one document's journeys into `out`, its stop names into `names`.
 #[expect(
     clippy::too_many_lines,
@@ -868,7 +894,7 @@ fn journeys(
     doc_index: usize,
     doc: &Document,
     network: &NetworkConfig,
-    periods: &HashMap<(usize, String), (NaiveDate, NaiveDate)>,
+    periods: &ServicePeriods,
     window: (NaiveDate, NaiveDate),
     calendar: &HolidayCalendar,
     names: &mut BTreeMap<String, String>,
@@ -925,19 +951,6 @@ fn journeys(
         sections.insert(id, links);
     }
 
-    struct Pattern<'a> {
-        direction: Direction,
-        destination: Option<&'a str>,
-        sections: Vec<&'a str>,
-        profile: Option<&'a Node>,
-    }
-    struct Service<'a> {
-        lines: HashMap<&'a str, RouteKind>,
-        only_line: Option<RouteKind>,
-        patterns: HashMap<&'a str, Pattern<'a>>,
-        profile: Option<&'a Node>,
-        period: (NaiveDate, NaiveDate),
-    }
     let mut services: HashMap<&str, Service<'_>> = HashMap::new();
     for service in root
         .child("Services")
@@ -1196,6 +1209,10 @@ fn journeys(
 
 /// Reads `reader` (the TXC zip) as one network's timetable. See the module
 /// docs.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the module docs' steps 4 and 5 in order: ids, service days, patterns, trips, stops"
+)]
 pub(crate) fn parse<R: Read + Seek>(
     reader: R,
     network: &NetworkConfig,
@@ -1261,8 +1278,7 @@ pub(crate) fn parse<R: Read + Seek>(
         .collect();
 
     // Patterns, numbered in key order (stable for the same content).
-    type Key = (Option<usize>, Direction, Vec<(String, i32, i32, u8, u8)>);
-    let keyed: Vec<(Key, i32)> = all
+    let keyed: Vec<(PatternKey, i32)> = all
         .iter()
         .map(|j| {
             let start = j.calls[0].2;
@@ -1287,7 +1303,7 @@ pub(crate) fn parse<R: Read + Seek>(
             ((line, j.direction, calls), start)
         })
         .collect();
-    let mut by_key: BTreeMap<&Key, Vec<usize>> = BTreeMap::new();
+    let mut by_key: BTreeMap<&PatternKey, Vec<usize>> = BTreeMap::new();
     for (i, (key, _)) in keyed.iter().enumerate() {
         by_key.entry(key).or_default().push(i);
     }

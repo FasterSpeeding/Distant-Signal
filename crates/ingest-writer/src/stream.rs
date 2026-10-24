@@ -101,7 +101,7 @@ impl StreamSpec {
 /// The ingest streams (spec §7.1; D1: no `train-events`). Each
 /// island-of-Ireland poller has its own stream, so its ACL user can produce
 /// only its own schemas (2026-10-08 security review, H1).
-pub const STREAMS: [StreamSpec; 9] = [
+pub const STREAMS: [StreamSpec; 10] = [
     StreamSpec {
         name: "station-samples",
         stream: streams::STATION_SAMPLES,

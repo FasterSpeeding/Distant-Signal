@@ -219,7 +219,7 @@ mod tests {
         NetworkConfig::load("metrolink").unwrap()
     }
 
-    /// NET's rows, copied from NaPTAN area 940 (2026-10-24): no
+    /// NET's rows, copied from `NaPTAN` area 940 (2026-10-24): no
     /// `ShortCommonName`, a ` Tram Stop` suffix and `NET` indicators.
     const NET_ROWS: &str = "ATCOCode,CommonName,ShortCommonName,Indicator,StopType,Status,Longitude,Latitude\n\
         9400ZZNOBCF,Beaconsfield Street Tram Stop,,,MET,active,-1.17079292361,52.97023327015\n\
