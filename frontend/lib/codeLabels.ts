@@ -1,3 +1,4 @@
+import { useEffect, useSyncExternalStore } from 'react';
 import { groupLabels, loadStationGroups } from './stationGroups';
 import {
   isGroupCode,
@@ -182,4 +183,15 @@ export function typedOperatorCode(text: string): string | null {
 export function resetCodeLabels(): void {
   stationLabels.reset();
   operatorLabels.reset();
+}
+
+/** Labels from `cache` for `codes` shown outside a field (a list of picked
+ * codes), looked up once each when unknown; the bare code until then. */
+export function useCodeLabels(cache: CodeLabelCache, codes: readonly string[]): (code: string) => string {
+  useSyncExternalStore(cache.subscribe, cache.version, cache.version);
+  const joined = codes.join('\n');
+  useEffect(() => {
+    for (const code of joined.split('\n')) cache.resolve(code);
+  }, [cache, joined]);
+  return (code) => cache.get(code) ?? code;
 }

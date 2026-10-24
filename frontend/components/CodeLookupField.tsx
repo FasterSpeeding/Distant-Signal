@@ -50,6 +50,8 @@ export interface CodeLookupFieldProps extends Omit<
   fieldName?: string | undefined;
   /** Called with the suggestion a pick chose, beside `onChange`. */
   onSuggestionPick?: ((suggestion: Suggestion) => void) | undefined;
+  /** Called with each new list of live suggestions. */
+  onSuggestionsChange?: ((suggestions: Suggestion[]) => void) | undefined;
   comboboxProps?: ComboboxProps | undefined;
   placeholder?: string | undefined;
   'aria-label'?: string | undefined;
@@ -105,6 +107,7 @@ export function CodeLookupField({
   knownLabel,
   fieldName,
   onSuggestionPick,
+  onSuggestionsChange,
   comboboxProps,
   onBlur,
   label,
@@ -117,14 +120,22 @@ export function CodeLookupField({
   const readOnly = inputProps.readOnly === true;
   const inputRef = useRef<HTMLInputElement>(null);
   const id = useId(idProp);
+  /** Whether a `value` set from outside reads as a code (shown as picked)
+   * rather than text still being typed (a reordered list's draft). */
+  function isCodeValue(next: string): boolean {
+    return !parseTypedCode || parseTypedCode(next) !== null || labels.get(next) !== undefined;
+  }
   const [selected, setSelected] = useState<string | null>(() => {
     if (!value.trim()) return null;
     if (knownLabel) labels.set(value, knownLabel);
-    return value.trim();
+    return isCodeValue(value) ? value.trim() : null;
   });
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState(() => (value.trim() && selected === null ? value : ''));
   const [seen, setSeen] = useState(value);
   const [announcement, setAnnouncement] = useState<Announcement>(null);
+  // Left with typed text before its search came back: an exact match in
+  // the results, when they come, is still picked.
+  const [awaitingMatch, setAwaitingMatch] = useState(false);
 
   // A new `value` from the parent that isn't what this field last sent
   // (bar the parent's own case or whitespace tidying) is a code set from
@@ -132,8 +143,9 @@ export function CodeLookupField({
   if (value !== seen) {
     setSeen(value);
     if (!sameText(value, seen)) {
-      setSelected(value.trim() ? value.trim() : null);
-      setDraft('');
+      const code = value.trim() && isCodeValue(value);
+      setSelected(code ? value.trim() : null);
+      setDraft(code ? '' : value);
       setAnnouncement(null);
     } else if (selected !== null && value.trim()) {
       setSelected(value.trim());
@@ -151,6 +163,8 @@ export function CodeLookupField({
   const { suggestions, loading } = useSuggestions(selected === null ? draft : '', search);
   useEffect(() => {
     labels.remember(suggestions);
+    onSuggestionsChange?.(suggestions);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reports each new list once, whatever the callback's identity
   }, [labels, suggestions]);
 
   function emit(next: string) {
@@ -166,31 +180,49 @@ export function CodeLookupField({
     setSelected(code);
     setDraft('');
     setAnnouncement({ kind: 'set', code });
+    setAwaitingMatch(false);
     emit(code);
   }
 
+  /** The suggestion whose code, name or label is exactly `typed`. */
+  function exactMatch(typed: string): Suggestion | undefined {
+    const lower = typed.toLowerCase();
+    return (
+      suggestions.find((s) => s.code.toLowerCase() === lower) ??
+      suggestions.find((s) => s.name.toLowerCase() === lower || labels.get(s.code)?.toLowerCase() === lower)
+    );
+  }
+
   /** Blur or Enter with typed text: an exact code or name match, else a
-   * typed code, is a pick; anything else stays typed text. */
+   * typed code, is a pick; anything else stays typed text (and is matched
+   * against the results of a search still running). */
   function commitTyped() {
     if (selected !== null) return;
     const typed = draft.trim();
     if (!typed) return;
-    const lower = typed.toLowerCase();
-    const match =
-      suggestions.find((s) => s.code.toLowerCase() === lower) ??
-      suggestions.find((s) => s.name.toLowerCase() === lower || labels.get(s.code)?.toLowerCase() === lower);
+    const match = exactMatch(typed);
     if (match) {
       pick(match.code, match);
       return;
     }
     const code = parseTypedCode?.(typed);
     if (code) pick(code);
+    else setAwaitingMatch(true);
   }
+
+  useEffect(() => {
+    if (!awaitingMatch || selected !== null) return;
+    const match = exactMatch(draft.trim());
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- picks the exact match a search finished after the field was left
+    if (match) pick(match.code, match);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs as each search's results arrive
+  }, [suggestions]);
 
   function handleTextChange(next: string) {
     setSelected(null);
     setDraft(next);
     setAnnouncement(null);
+    setAwaitingMatch(false);
     emit(next);
     combobox.openDropdown();
     combobox.updateSelectedOptionIndex();

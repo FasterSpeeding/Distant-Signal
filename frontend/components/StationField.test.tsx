@@ -8,6 +8,7 @@ import type { Suggestion } from '@/lib/types';
 import { StationField } from './StationField';
 import { OperatorField } from './OperatorField';
 
+const plannerCode = (text: string) => typedPlannerCode(text, { tflStops: true });
 const EUSTON: Suggestion = { code: 'EUS', name: 'London Euston' };
 const EUSTON_SQUARE: Suggestion = { code: 'EUSQ', name: 'Euston Square' };
 
@@ -98,6 +99,15 @@ describe('StationField', () => {
     fireEvent.keyDown(field(), { key: 'Enter', code: 'Enter' });
     expect(field()).toHaveValue('London Euston (EUS)');
     expect(held()).toBe('EUS');
+  });
+
+  it('picks a typed station name left before its search came back', async () => {
+    renderWithMantine(<Harness search={async () => [EUSTON]} />);
+    fireEvent.change(field(), { target: { value: 'london euston' } });
+    fireEvent.blur(field());
+    expect(held()).toBe('london euston');
+    await waitFor(() => expect(held()).toBe('EUS'));
+    expect(field()).toHaveValue('London Euston (EUS)');
   });
 
   it('picks a typed station name on blur', async () => {
@@ -191,7 +201,7 @@ describe('StationField', () => {
           : new Response('[]', { status: 404 }),
       ),
     );
-    renderWithMantine(<Harness initial="940GZZLUODS" />);
+    renderWithMantine(<Harness initial="940GZZLUODS" allowTypedCode={plannerCode} />);
     await waitFor(() => expect(field()).toHaveValue('Old Street (Tube)'));
     expect(held()).toBe('940GZZLUODS');
   });
@@ -220,7 +230,7 @@ describe('StationField', () => {
           : new Response('[]', { status: 404 }),
       ),
     );
-    renderWithMantine(<Harness initial="group:LON" />);
+    renderWithMantine(<Harness initial="group:LON" allowTypedCode={plannerCode} />);
     await waitFor(() => expect(field()).toHaveValue('Any of the London Terminals (2 stations)'));
   });
 
@@ -229,9 +239,7 @@ describe('StationField', () => {
       'fetch',
       vi.fn(async () => new Response('[]', { status: 404 })),
     );
-    renderWithMantine(
-      <Harness search={async () => []} allowTypedCode={(text) => typedPlannerCode(text, { tflStops: true })} />,
-    );
+    renderWithMantine(<Harness search={async () => []} allowTypedCode={plannerCode} />);
     fireEvent.change(field(), { target: { value: 'group:lon' } });
     fireEvent.blur(field());
     expect(held()).toBe('group:LON');
