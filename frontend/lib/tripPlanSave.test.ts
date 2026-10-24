@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { itineraryLegsForSaving, transferAsUntracked } from './tripPlanSave';
+import { trainLegsForTracking } from './tripPlan';
 import type { TripPlanItinerary, TripPlanLeg } from './types';
+import { RAIL_TRAM_RAIL, REPLACEMENT_BUS_LEG, TRAM_ONLY } from '@/test/transitPlanFixtures';
 
 const NAMES = new Map([
   ['EUS', 'London Euston'],
@@ -364,5 +366,73 @@ describe('transferAsUntracked', () => {
     expect(transferAsUntracked(tube, nameFor)).toMatchObject({ transitMode: 'tube', lineName: 'Victoria line' });
     const { line: _none, ...unnamed } = tube;
     expect(transferAsUntracked(unnamed, nameFor)).not.toHaveProperty('lineName');
+  });
+});
+
+describe('itineraryLegsForSaving with a tram leg', () => {
+  const NAMES_MCR = new Map([
+    ['MAN', 'Manchester Piccadilly'],
+    ['MCV', 'Manchester Victoria'],
+  ]);
+  const mcrName = (code: string) => NAMES_MCR.get(code);
+
+  it('saves the tram as an untracked tram leg on its own times, its stations by id', () => {
+    const legs = itineraryLegsForSaving([RAIL_TRAM_RAIL], mcrName);
+    expect(legs).toEqual([
+      { trainUid: 'C10001', serviceDate: '2026-11-04', originCrs: 'SPT', destinationCrs: 'MAN' },
+      {
+        kind: 'untracked',
+        transitMode: 'walk',
+        originName: 'Manchester Piccadilly',
+        destinationName: 'Piccadilly',
+        destinationStopId: '9400ZZMAPIC',
+        plannedDeparture: '2026-11-04T08:00:00.000Z',
+        plannedArrival: '2026-11-04T08:06:00.000Z',
+      },
+      {
+        kind: 'untracked',
+        transitMode: 'tram',
+        originName: 'Piccadilly',
+        destinationName: 'Victoria',
+        lineName: 'Blue Line',
+        originStopId: '9400ZZMAPIC',
+        destinationStopId: '9400ZZMAVIC',
+        // The tram's own times, not borrowed from the trains either side.
+        plannedDeparture: '2026-11-04T08:14:00.000Z',
+        plannedArrival: '2026-11-04T08:22:00.000Z',
+      },
+      {
+        kind: 'untracked',
+        transitMode: 'walk',
+        originName: 'Victoria',
+        destinationName: 'Manchester Victoria',
+        originStopId: '9400ZZMAVIC',
+        // The walk follows the tram it leaves, not the train before it.
+        plannedDeparture: '2026-11-04T08:22:00.000Z',
+        plannedArrival: '2026-11-04T08:27:00.000Z',
+      },
+      { trainUid: 'C10002', serviceDate: '2026-11-04', originCrs: 'MCV', destinationCrs: 'LDS' },
+    ]);
+  });
+
+  it('saves a replacement bus as a bus, with no line', () => {
+    const [leg] = itineraryLegsForSaving(
+      [{ legs: [REPLACEMENT_BUS_LEG], changeCount: 0, totalDurationMinutes: 16 }],
+      mcrName,
+    );
+    expect(leg).toEqual({
+      kind: 'untracked',
+      transitMode: 'bus',
+      originName: 'Piccadilly',
+      destinationName: 'Victoria',
+      originStopId: '9400ZZMAPIC',
+      destinationStopId: '9400ZZMAVIC',
+      plannedDeparture: '2026-11-04T08:15:00.000Z',
+      plannedArrival: '2026-11-04T08:31:00.000Z',
+    });
+  });
+
+  it('a tram-only plan has no train to track', () => {
+    expect(trainLegsForTracking([TRAM_ONLY])).toEqual([]);
   });
 });

@@ -7,7 +7,7 @@ import { TransitAttributionNote } from '@/components/TransitAttributionNote';
 import { TransitStopNotices } from '@/components/TransitDisruptions';
 import { StopRailLinks } from '@/components/TransitRailLinks';
 import { TransitStopBoard } from '@/components/TransitStopBoard';
-import { getTransitDepartures, getTransitNetwork, getTransitStop } from '@/lib/api';
+import { getTransitDepartures, getTransitNetwork, getTransitNetworks, getTransitStop } from '@/lib/api';
 import { formatDate } from '@/lib/dateFormat';
 import { pageMetadata } from '@/lib/pageMetadata';
 import { localLineId, orNotFound, TRANSIT_ID, TRANSIT_STOP_ID } from '@/lib/transit';
@@ -52,7 +52,10 @@ export default async function TransitStopPage({ params, searchParams }: Params &
   const search = (await searchParams) ?? {};
   const date = single(search.date);
   const cursor = single(search.cursor);
-  const [detail, stopDetail] = await load(network, stop);
+  const [[detail, stopDetail], networks] = await Promise.all([load(network, stop), getTransitNetworks()]);
+  // Only a network the trip planner routes over can be planned from
+  // (`tripPlanning`, on the networks list; transit trip planning §5.2).
+  const plannable = (detail.tripPlanning ?? networks.find((n) => n.id === network)?.tripPlanning) === true;
   const board = await orNotFound(
     getTransitDepartures(network, stop, {
       date: date && DATE.test(date) ? date : undefined,
@@ -68,7 +71,14 @@ export default async function TransitStopPage({ params, searchParams }: Params &
   return (
     <Stack p="lg" gap="lg">
       <Stack gap={4}>
-        <Title order={1}>{stopDetail.name}</Title>
+        <Group justify="space-between">
+          <Title order={1}>{stopDetail.name}</Title>
+          {plannable && (
+            <TextLink href={`/plan?${new URLSearchParams({ origin: stopDetail.id }).toString()}`}>
+              Plan a journey from here
+            </TextLink>
+          )}
+        </Group>
         <Group gap="xs" c="dimmed" fz="sm">
           <TextLink href={`/transit/${network}`}>{detail.name}</TextLink>
           {stopDetail.lines.map((id) => {

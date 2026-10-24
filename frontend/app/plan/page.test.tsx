@@ -33,6 +33,8 @@ vi.mock('@/lib/suggestions', () => ({
   searchPlannerLocations: async () => [],
   getStationNames: async () => new Map<string, string>(),
 }));
+// From and To also look up tram stations (`GET /api/transit/networks`).
+vi.mock('@/lib/plannerEnds', () => ({ searchPlannerEnds: async () => [] }));
 
 const plan: TripPlanResponse = {
   results: 'fastest',
