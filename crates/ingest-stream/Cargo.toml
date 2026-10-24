@@ -21,7 +21,7 @@ common = { path = "../common", features = ["redis"] }
 # schedule-ingest; the default (miniz_oxide, pure Rust) backend.
 flate2 = "1"
 metrics = "0.24"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.32", features = ["tokio-comp", "connection-manager"] }
 serde = { version = "1.0.228", features = ["derive"] }
 # `raw_value`: the payload is carried as validated JSON text, not re-parsed
 # into a `Value` (a station-samples snapshot is about 500 KB).
@@ -31,8 +31,8 @@ tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "
 tracing = "0.1.44"
 
 [dev-dependencies]
-metrics-exporter-prometheus = { version = "0.18", default-features = false }
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "test-util", "net", "io-util"] }
+metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "test-util", "net", "io-util"] }
 
 [lints]
 workspace = true

@@ -9,7 +9,7 @@ publish.workspace = true
 anyhow = "1.0.102"
 axum = { version = "0.8.9", features = ["http2", "tracing", "multipart"] }
 axum-prometheus = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4.44", features = ["serde"] }
 chrono-tz = "0.10"
 clap = { version = "4.6.1", features = ["derive", "env"] }
@@ -45,7 +45,7 @@ metrics = "0.24"
 oauth2 = "5.0"
 openidconnect = "4.0"
 pdf-extract = "0.12"
-rand = "0.8"
+rand = "0.10"
 regex = "1"
 # PINNED TO 0.12 ON PURPOSE, not merely "not upgraded yet": oauth2 5.0 (via
 # openidconnect 4.0) implements its `AsyncHttpClient` trait for
@@ -56,7 +56,7 @@ regex = "1"
 # surfaces as an unsatisfied-trait-bound error at the `request_async` call
 # site with no mention of the version split. Bump this only together with
 # an oauth2/openidconnect release that targets the newer reqwest.
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "gzip"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "gzip"] }
 schedule-query = { path = "../schedule-query" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde-inline-default = "1.0.1"
@@ -64,12 +64,12 @@ serde-inline-default = "1.0.1"
 # `serde_json::value::RawValue` instead of building a `Value` tree -- see
 # `data::queries::upsert_schedule_line_population`'s doc comment.
 serde_json = { version = "1.0.149", features = ["raw_value"] }
-sha2 = "0.10"
-sqlx = { version = "0.8.6", features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio", "tls-native-tls", "json"] }
+sha2 = "0.11"
+sqlx = { version = "0.9.0", features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio", "tls-native-tls", "json"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "fs", "net", "tracing", "time", "process", "io-util", "signal"] }
 toml = { version = "1.1.2", features = ["serde"] }
 tower = "0.5.3"
-tower-http = { version = "0.6.10", features = ["cors", "limit", "normalize-path", "timeout", "trace"] }
+tower-http = { version = "0.7.0", features = ["cors", "limit", "normalize-path", "timeout", "trace"] }
 tracing = "0.1.44"
 trip-planner = { path = "../trip-planner" }
 trust-schema = { path = "../trust-schema" }
@@ -79,8 +79,8 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # `test-support`: the shared DB-test fixtures (`ds_store::test_support`) and
 # `ds_store::sweeps::reconciliation::enrichment_candidate_ids_for_tests`.
 ds-store = { path = "../ds-store", features = ["test-support"] }
-wiremock = "0.6"
-metrics-exporter-prometheus = { version = "0.18", default-features = false }
+wiremock = "=0.6.5"
+metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
 
 [lints]
 workspace = true
