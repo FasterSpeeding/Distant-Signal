@@ -3,7 +3,7 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
-## 2026-10-23: Tube access legs charge a change between branches
+## 2026-10-24: Tube access legs charge a change between branches
 
 Additive fields, changed estimates. DS-MCP needs no change. See
 docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md §3.
@@ -21,6 +21,16 @@ docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md §3.
   otherwise.
 - New on an access leg's `access`: `changeAt`, as above, absent when the
   ride has no change.
+
+## 2026-10-23: no `email` in the account export
+
+A field removed. `GET /public/account/export`'s `account` object (the user's
+`users` row, keys as stored) no longer has `email`: the column is dropped
+(`20261026090000_drop_users_email.sql`). Nothing has written one since
+2026-09-30, when the app stopped requesting the `email` scope, and it was
+`null` for every production account.
+Nothing else changes; `/auth/session` has served `username` instead of
+`email` since then. **For ds-mcp:** nothing to change, it never read it.
 
 ## 2026-10-23: `/Trips/plan` takes a TfL stop as its origin or destination
 

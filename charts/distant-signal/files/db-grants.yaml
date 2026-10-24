@@ -399,7 +399,7 @@ tables:
   # updated.
   tfl_stops: {class: reference, grants: {api: S, writer: SIUD}}
   tfl_stop_crs: {class: reference, grants: {api: S, writer: SID}}
-  # TfL's route sequences (DS-151; migration 20261025100000): the writer's
+  # TfL's route sequences (DS-151; migration 20261026100000): the writer's
   # tfl-line-routes/1 handler deletes every row and inserts the snapshot
   # (ds_store::tfl_line_routes::replace, no UPDATE); the api's Tube access
   # legs read them.
