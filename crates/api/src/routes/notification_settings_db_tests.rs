@@ -507,3 +507,124 @@ async fn a_pinned_lines_alerts_switch_survives_repinning() {
     let (_, prefs) = call(&router, "GET", "/public/preferences", Some(&token), None).await;
     assert_eq!(prefs["silentPinnedLines"], json!([]));
 }
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database)"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: one scenario, read top to bottom"
+)]
+async fn the_device_list_names_each_device_and_removes_only_the_callers() {
+    const OWNER: &str = "TEST-NOTIFSET-DEVICES-OWNER";
+    const OTHER: &str = "TEST-NOTIFSET-DEVICES-OTHER";
+    // A public IP literal: the subscribe route's endpoint check needs no DNS.
+    const PHONE: &str = "https://93.184.216.34/notifset-devices-phone";
+    const THEIRS: &str = "https://push.example/notifset-devices-theirs";
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool, &[OWNER, OTHER]).await;
+    let token = seed_session(&pool, OWNER).await;
+    let other_token = seed_session(&pool, OTHER).await;
+    let theirs = seed_push_subscription(&pool, OTHER, THEIRS).await;
+    let router = router(pool.clone());
+
+    // Subscribing names the device from its User-Agent.
+    let request = Request::builder()
+        .method("POST")
+        .uri("/public/notifications/subscribe")
+        .header(header::COOKIE, format!("distant_signal_session={token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(
+            header::USER_AGENT,
+            "Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0",
+        )
+        .body(Body::from(
+            json!({
+                "endpoint": PHONE,
+                "keys": {
+                    "p256dh": "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM",
+                    "auth": "tBHItJI5svbpez7KI4CCXg",
+                },
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let response = router.clone().oneshot(request).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let laptop = seed_push_subscription(&pool, OWNER, "https://push.example/notifset-laptop").await;
+    exec(
+        &pool,
+        &format!(
+            "UPDATE push_subscriptions SET last_seen_at = NOW() - INTERVAL '3 days', \
+                 last_pushed_at = NOW() - INTERVAL '1 day' WHERE id = {laptop}"
+        ),
+    )
+    .await;
+
+    let (status, devices) = call(
+        &router,
+        "GET",
+        "/public/notifications/devices",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{devices}");
+    let devices = devices.as_array().expect("a list").clone();
+    assert_eq!(devices.len(), 2, "only the caller's: {devices:?}");
+    assert_eq!(devices[0]["label"], json!("Firefox on Android"));
+    assert_eq!(
+        devices[0]["endpointSha256"],
+        json!(format!(
+            "{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(PHONE)
+        ))
+    );
+    assert!(devices[0].get("endpoint").is_none(), "never the endpoint");
+    assert_eq!(devices[1]["id"], json!(laptop));
+    assert_eq!(devices[1]["label"], Value::Null);
+    let last_used: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(devices[1]["lastUsedAt"].clone()).expect("lastUsedAt");
+    assert!(
+        chrono::Utc::now() - last_used < chrono::Duration::hours(25),
+        "the last push counts as use: {last_used}"
+    );
+
+    // Someone else's device: 404, and it stays.
+    let (status, _) = call(
+        &router,
+        "DELETE",
+        &format!("/public/notifications/devices/{theirs}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(subscription_exists(&pool, THEIRS).await);
+    let (status, _) = call(
+        &router,
+        "DELETE",
+        &format!("/public/notifications/devices/{laptop}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, devices) = call(
+        &router,
+        "GET",
+        "/public/notifications/devices",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(devices.as_array().map(Vec::len), Some(1));
+    let (_, theirs_list) = call(
+        &router,
+        "GET",
+        "/public/notifications/devices",
+        Some(&other_token),
+        None,
+    )
+    .await;
+    assert_eq!(theirs_list.as_array().map(Vec::len), Some(1));
+}

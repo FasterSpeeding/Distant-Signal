@@ -1394,6 +1394,16 @@ pub(crate) async fn push_subscriptions_for_user(
     Ok(rows)
 }
 
+/// Stamps `last_pushed_at` on a subscription a push was delivered to: the
+/// Notifications page shows it as the device's "last used" (DS-153).
+pub(crate) async fn mark_push_subscription_pushed(pool: &PgPool, id: i64) -> anyhow::Result<()> {
+    sqlx::query("UPDATE push_subscriptions SET last_pushed_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Error handling: called on a 404/410 from the push service (Task 6) --
 /// self-healing cleanup, mirroring users.rs's own "every write takes out
 /// its own trash" posture cited by the spec.

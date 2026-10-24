@@ -43,6 +43,15 @@ routes. DS-MCP needs no change.
   switch of every line it keeps pinned.
 - `GET /public/preferences` gains `silentPinnedLines`: the pinned lines
   whose alerts are off.
+- **New: `GET /public/notifications/devices`**: the caller's devices with
+  push on, most recently used first: `[{id, label, createdAt, lastUsedAt,
+  endpointSha256}]`. `label` names the browser ("Chrome on Android"), from
+  the User-Agent sent when it subscribed, or is `null`; `lastUsedAt` is
+  the later of the last push delivered and the last subscribe;
+  `endpointSha256` (hex) lets a browser find itself by hashing its own
+  endpoint. The endpoint and keys are never sent.
+- **New: `DELETE /public/notifications/devices/{id}`**: stops pushes to
+  one of the caller's devices. `204`; `404` when it is not theirs.
 
 ## 2026-10-23: `/Trips/plan` takes a TfL stop as its origin or destination
 

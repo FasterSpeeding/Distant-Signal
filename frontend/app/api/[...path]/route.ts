@@ -294,6 +294,14 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   if (cookie) {
     headers.Cookie = cookie;
   }
+  // The browser's User-Agent, so `POST /notifications/subscribe` can name
+  // the device in the Notifications page's device list ("Chrome on
+  // Android"; the api keeps only that label). Node's fetch would send its
+  // own otherwise.
+  const userAgent = req.headers.get('user-agent');
+  if (userAgent) {
+    headers['User-Agent'] = userAgent;
+  }
   // FE-8: the client address for the api's per-IP rate limits. Never relay
   // the browser's own `X-Forwarded-For` or `X-Real-IP`: both are
   // client-controlled, and Next itself only fills `X-Forwarded-For` from

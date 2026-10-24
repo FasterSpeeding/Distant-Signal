@@ -236,7 +236,9 @@ tables:
   journey_templates: {class: personal, grants: {api: SIUD, notifier: SU}}
   journey_template_legs: {class: personal, grants: {api: SIUD, notifier: S}}
   journey_template_skipped_dates: {class: personal, grants: {api: SIUD, notifier: S}}
-  push_subscriptions: {class: personal, grants: {api: SIUD, notifier: SD}}
+  # notifier: U on last_pushed_at only, stamped on each delivered push for
+  # the Notifications page's device list (DS-153).
+  push_subscriptions: {class: personal, grants: {api: SIUD, notifier: [SD, {privileges: U, columns: [last_pushed_at]}]}}
   tracked_train_tickets: {class: personal, grants: {api: SIUD}}
   unlisted_links: {class: personal, grants: {api: SIUD}}
   # Delegated access (docs/connected-apps.md). The notifier sends the
