@@ -93,8 +93,21 @@ pub const PLANNER_NETWORKS: &[PlannerNetwork] = &[PlannerNetwork {
 }];
 
 pub fn planner_network(id: &str) -> Option<&'static PlannerNetwork> {
+    // The DB tests seed a `test-*` network (`ds_store::test_support::transit`)
+    // rather than touch a real network's rows.
+    #[cfg(test)]
+    if id.starts_with("test-") {
+        return Some(&TEST_PLANNER_NETWORK);
+    }
     PLANNER_NETWORKS.iter().find(|network| network.id == id)
 }
+
+#[cfg(test)]
+static TEST_PLANNER_NETWORK: PlannerNetwork = PlannerNetwork {
+    id: "test",
+    change_minutes: 3,
+    public_stop_id: PublicStopId::AccessNode,
+};
 
 /// Parses [`SWITCH_ENV`]: comma-separated ids, blanks dropped, duplicates
 /// kept once, in order. An id the planner does not know is an error.
@@ -174,9 +187,8 @@ impl Drop for SwitchOverride {
 
 /// The configured tram-side change buffer, read once.
 pub fn change_minutes() -> u32 {
-    static MINUTES: LazyLock<u32> = LazyLock::new(|| {
-        parse_change_minutes(std::env::var(CHANGE_MINUTES_ENV).ok().as_deref())
-    });
+    static MINUTES: LazyLock<u32> =
+        LazyLock::new(|| parse_change_minutes(std::env::var(CHANGE_MINUTES_ENV).ok().as_deref()));
     *MINUTES
 }
 
@@ -332,6 +344,11 @@ type ActiveRow = (Option<String>, Option<NaiveDate>, Option<NaiveDate>);
 /// `network`'s day on `date` from its active feed version, or why it is
 /// left out. Seven small indexed reads (the trips are about 1,500 rows a
 /// weekday for Metrolink, the pattern stops under 2,000).
+#[expect(
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    reason = "seven linear reads, each into its row tuple"
+)]
 pub async fn read_network_day(
     pool: &PgPool,
     network: &str,
@@ -356,22 +373,21 @@ pub async fn read_network_day(
     if from.is_none_or(|from| date < from) || to.is_none_or(|to| date > to) {
         return Ok(Err(SkipReason::OutsideHorizon));
     }
-    let trips: Vec<(String, Option<String>, String, i32, Option<String>, bool)> =
-        sqlx::query_as(
-            "SELECT t.trip_id, t.line_id, t.pattern_id, t.start_s, t.headsign, t.replacement_bus \
+    let trips: Vec<(String, Option<String>, String, i32, Option<String>, bool)> = sqlx::query_as(
+        "SELECT t.trip_id, t.line_id, t.pattern_id, t.start_s, t.headsign, t.replacement_bus \
              FROM transit_trips t \
              WHERE t.network = $1 AND t.feed_version = $2 AND EXISTS ( \
                SELECT 1 FROM transit_service_days d \
                WHERE d.network = t.network AND d.feed_version = t.feed_version \
                  AND d.service_id = t.service_id AND d.service_date = $3) \
              ORDER BY t.start_s, t.trip_id",
-        )
-        .bind(network)
-        .bind(&feed_version)
-        .bind(date)
-        .fetch_all(pool)
-        .await
-        .context("transit trips")?;
+    )
+    .bind(network)
+    .bind(&feed_version)
+    .bind(date)
+    .fetch_all(pool)
+    .await
+    .context("transit trips")?;
     if trips.is_empty() {
         return Ok(Err(SkipReason::NoServiceDay));
     }
@@ -588,7 +604,10 @@ fn clock(minutes: u32) -> (NaiveTime, u8) {
 /// ([`round_to_minute`]), boarding where GTFS `pickup` is not 1 (none) and
 /// alighting where `drop_off` is not 1 (2 and 3, phone or ask the driver,
 /// are allowed). No public times: the timetable is the only one.
-pub fn trip_calling_points(trip: &TripRow, pattern: &PatternRow) -> Vec<CallingPointForConnections> {
+pub fn trip_calling_points(
+    trip: &TripRow,
+    pattern: &PatternRow,
+) -> Vec<CallingPointForConnections> {
     let last = pattern.stops.len().saturating_sub(1);
     pattern
         .stops
@@ -596,8 +615,7 @@ pub fn trip_calling_points(trip: &TripRow, pattern: &PatternRow) -> Vec<CallingP
         .enumerate()
         .map(|(seq, stop)| {
             let arrival = round_to_minute(i64::from(trip.start_s) + i64::from(stop.arr_offset_s));
-            let departure =
-                round_to_minute(i64::from(trip.start_s) + i64::from(stop.dep_offset_s));
+            let departure = round_to_minute(i64::from(trip.start_s) + i64::from(stop.dep_offset_s));
             let (arrival_time, arrival_day) = clock(arrival);
             let (departure_time, departure_day) = clock(departure);
             CallingPointForConnections {
@@ -667,10 +685,7 @@ pub fn metres_between(a: (f64, f64), b: (f64, f64)) -> f64 {
 /// `tfl_access::WALK_METRES_PER_MINUTE` (the `TfL` access model's walk),
 /// rounded up, clamped to at least 2 minutes (`interchange`) or 4
 /// (`nearby`) and at most 15. With no distance, 5 or 10.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "clamped to a few minutes"
-)]
+#[expect(clippy::cast_possible_truncation, reason = "clamped to a few minutes")]
 pub fn rail_link_walk_minutes(distance_metres: Option<f64>, kind: &str) -> i32 {
     let nearby = kind == "nearby";
     let Some(metres) = distance_metres else {
@@ -782,7 +797,9 @@ impl TransitGraph {
 /// buffer (spec §6.3). Returns the stop table and walks as well.
 #[expect(
     clippy::cast_possible_wrap,
-    reason = "the buffer is clamped to 15 minutes"
+    clippy::implicit_hasher,
+    clippy::too_many_lines,
+    reason = "the buffer is clamped to 15 minutes; callers use the default hasher; one linear pass per network"
 )]
 pub fn build_transit_graph(
     rail: &InterchangeData,
@@ -805,6 +822,25 @@ pub fn build_transit_graph(
             .values()
             .flat_map(|pattern| pattern.stops.iter().map(|s| s.stop_id.as_str()))
             .collect();
+        // Every platform folds to its station as an end, called or not.
+        for stop in &day.stops {
+            if let (true, Some(parent)) = (
+                stop.kind == "platform",
+                stop.parent_stop_id
+                    .as_deref()
+                    .and_then(|parent| by_id.get(parent)),
+            ) {
+                stops.insert(
+                    stop.stop_id.clone(),
+                    StopInfo {
+                        network: day.network.clone(),
+                        station_id: parent.stop_id.clone(),
+                        station_name: parent.name.clone(),
+                        platform: stop.indicator.clone(),
+                    },
+                );
+            }
+        }
         for stop in &day.stops {
             if stop.kind == "station" {
                 stops.insert(
@@ -988,10 +1024,7 @@ pub async fn read_days(
 }
 
 /// Sets the `api_trip_plan_transit_connections{network}` gauge.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "a gauge of tens of thousands"
-)]
+#[expect(clippy::cast_precision_loss, reason = "a gauge of tens of thousands")]
 pub fn record_connections(graph: &TransitGraph) {
     for network in &graph.networks {
         metrics::gauge!(
@@ -1428,10 +1461,6 @@ pub async fn attach_line_notices(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    reason = "test code: a failed unwrap is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -1599,8 +1628,7 @@ mod tests {
         };
         // 08:00:40 start: 08:00:40, 08:02:15, 08:03:10, 08:04:15.
         let points = trip_calling_points(&trip("T1", 8 * 3600 + 40, false), &pattern);
-        let connections =
-            schedule_query::build_connections([("metrolink:0", points.as_slice())]);
+        let connections = schedule_query::build_connections([("metrolink:0", points.as_slice())]);
         let minutes: Vec<(u32, u32, bool, bool)> = connections
             .iter()
             .map(|c| (c.departure_min, c.arrival_min, c.can_board, c.can_alight))
@@ -1629,8 +1657,7 @@ mod tests {
             stops: vec![call("A1", 0, 0, 0, 0), call("B1", 600, 600, 0, 0)],
         };
         let points = trip_calling_points(&trip("T1", 86_100, false), &pattern);
-        let connections =
-            schedule_query::build_connections([("metrolink:0", points.as_slice())]);
+        let connections = schedule_query::build_connections([("metrolink:0", points.as_slice())]);
         assert_eq!(connections[0].departure_min, 1435);
         assert_eq!(connections[0].arrival_min, 1445);
     }
@@ -1674,7 +1701,10 @@ mod tests {
 
     #[test]
     fn stations_become_nodes_with_platform_members_and_rail_walks() {
-        let day = day(vec![trip("T1", 8 * 3600, false), trip("T2", 9 * 3600, true)]);
+        let day = day(vec![
+            trip("T1", 8 * 3600, false),
+            trip("T2", 9 * 3600, true),
+        ]);
         let rail = rail();
         let graph = build_transit_graph(
             &rail,
@@ -1726,7 +1756,12 @@ mod tests {
             2,
             5,
         );
-        for code in ["9400ZZMAPIC", "940GZZMAPIC", "9400zzmapic1", " 9400ZZMAPIC2 "] {
+        for code in [
+            "9400ZZMAPIC",
+            "940GZZMAPIC",
+            "9400zzmapic1",
+            " 9400ZZMAPIC2 ",
+        ] {
             assert_eq!(
                 graph.resolve_end(code).map(|s| s.station_id.as_str()),
                 Some("9400ZZMAPIC"),
@@ -1787,14 +1822,23 @@ mod tests {
         );
         // Two departures only: no hint.
         assert_eq!(
-            headway_minutes(&graph, &connections[..2], "metrolink:1", "9400ZZMAPIC1", 476),
+            headway_minutes(
+                &graph,
+                &connections[..2],
+                "metrolink:1",
+                "9400ZZMAPIC1",
+                476
+            ),
             None
         );
     }
 
     #[test]
     fn a_leg_is_dressed_from_the_trip_and_never_live() {
-        let day = day(vec![trip("T1", 8 * 3600, false), trip("T2", 9 * 3600, true)]);
+        let day = day(vec![
+            trip("T1", 8 * 3600, false),
+            trip("T2", 9 * 3600, true),
+        ]);
         let graph = build_transit_graph(
             &rail(),
             std::slice::from_ref(&day),
@@ -1855,8 +1899,14 @@ mod tests {
 
     #[test]
     fn a_stop_area_network_echoes_940g_ids() {
-        assert_eq!(public_id("9400ZZCRWMB", PublicStopId::StopArea), "940GZZCRWMB");
-        assert_eq!(public_id("9400ZZMAPIC", PublicStopId::AccessNode), "9400ZZMAPIC");
+        assert_eq!(
+            public_id("9400ZZCRWMB", PublicStopId::StopArea),
+            "940GZZCRWMB"
+        );
+        assert_eq!(
+            public_id("9400ZZMAPIC", PublicStopId::AccessNode),
+            "9400ZZMAPIC"
+        );
         assert_eq!(access_node_spelling("940GZZCRWMB"), "9400ZZCRWMB");
     }
 

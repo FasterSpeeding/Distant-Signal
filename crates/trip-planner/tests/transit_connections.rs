@@ -134,9 +134,9 @@ fn sorted(mut connections: Vec<Connection>) -> Vec<Connection> {
     connections
 }
 
-/// Stockport to MAN arriving 08:00, Blue Line trams Piccadilly (platform
-/// 1) to Victoria (platform 1) every 6 minutes from 07:56, and the 08:25
-/// and 08:40 Victoria to Leeds trains.
+/// Stockport to MAN arriving 08:00, Blue Line trams from Piccadilly's
+/// platform 1 to Victoria's every 6 minutes from 07:56, and the 08:25 and
+/// 08:40 Victoria to Leeds trains.
 fn cross_city() -> Vec<Connection> {
     let mut connections = vec![
         conn("C10001", "STKP", "MNCRPIC", hm(7, 50), hm(8, 0)),
@@ -233,10 +233,28 @@ fn rail_walk_tram_walk_rail_mid_journey() {
 fn a_platform_change_is_charged_at_the_network_change_time() {
     let data = interchange(2);
     let connections = sorted(vec![
-        conn("metrolink:0", "9400ZZMAALT1", "9400ZZMAPIC1", hm(8, 0), hm(8, 10)),
+        conn(
+            "metrolink:0",
+            "9400ZZMAALT1",
+            "9400ZZMAPIC1",
+            hm(8, 0),
+            hm(8, 10),
+        ),
         // Platform 2: 2 minutes later (too soon), then 3.
-        conn("metrolink:1", "9400ZZMAPIC2", "9400ZZMAVIC2", hm(8, 12), hm(8, 18)),
-        conn("metrolink:2", "9400ZZMAPIC2", "9400ZZMAVIC2", hm(8, 13), hm(8, 19)),
+        conn(
+            "metrolink:1",
+            "9400ZZMAPIC2",
+            "9400ZZMAVIC2",
+            hm(8, 12),
+            hm(8, 18),
+        ),
+        conn(
+            "metrolink:2",
+            "9400ZZMAPIC2",
+            "9400ZZMAVIC2",
+            hm(8, 13),
+            hm(8, 19),
+        ),
     ]);
     let journey = csa(
         &connections,
@@ -250,11 +268,36 @@ fn a_platform_change_is_charged_at_the_network_change_time() {
     assert_eq!(journey.arrival_min, hm(8, 19));
     // The same platform: a fresh boarding costs the change time too.
     let same = sorted(vec![
-        conn("metrolink:0", "9400ZZMAALT1", "9400ZZMAPIC1", hm(8, 0), hm(8, 10)),
-        conn("metrolink:1", "9400ZZMAPIC1", "9400ZZMAVIC1", hm(8, 12), hm(8, 18)),
-        conn("metrolink:2", "9400ZZMAPIC1", "9400ZZMAVIC1", hm(8, 13), hm(8, 19)),
+        conn(
+            "metrolink:0",
+            "9400ZZMAALT1",
+            "9400ZZMAPIC1",
+            hm(8, 0),
+            hm(8, 10),
+        ),
+        conn(
+            "metrolink:1",
+            "9400ZZMAPIC1",
+            "9400ZZMAVIC1",
+            hm(8, 12),
+            hm(8, 18),
+        ),
+        conn(
+            "metrolink:2",
+            "9400ZZMAPIC1",
+            "9400ZZMAVIC1",
+            hm(8, 13),
+            hm(8, 19),
+        ),
     ]);
-    let journey = csa(&same, &data, &["9400ZZMAALT1"], &["9400ZZMAVIC1"], hm(7, 55)).unwrap();
+    let journey = csa(
+        &same,
+        &data,
+        &["9400ZZMAALT1"],
+        &["9400ZZMAVIC1"],
+        hm(7, 55),
+    )
+    .unwrap();
     assert_eq!(rides(&journey.legs), ["metrolink:0", "metrolink:2"]);
 }
 
@@ -265,17 +308,51 @@ fn a_platform_change_is_charged_at_the_network_change_time() {
 #[test]
 fn set_down_only_and_pick_up_only_stops_are_honoured() {
     let data = interchange(2);
-    let mut through = conn("metrolink:0", "9400ZZMAALT1", "9400ZZMAPIC1", hm(8, 0), hm(8, 10));
+    let mut through = conn(
+        "metrolink:0",
+        "9400ZZMAALT1",
+        "9400ZZMAPIC1",
+        hm(8, 0),
+        hm(8, 10),
+    );
     through.can_alight = false;
-    let onward = conn("metrolink:0", "9400ZZMAPIC1", "9400ZZMAVIC1", hm(8, 10), hm(8, 16));
+    let onward = conn(
+        "metrolink:0",
+        "9400ZZMAPIC1",
+        "9400ZZMAVIC1",
+        hm(8, 10),
+        hm(8, 16),
+    );
     let connections = sorted(vec![through, onward]);
     // Piccadilly cannot be alighted at ...
-    assert!(csa(&connections, &data, &["9400ZZMAALT1"], &["9400ZZMAPIC1"], hm(7, 55)).is_none());
+    assert!(
+        csa(
+            &connections,
+            &data,
+            &["9400ZZMAALT1"],
+            &["9400ZZMAPIC1"],
+            hm(7, 55)
+        )
+        .is_none()
+    );
     // ... but the tram is ridden through it to Victoria.
-    let journey = csa(&connections, &data, &["9400ZZMAALT1"], &["9400ZZMAVIC1"], hm(7, 55)).unwrap();
+    let journey = csa(
+        &connections,
+        &data,
+        &["9400ZZMAALT1"],
+        &["9400ZZMAVIC1"],
+        hm(7, 55),
+    )
+    .unwrap();
     assert_eq!(rides(&journey.legs), ["metrolink:0"]);
     // A stop with no pick-up cannot be boarded at.
-    let mut last = conn("metrolink:1", "9400ZZMAVIC1", "9400ZZMAPIC1", hm(8, 20), hm(8, 26));
+    let mut last = conn(
+        "metrolink:1",
+        "9400ZZMAVIC1",
+        "9400ZZMAPIC1",
+        hm(8, 20),
+        hm(8, 26),
+    );
     last.can_board = false;
     assert!(
         csa(
@@ -298,8 +375,20 @@ fn the_tram_buffer_applies_on_each_side_and_arrive_by_mirrors_it() {
     // the 08:05 tram; with the 2-minute buffer only the 08:08.
     let onto = sorted(vec![
         conn("C10001", "STKP", "MNCRPIC", hm(7, 50), hm(8, 0)),
-        conn("metrolink:0", "9400ZZMAPIC1", "9400ZZMAVIC1", hm(8, 5), hm(8, 11)),
-        conn("metrolink:1", "9400ZZMAPIC1", "9400ZZMAVIC1", hm(8, 8), hm(8, 14)),
+        conn(
+            "metrolink:0",
+            "9400ZZMAPIC1",
+            "9400ZZMAVIC1",
+            hm(8, 5),
+            hm(8, 11),
+        ),
+        conn(
+            "metrolink:1",
+            "9400ZZMAPIC1",
+            "9400ZZMAVIC1",
+            hm(8, 8),
+            hm(8, 14),
+        ),
     ]);
     let journey = csa(&onto, &interchange(0), &["STKP"], &[VIC], hm(7, 45)).unwrap();
     assert_eq!(rides(&journey.legs), ["C10001", "WALK:2", "metrolink:0"]);
@@ -312,7 +401,14 @@ fn the_tram_buffer_applies_on_each_side_and_arrive_by_mirrors_it() {
     tight.push(conn("C10004", "MNCRVIC", "LEEDS", hm(8, 17), hm(9, 5)));
     let tight = sorted(tight);
     let from_tram = |buffer: i32| {
-        csa(&tight, &interchange(buffer), &["9400ZZMAPIC1"], &["LEEDS"], hm(8, 0)).unwrap()
+        csa(
+            &tight,
+            &interchange(buffer),
+            &["9400ZZMAPIC1"],
+            &["LEEDS"],
+            hm(8, 0),
+        )
+        .unwrap()
     };
     assert_eq!(from_tram(0).arrival_min, hm(9, 5));
     assert_eq!(from_tram(2).arrival_min, hm(9, 15));
@@ -375,7 +471,12 @@ fn dense() -> (Vec<Connection>, InterchangeData) {
         );
     }
     for crs in ["RA", "RB", "RC"] {
-        add_node(&mut data, &format!("{crs}X"), &[&format!("R{crs}")], Some(5));
+        add_node(
+            &mut data,
+            &format!("{crs}X"),
+            &[&format!("R{crs}")],
+            Some(5),
+        );
     }
     add_link_both_ways(&mut data, "RAX", &stations[0], "WALK", 4);
     add_link_both_ways(&mut data, "RBX", &stations[6], "WALK", 5);
@@ -526,8 +627,13 @@ fn arrive_by_agrees_with_the_forward_search_on_trams() {
                 None,
                 None,
             )
-            .unwrap_or_else(|| panic!("{from} to {to}: nothing arrives by {}", forward.arrival_min));
-            assert!(backward.arrival_min <= forward.arrival_min, "{from} to {to}");
+            .unwrap_or_else(|| {
+                panic!("{from} to {to}: nothing arrives by {}", forward.arrival_min)
+            });
+            assert!(
+                backward.arrival_min <= forward.arrival_min,
+                "{from} to {to}"
+            );
             assert!(
                 backward.departure_min >= forward.departure_min,
                 "{from} to {to}"

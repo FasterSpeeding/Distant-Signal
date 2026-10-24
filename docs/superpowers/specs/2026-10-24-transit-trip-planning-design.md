@@ -34,6 +34,7 @@ the modelled access legs of `crates/api/src/data/tfl_access.rs`
 14. [Rollout](#14-rollout)
 15. [Tests, phases and effort](#15-tests-phases-and-effort)
 16. [Open questions for the user](#16-open-questions-for-the-user)
+17. [Implementation notes (DS-164)](#17-implementation-notes-ds-164)
 
 ## 1. Summary
 
@@ -985,3 +986,47 @@ decisions below are binding on the M and LT phases.
 | Q10 | Past a network's 60-day horizon, plans have no trams and say "Tram times aren't available for this date". Keep the horizon, or store more for planning? | **Keep the 60-day horizon.** |
 | Q11 | Should a tram-only plan (Piccadilly to Altrincham) be selectable and saved as a journey of untracked legs? Today a plan with no train cannot be picked. | **No, for now.** Tram-only plans are neither selectable nor saveable. |
 | Q12 | Build the LT0 stopgap (modelled tram links between rail hubs, §12.4) before the London Trams timetable, or go straight to LT1? | **Skip LT0**; go straight to LT1. |
+
+## 17. Implementation notes (DS-164)
+
+Phases M1 to M3 for Metrolink, 2026-10-24. Where the build departs from
+the text above:
+
+- **Planner settings are compiled into the api**
+  (`transit_planning::PLANNER_NETWORKS`: `change_minutes` 3,
+  `public_stop_id`), not added to the producer's network file. The api
+  never reads `crates/poller-transit-schedule/networks/*.toml`, and moving
+  them through the stream would have needed a schema change. §13.4's rule
+  "its network file has `change_minutes` and `public_stop_id`" reads
+  "`PLANNER_NETWORKS` has an entry".
+- **The tram-side change buffer rides on the rail-link walk** (§8.3).
+  `ModalChangeBuffer` is unchanged: the walk's minutes are the estimated
+  walk plus `TRIP_PLAN_TRANSIT_CHANGE_MINUTES`. Every rail-tram change
+  crosses exactly one such walk and a tram-tram change none, so the rule is
+  the spec's with no change to any search, and arrive-by mirrors it. Two
+  consequences: like the bus buffer, a walk from a rail origin onto the
+  tram (or off it to a rail destination) carries it too; and a replacement
+  bus to rail change owes the bus buffer plus the tram one. The leg's
+  `transitWalk.walkMinutes` is the walk alone.
+- **Off-switch byte identity with the switch on.** The cached graph holds
+  the tram connections whenever the switch lists a network; a request that
+  does not opt in searches the graph's rail-only interchange data, where no
+  walk reaches a tram platform, so no tram can be boarded. The opted-in
+  request uses a second interchange table (a copy with the tram nodes and
+  walks) built once per cached date.
+- **The leg** is carried on `PlannedLeg::Train` (`transit`) and served as
+  `kind: "transit"` by `PlannedLeg`'s `Serialize`, so every consumer that
+  walks legs counts it as a ride (Q5) without changes to modules other
+  work is changing (`tfl_access.rs`).
+- **A tram stop end on a date without a timetable** is a 400 ("Tram times
+  aren't available for this date, so the plan can't start or end at a tram
+  stop."); a station-to-station plan on such a date carries
+  `transitNotices`.
+- **Rail-link walks with no coordinates** take 5 minutes (`interchange`)
+  or 10 (`nearby`).
+- **No OpenAPI document** exists in the repo; the contract is in
+  `docs/api-changelog.md` (2026-10-24) and the route's doc comment.
+- **Deferred:** sharing the walk model's haversine with `tfl_access.rs`
+  (left untouched while DS-151 and the Old Street fix change it); the
+  London Trams phases; the measurement on a production copy (M4, a
+  runbook step).

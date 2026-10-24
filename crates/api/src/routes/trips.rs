@@ -615,7 +615,12 @@ async fn get_trip_plan(
     let via_choices = parse_vias(params.via.as_deref())?;
     check_via_conflicts(&via_choices, &avoid, &origin, &destination)?;
     if transit {
-        check_no_transit_stops(waypoints.iter().chain(&via_choices).chain(avoid_choices.all()))?;
+        check_no_transit_stops(
+            waypoints
+                .iter()
+                .chain(&via_choices)
+                .chain(avoid_choices.all()),
+        )?;
     }
     // A group via is ONE via to the search (one progress step), measured to
     // cost about what a single-station via does (`bench_group_vias_against_single`).
@@ -641,8 +646,16 @@ async fn get_trip_plan(
     // stop end of a planner network is a graph node instead (spec §12.2).
     let access = load_access_ends(
         &app,
-        if transit_ends[0].is_some() { "" } else { &origin },
-        if transit_ends[1].is_some() { "" } else { &destination },
+        if transit_ends[0].is_some() {
+            ""
+        } else {
+            &origin
+        },
+        if transit_ends[1].is_some() {
+            ""
+        } else {
+            &destination
+        },
     )
     .await?;
 
@@ -1280,15 +1293,14 @@ async fn graph_marker(
         .map_err(internal_error("read the latest schedule publish"))?;
     // A failed read only loses the early invalidation (the cache's
     // max-age still applies): a rail plan never fails because of trams.
-    let activation = match transit_planning::latest_activation(&app.database, transit_networks)
-        .await
-    {
-        Ok(activation) => activation,
-        Err(err) => {
-            tracing::warn!(error = ?err, "could not read the transit activation marker");
-            None
-        }
-    };
+    let activation =
+        match transit_planning::latest_activation(&app.database, transit_networks).await {
+            Ok(activation) => activation,
+            Err(err) => {
+                tracing::warn!(error = ?err, "could not read the transit activation marker");
+                None
+            }
+        };
     Ok(transit_planning::cache_marker(schedule, activation))
 }
 
@@ -1397,7 +1409,9 @@ fn check_no_transit_stops<'c>(
         {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("'{code}' is a tram stop: waypoints, vias and avoided stations must be stations"),
+                format!(
+                    "'{code}' is a tram stop: waypoints, vias and avoided stations must be stations"
+                ),
             ));
         }
     }
@@ -2318,6 +2332,9 @@ fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusC
 /// path axum's `FromRequestParts` impl for `Query` uses at request time (see
 /// `axum::extract::query::Query::try_from_uri`, which
 /// `from_request_parts` calls directly).
+#[cfg(test)]
+mod transit_db_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
