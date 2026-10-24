@@ -101,7 +101,7 @@ impl StreamSpec {
 /// The ingest streams (spec §7.1; D1: no `train-events`). Each
 /// island-of-Ireland poller has its own stream, so its ACL user can produce
 /// only its own schemas (2026-10-08 security review, H1).
-pub const STREAMS: [StreamSpec; 9] = [
+pub const STREAMS: [StreamSpec; 10] = [
     StreamSpec {
         name: "station-samples",
         stream: streams::STATION_SAMPLES,
@@ -164,6 +164,12 @@ pub const STREAMS: [StreamSpec; 9] = [
             common::transit::schema::TIMETABLE_COMMIT,
             common::transit::schema::SITUATIONS,
         ],
+    },
+    // darwin-relay's Darwin Push Port batches (DS-152), off by default.
+    StreamSpec {
+        name: "darwin",
+        stream: streams::DARWIN,
+        schemas: &[common::darwin::SCHEMA],
     },
 ];
 
@@ -528,7 +534,7 @@ mod tests {
         assert_eq!(modes, StreamModes::default());
         assert_eq!(
             modes.to_string(),
-            "station-samples:off,full-coverage:off,tfl:off,tfl-stops:off,reference:off,ioi-gtfs:off,ioi-nir:off,ioi-live:off,transit-metrolink:off"
+            "station-samples:off,full-coverage:off,tfl:off,tfl-stops:off,reference:off,ioi-gtfs:off,ioi-nir:off,ioi-live:off,transit-metrolink:off,darwin:off"
         );
 
         let modes: StreamModes = " station-samples:apply, full-coverage : apply,tfl:off"

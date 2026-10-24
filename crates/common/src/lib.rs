@@ -12,6 +12,7 @@ pub mod advisory_locks;
 pub mod backoff;
 pub mod config;
 pub mod corpus_inference;
+pub mod darwin;
 pub mod full_coverage_window;
 #[cfg(feature = "http")]
 pub mod gcp_external_account;
