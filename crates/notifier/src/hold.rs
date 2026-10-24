@@ -1,5 +1,6 @@
-//! Quiet hours (DS-153): the last step between a decided push and the push
-//! queue. Every cycle hands its decided pushes to [`dispatch`] instead of
+//! Quiet hours and snooze (DS-153): the last step between a decided push
+//! and the push queue. A snooze ("pause notifications until") holds pushes
+//! exactly as quiet hours do, until its time. Every cycle hands its decided pushes to [`dispatch`] instead of
 //! straight to `PushQueue::enqueue`.
 //!
 //! # What is held
@@ -73,19 +74,26 @@ fn count(result: &'static str) {
     metrics::counter!(common::metrics::metric_name(HOLDS_METRIC), "result" => result).increment(1);
 }
 
-/// A user's quiet hours, as stored. All three or none.
+/// A user's quiet hours, as stored (all three or none), and their snooze.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct QuietHours {
     pub start: Option<NaiveTime>,
     pub end: Option<NaiveTime>,
     pub timezone: Option<String>,
+    /// "Pause notifications until" (`notification_preferences.snoozed_until`):
+    /// held exactly like quiet hours until then.
+    pub snoozed_until: Option<DateTime<Utc>>,
 }
 
-/// Whether `now` is inside `quiet`: `start` inclusive, `end` exclusive,
+/// Whether pushes wait at `now`: the user snoozed them until later, or
+/// `now` is inside their quiet hours (`start` inclusive, `end` exclusive,
 /// local time in `timezone`; a window whose end is before its start runs
-/// through midnight. An unknown zone is read as Europe/London (the api
+/// through midnight). An unknown zone is read as Europe/London (the api
 /// accepts only zones it knows).
 pub(crate) fn in_quiet_hours(quiet: &QuietHours, now: DateTime<Utc>) -> bool {
+    if quiet.snoozed_until.is_some_and(|until| now < until) {
+        return true;
+    }
     let (Some(start), Some(end)) = (quiet.start, quiet.end) else {
         return false;
     };
@@ -150,19 +158,27 @@ fn hold_target(delivered: &Delivered) -> Option<String> {
     }
 }
 
+type QuietHoursRow = (
+    Option<NaiveTime>,
+    Option<NaiveTime>,
+    Option<String>,
+    Option<DateTime<Utc>>,
+);
+
 async fn quiet_hours_for(pool: &PgPool, user_id: &str) -> anyhow::Result<QuietHours> {
-    let row: Option<(Option<NaiveTime>, Option<NaiveTime>, Option<String>)> = sqlx::query_as(
-        "SELECT quiet_hours_start, quiet_hours_end, quiet_hours_timezone \
+    let row: Option<QuietHoursRow> = sqlx::query_as(
+        "SELECT quiet_hours_start, quiet_hours_end, quiet_hours_timezone, snoozed_until \
          FROM notification_preferences WHERE user_id = $1",
     )
     .bind(user_id)
     .fetch_optional(pool)
     .await?;
     Ok(row
-        .map(|(start, end, timezone)| QuietHours {
+        .map(|(start, end, timezone, snoozed_until)| QuietHours {
             start,
             end,
             timezone,
+            snoozed_until,
         })
         .unwrap_or_default())
 }
@@ -284,6 +300,7 @@ pub(crate) struct HoldRow {
     pub quiet_hours_start: Option<NaiveTime>,
     pub quiet_hours_end: Option<NaiveTime>,
     pub quiet_hours_timezone: Option<String>,
+    pub snoozed_until: Option<DateTime<Utc>>,
     /// The user's switches still allow this push (and, for a train, its
     /// subscription still has its pushes on; for a line, it is still
     /// pinned with its alerts on).
@@ -322,6 +339,7 @@ pub(crate) fn decide_release(
         start: hold.quiet_hours_start,
         end: hold.quiet_hours_end,
         timezone: hold.quiet_hours_timezone.clone(),
+        snoozed_until: hold.snoozed_until,
     };
     if in_quiet_hours(&quiet, now) {
         return Release::Wait;
@@ -363,6 +381,7 @@ async fn held_rows(pool: &PgPool) -> anyhow::Result<Vec<HoldRow>> {
                 h.train_status, h.train_delay_minutes, h.title, h.body, h.url, h.tag, \
                 h.decided_at, h.expires_at, \
                 p.quiet_hours_start, p.quiet_hours_end, p.quiet_hours_timezone, \
+                p.snoozed_until, \
                 CASE WHEN h.line_id IS NOT NULL THEN \
                          EXISTS (SELECT 1 FROM pinned_lines pl \
                                  WHERE pl.user_id = h.user_id AND pl.line_id = h.line_id \
@@ -487,6 +506,7 @@ mod tests {
             start: Some(start.parse().unwrap()),
             end: Some(end.parse().unwrap()),
             timezone: Some(zone.to_string()),
+            snoozed_until: None,
         }
     }
 
@@ -517,6 +537,23 @@ mod tests {
     #[test]
     fn no_quiet_hours_never_holds() {
         assert!(!in_quiet_hours(&QuietHours::default(), utc(3, 0)));
+    }
+
+    #[test]
+    fn a_snooze_holds_until_its_time_with_or_without_quiet_hours() {
+        let snoozed = QuietHours {
+            snoozed_until: Some(utc(12, 0)),
+            ..QuietHours::default()
+        };
+        assert!(in_quiet_hours(&snoozed, utc(11, 59)));
+        assert!(!in_quiet_hours(&snoozed, utc(12, 0)));
+        let both = QuietHours {
+            snoozed_until: Some(utc(12, 0)),
+            ..quiet("22:00:00", "07:00:00", "Europe/London")
+        };
+        assert!(in_quiet_hours(&both, utc(11, 0)), "snoozed");
+        assert!(in_quiet_hours(&both, utc(23, 0)), "quiet");
+        assert!(!in_quiet_hours(&both, utc(13, 0)));
     }
 
     #[test]
@@ -587,6 +624,7 @@ mod tests {
             quiet_hours_start: Some("22:00:00".parse().unwrap()),
             quiet_hours_end: Some("07:00:00".parse().unwrap()),
             quiet_hours_timezone: Some("Europe/London".into()),
+            snoozed_until: None,
             still_wanted: true,
             line_last_rank: None,
             last_notified_status: None,

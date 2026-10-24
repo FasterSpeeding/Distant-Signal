@@ -8,6 +8,9 @@ use anyhow::Result;
 use chrono::NaiveTime;
 use sqlx::PgPool;
 
+/// How far ahead a snooze may run.
+pub const MAX_SNOOZE: chrono::TimeDelta = chrono::TimeDelta::days(7);
+
 /// The thresholds a user may pick, in minutes. `None` is the notifier's
 /// `TRAIN_DELAY_THRESHOLD_MINUTES` (15 unless the operator changed it).
 pub const DELAY_THRESHOLDS: [i16; 4] = [5, 10, 15, 30];
@@ -37,6 +40,9 @@ pub struct NotificationSettings {
     pub template_attention: bool,
     pub delay_threshold_minutes: Option<i16>,
     pub quiet_hours: Option<QuietHours>,
+    /// Pushes are held until then, as in quiet hours. `None` when not
+    /// snoozed, a past time included.
+    pub snoozed_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Default for NotificationSettings {
@@ -51,6 +57,7 @@ impl Default for NotificationSettings {
             template_attention: true,
             delay_threshold_minutes: None,
             quiet_hours: None,
+            snoozed_until: None,
         }
     }
 }
@@ -69,6 +76,7 @@ pub struct NotificationSettingsChange {
     pub template_attention: Option<bool>,
     pub delay_threshold_minutes: Option<Option<i16>>,
     pub quiet_hours: Option<Option<QuietHours>>,
+    pub snoozed_until: Option<Option<chrono::DateTime<chrono::Utc>>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -88,11 +96,13 @@ struct SettingsRow {
     quiet_hours_start: Option<NaiveTime>,
     quiet_hours_end: Option<NaiveTime>,
     quiet_hours_timezone: Option<String>,
+    snoozed_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 const SETTINGS_COLUMNS: &str = "journey_suggestions, line_status, train_delay, train_cancel, \
      predicted_start, station_skip, template_attention, delay_threshold_minutes, \
-     quiet_hours_start, quiet_hours_end, quiet_hours_timezone";
+     quiet_hours_start, quiet_hours_end, quiet_hours_timezone, \
+     CASE WHEN snoozed_until > now() THEN snoozed_until END AS snoozed_until";
 
 impl From<SettingsRow> for NotificationSettings {
     fn from(row: SettingsRow) -> Self {
@@ -118,6 +128,7 @@ impl From<SettingsRow> for NotificationSettings {
             template_attention: row.template_attention,
             delay_threshold_minutes: row.delay_threshold_minutes,
             quiet_hours,
+            snoozed_until: row.snoozed_until,
         }
     }
 }
@@ -163,6 +174,7 @@ pub async fn update(
              quiet_hours_start = CASE WHEN $11 THEN $12 ELSE quiet_hours_start END, \
              quiet_hours_end = CASE WHEN $11 THEN $13 ELSE quiet_hours_end END, \
              quiet_hours_timezone = CASE WHEN $11 THEN $14 ELSE quiet_hours_timezone END, \
+             snoozed_until = CASE WHEN $15 THEN $16 ELSE snoozed_until END, \
              updated_at = now() \
          WHERE user_id = $1 \
          RETURNING {SETTINGS_COLUMNS}"
@@ -181,6 +193,8 @@ pub async fn update(
     .bind(quiet_hours.map(|q| q.start))
     .bind(quiet_hours.map(|q| q.end))
     .bind(quiet_hours.map(|q| q.timezone.clone()))
+    .bind(change.snoozed_until.is_some())
+    .bind(change.snoozed_until.flatten())
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;

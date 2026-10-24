@@ -20,6 +20,7 @@ const SETTINGS: NotificationPreferences = {
   templateAttention: true,
   delayThresholdMinutes: null,
   quietHours: null,
+  snoozedUntil: null,
 };
 
 const DEVICES: PushDevice[] = [
@@ -99,7 +100,7 @@ describe('NotificationSettings', () => {
     await waitFor(() => expect(delays).toBeEnabled());
     expect(delays).toBeChecked();
     expect(screen.getByRole('switch', { name: /^Cancellations/ })).toBeChecked();
-    expect(thresholdInput()).toHaveValue('15 minutes');
+    expect(thresholdInput()).toHaveValue('15 min');
 
     fireEvent.click(delays);
     await waitFor(() => expect(delays).not.toBeChecked());
@@ -195,5 +196,23 @@ describe('NotificationSettings', () => {
       // @ts-expect-error -- undo the test-only stub (jsdom has no serviceWorker).
       delete navigator.serviceWorker;
     }
+  });
+  it('pauses notifications and resumes them', async () => {
+    const fetchMock = stubFetch();
+    renderWithMantine(<NotificationSettings pinnedLines={[]} />);
+    const pause = within(screen.getByRole('region', { name: 'Pause' }));
+    const hour = pause.getByRole('button', { name: 'Pause for 1 hour' });
+    await waitFor(() => expect(hour).toBeEnabled());
+    const before = Date.now();
+    fireEvent.click(hour);
+    expect(await pause.findByText(/^Paused until/)).toBeInTheDocument();
+    const [body] = putBodies(fetchMock, '/api/preferences/notifications') as [{ snoozedUntil: string }];
+    const until = Date.parse(body.snoozedUntil);
+    expect(until - before).toBeGreaterThanOrEqual(60 * 60 * 1000);
+    expect(until - before).toBeLessThan(61 * 60 * 1000);
+
+    fireEvent.click(pause.getByRole('button', { name: 'Resume now' }));
+    expect(await pause.findByRole('button', { name: 'Pause for 4 hours' })).toBeInTheDocument();
+    expect(putBodies(fetchMock, '/api/preferences/notifications').at(-1)).toEqual({ snoozedUntil: null });
   });
 });

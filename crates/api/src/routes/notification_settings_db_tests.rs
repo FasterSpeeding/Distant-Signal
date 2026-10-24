@@ -328,6 +328,7 @@ async fn notification_preferences_read_as_defaults_and_change_only_what_is_sent(
         "templateAttention": true,
         "delayThresholdMinutes": null,
         "quietHours": null,
+        "snoozedUntil": null,
     });
     let (status, body) = call(&router, "GET", URI, Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -404,6 +405,55 @@ async fn notification_preferences_read_as_defaults_and_change_only_what_is_sent(
     assert_eq!(body["delayThresholdMinutes"], Value::Null);
     assert_eq!(body["quietHours"], Value::Null);
     assert_eq!(body["trainDelay"], json!(false), "kept");
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database)"]
+async fn a_snooze_is_kept_for_up_to_a_week_and_reads_as_null_once_past() {
+    const USER: &str = "TEST-NOTIFSET-PREFS-SNOOZE";
+    const URI: &str = "/public/preferences/notifications";
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool, &[USER]).await;
+    let token = seed_session(&pool, USER).await;
+    let router = router(pool.clone());
+
+    // Snooze: a time ahead is kept, more than a week ahead refused, and a
+    // time already past reads as not snoozed.
+    let until = chrono::Utc::now() + chrono::Duration::hours(2);
+    let (status, body) = call(
+        &router,
+        "PUT",
+        URI,
+        Some(&token),
+        Some(json!({ "snoozedUntil": until.to_rfc3339() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let read: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(body["snoozedUntil"].clone()).expect("snoozedUntil");
+    assert!(
+        (read - until).abs() < chrono::Duration::seconds(1),
+        "{read}"
+    );
+    let (status, _) = call(
+        &router,
+        "PUT",
+        URI,
+        Some(&token),
+        Some(json!({ "snoozedUntil": (chrono::Utc::now() + chrono::Duration::days(8)).to_rfc3339() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = call(
+        &router,
+        "PUT",
+        URI,
+        Some(&token),
+        Some(json!({ "snoozedUntil": (chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["snoozedUntil"], Value::Null);
 }
 
 #[tokio::test]

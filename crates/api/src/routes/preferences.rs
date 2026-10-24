@@ -48,7 +48,9 @@ pub fn router() -> Router {
 /// breaks), `lineStatus`, `trainDelay`, `trainCancel`, `predictedStart`,
 /// `stationSkip` and `templateAttention`; `delayThresholdMinutes` (5, 10,
 /// 15 or 30; `null` for the default, 15); `quietHours` (`{start, end,
-/// timezone}`, `HH:MM` local times and an IANA zone, or `null` for none).
+/// timezone}`, `HH:MM` local times and an IANA zone, or `null` for none);
+/// `snoozedUntil` (pushes held until then as in quiet hours, at most a
+/// week ahead; `null` when not snoozed).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[expect(
@@ -65,6 +67,7 @@ struct NotificationPreferences {
     template_attention: bool,
     delay_threshold_minutes: Option<i16>,
     quiet_hours: Option<QuietHoursBody>,
+    snoozed_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, Serialize)]
@@ -96,6 +99,8 @@ struct NotificationPreferencesUpdate {
     delay_threshold_minutes: Option<Option<i16>>,
     #[serde(default, deserialize_with = "present")]
     quiet_hours: Option<Option<QuietHoursBody>>,
+    #[serde(default, deserialize_with = "present")]
+    snoozed_until: Option<Option<chrono::DateTime<chrono::Utc>>>,
 }
 
 /// A field that is present, `null` or not: `Some(None)` for `null`.
@@ -121,7 +126,13 @@ fn parse_quiet_time(value: &str) -> Option<chrono::NaiveTime> {
 /// sentence a 400 says.
 fn validate_notification_update(
     body: NotificationPreferencesUpdate,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<notification_settings::NotificationSettingsChange, String> {
+    if let Some(Some(until)) = body.snoozed_until
+        && until > now + notification_settings::MAX_SNOOZE
+    {
+        return Err("Notifications can be paused for up to 7 days.".to_string());
+    }
     if let Some(Some(minutes)) = body.delay_threshold_minutes
         && !notification_settings::DELAY_THRESHOLDS.contains(&minutes)
     {
@@ -160,6 +171,8 @@ fn validate_notification_update(
         template_attention: body.template_attention,
         delay_threshold_minutes: body.delay_threshold_minutes,
         quiet_hours,
+        // A time already past is no snooze: stored as such, read as null.
+        snoozed_until: body.snoozed_until,
     })
 }
 
@@ -179,6 +192,7 @@ impl From<notification_settings::NotificationSettings> for NotificationPreferenc
                 end: quiet.end.format(QUIET_TIME_FORMAT).to_string(),
                 timezone: quiet.timezone,
             }),
+            snoozed_until: settings.snoozed_until,
         }
     }
 }
@@ -199,8 +213,8 @@ async fn put_notification_preferences(
     user: AuthenticatedUser,
     Json(body): Json<NotificationPreferencesUpdate>,
 ) -> Result<Json<NotificationPreferences>, (StatusCode, String)> {
-    let change =
-        validate_notification_update(body).map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    let change = validate_notification_update(body, chrono::Utc::now())
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
     let settings = notification_settings::update(&app.database, &user.id, &change)
         .await
         .map_err(internal_error)?;
@@ -512,9 +526,35 @@ mod tests {
         serde_json::from_value(json)
     }
 
+    fn validate_notification_update_now(
+        body: NotificationPreferencesUpdate,
+    ) -> Result<notification_settings::NotificationSettingsChange, String> {
+        validate_notification_update(body, chrono::Utc::now())
+    }
+
+    #[test]
+    fn a_snooze_runs_for_at_most_a_week() {
+        let now: chrono::DateTime<chrono::Utc> = "2099-01-10T12:00:00Z".parse().unwrap();
+        let check = |until: &str| {
+            validate_notification_update(
+                update(serde_json::json!({ "snoozedUntil": until })).unwrap(),
+                now,
+            )
+        };
+        assert!(check("2099-01-10T13:00:00Z").is_ok());
+        assert!(check("2099-01-17T12:00:00Z").is_ok());
+        assert!(check("2099-01-17T12:00:01Z").is_err());
+        let cleared = validate_notification_update(
+            update(serde_json::json!({ "snoozedUntil": null })).unwrap(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(cleared.snoozed_until, Some(None));
+    }
+
     #[test]
     fn a_notification_update_changes_only_the_fields_present() {
-        let change = validate_notification_update(
+        let change = validate_notification_update_now(
             update(serde_json::json!({ "journeySuggestions": false })).unwrap(),
         )
         .unwrap();
@@ -526,7 +566,7 @@ mod tests {
             }
         );
         // null clears the threshold and the quiet hours; absent leaves them.
-        let change = validate_notification_update(
+        let change = validate_notification_update_now(
             update(serde_json::json!({ "delayThresholdMinutes": null, "quietHours": null }))
                 .unwrap(),
         )
@@ -537,7 +577,7 @@ mod tests {
 
     #[test]
     fn a_notification_update_checks_the_threshold_and_the_quiet_hours() {
-        let check = |json| validate_notification_update(update(json).unwrap());
+        let check = |json| validate_notification_update(update(json).unwrap(), chrono::Utc::now());
         assert!(check(serde_json::json!({ "delayThresholdMinutes": 30 })).is_ok());
         assert!(check(serde_json::json!({ "delayThresholdMinutes": 20 })).is_err());
         let quiet = |start: &str, end: &str, zone: &str| serde_json::json!({ "quietHours": { "start": start, "end": end, "timezone": zone } });

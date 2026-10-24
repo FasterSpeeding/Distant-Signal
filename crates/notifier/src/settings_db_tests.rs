@@ -678,3 +678,45 @@ async fn quiet_hours_hold_a_line_push_and_skip_full_poll_pushes_until_they_end()
     assert_eq!(line_rank, Some(2));
     assert!(holds(&pool, USER).await.is_empty());
 }
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database)"]
+async fn a_snooze_holds_pushes_until_it_ends_and_lets_cancellations_through() {
+    const USER: &str = "TEST-NOTIFSET-SNOOZE";
+    const UID: &str = "TEST-NOTIFSET-SNOOZE1";
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool, USER, UID).await;
+    let fixture = seed(&pool, USER, UID).await;
+    let now = chrono::Utc::now();
+    let until = now + chrono::Duration::hours(1);
+    set_prefs(
+        &pool,
+        USER,
+        "snoozed_until",
+        &format!("'{}'", until.to_rfc3339()),
+    )
+    .await;
+
+    set_train_state(&pool, fixture.train, "en_route", 20).await;
+    decide_train(&pool, fixture.train, now).await;
+    assert_eq!(holds(&pool, USER).await.len(), 1, "held while snoozed");
+    release(&pool, now + chrono::Duration::minutes(30)).await;
+    assert_eq!(holds(&pool, USER).await.len(), 1, "still snoozed");
+    assert_eq!(delivered_train_state(&pool, USER).await, None);
+    release(&pool, until + chrono::Duration::seconds(1)).await;
+    assert!(holds(&pool, USER).await.is_empty());
+    assert_eq!(
+        delivered_train_state(&pool, USER).await,
+        Some(("en_route".to_string(), Some(20))),
+        "sent when the snooze ends"
+    );
+
+    // A cancellation is not held by a snooze either.
+    set_train_state(&pool, fixture.train, "cancelled", 20).await;
+    decide_train(&pool, fixture.train, now).await;
+    assert!(holds(&pool, USER).await.is_empty());
+    assert_eq!(
+        delivered_train_state(&pool, USER).await,
+        Some(("cancelled".to_string(), Some(20)))
+    );
+}

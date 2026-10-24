@@ -1701,6 +1701,9 @@ export interface NotificationPreferences {
   templateAttention?: boolean;
   delayThresholdMinutes?: 5 | 10 | 15 | 30 | null;
   quietHours?: QuietHours | null;
+  /** Notifications are paused (held, as in quiet hours) until this time;
+   * `null` when not paused. At most a week ahead. */
+  snoozedUntil?: string | null;
 }
 
 /** A `PUT /preferences/notifications` body: only the fields sent change. */

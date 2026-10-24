@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Badge, Button, Group, Select, Stack, Switch, Text } from '@mantine/core';
 import { TimeInput } from '@mantine/dates';
 import { NotificationsToggle } from '@/components/NotificationsToggle';
+import { CLOCK_HINT } from '@/components/TimeFilterInput';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { formatDateTime } from '@/lib/dateFormat';
 import type { NotificationPreferences, NotificationPreferencesUpdate, PushDevice } from '@/lib/types';
@@ -16,7 +17,7 @@ export interface PinnedLineAlert {
   alerts: boolean;
 }
 
-type Switchable = Exclude<keyof NotificationPreferences, 'delayThresholdMinutes' | 'quietHours'>;
+type Switchable = Exclude<keyof NotificationPreferences, 'delayThresholdMinutes' | 'quietHours' | 'snoozedUntil'>;
 
 /** The switches, in the order the page lists them, with what each sends.
  * `journeySuggestions` says how it changes the train pushes. */
@@ -60,10 +61,10 @@ const SWITCHES: { key: Switchable; label: string; description: string }[] = [
 ];
 
 const THRESHOLD_OPTIONS = [
-  { value: '5', label: '5 minutes' },
-  { value: '10', label: '10 minutes' },
-  { value: '15', label: '15 minutes' },
-  { value: '30', label: '30 minutes' },
+  { value: '5', label: '5 min' },
+  { value: '10', label: '10 min' },
+  { value: '15', label: '15 min' },
+  { value: '30', label: '30 min' },
 ];
 /** What the api uses when the threshold is `null`. */
 const DEFAULT_THRESHOLD = 15;
@@ -211,6 +212,8 @@ export function NotificationSettings({ pinnedLines }: { pinnedLines: PinnedLineA
         </Stack>
       </PreferencesSection>
 
+      <PauseSection settings={settings} disabled={settings === null || saving} save={save} />
+
       <QuietHoursSection settings={settings} disabled={settings === null || saving} save={save} />
 
       <PreferencesSection
@@ -231,6 +234,67 @@ export function NotificationSettings({ pinnedLines }: { pinnedLines: PinnedLineA
 
       <DevicesSection version={devicesVersion} />
     </>
+  );
+}
+
+/** The pauses offered, each as the time it ends from `now`. */
+const PAUSES: { label: string; until: (now: Date) => Date }[] = [
+  { label: 'Pause for 1 hour', until: (now) => new Date(now.getTime() + 60 * 60 * 1000) },
+  { label: 'Pause for 4 hours', until: (now) => new Date(now.getTime() + 4 * 60 * 60 * 1000) },
+  {
+    label: 'Pause until 07:00 tomorrow',
+    until: (now) => {
+      const until = new Date(now);
+      until.setDate(until.getDate() + 1);
+      until.setHours(7, 0, 0, 0);
+      return until;
+    },
+  },
+];
+
+/** "Pause notifications" (snooze): held as in quiet hours until the time
+ * chosen, then the latest news. */
+function PauseSection({
+  settings,
+  disabled,
+  save,
+}: {
+  settings: NotificationPreferences | null;
+  disabled: boolean;
+  save: (change: NotificationPreferencesUpdate) => Promise<boolean>;
+}) {
+  const until = settings?.snoozedUntil ?? null;
+  return (
+    <PreferencesSection
+      id="pause-heading"
+      title="Pause"
+      description="Pause notifications for a while. They wait until the pause ends, then you get the latest news. Cancellations still come through."
+    >
+      {until ? (
+        <Group gap="sm">
+          <Text size="sm" role="status">
+            Paused until {formatDateTime(until)}.
+          </Text>
+          <Button size="xs" variant="default" disabled={disabled} onClick={() => void save({ snoozedUntil: null })}>
+            Resume now
+          </Button>
+        </Group>
+      ) : (
+        <Group gap="xs">
+          {PAUSES.map((pause) => (
+            <Button
+              key={pause.label}
+              size="xs"
+              variant="default"
+              disabled={disabled}
+              onClick={() => void save({ snoozedUntil: pause.until(new Date()).toISOString() })}
+            >
+              {pause.label}
+            </Button>
+          ))}
+        </Group>
+      )}
+    </PreferencesSection>
   );
 }
 
@@ -294,6 +358,7 @@ function QuietHoursSection({
         <Group gap="md" align="flex-end">
           <TimeInput
             label="From"
+            description={CLOCK_HINT}
             value={start}
             disabled={disabled}
             onChange={(event) => setStart(event.currentTarget.value)}

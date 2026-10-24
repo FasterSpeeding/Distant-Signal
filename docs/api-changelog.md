@@ -35,6 +35,10 @@ routes. DS-MCP needs no change.
   with every setting instead of echoing the body. `400` for a threshold
   outside the four, quiet hours that start and end at the same time or
   an unknown zone; unknown fields are still refused (`422`).
+- `GET`/`PUT /public/preferences/notifications` also take
+  `snoozedUntil` (RFC 3339, at most a week ahead, else `400`; `null` to
+  resume): pushes are held as in quiet hours until then. It reads as
+  `null` once past.
 - **New: `PUT /public/preferences/pinned-lines/{lineId}/alerts`**
   `{notify}`: whether a pinned line's status changes are pushed. Pinning
   and alerting are separate; every existing pin alerts, and so does a new

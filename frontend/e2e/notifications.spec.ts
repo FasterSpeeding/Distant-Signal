@@ -87,8 +87,8 @@ test.describe('Notifications, logged in', () => {
       await send.getByText('Skipped stops', { exact: true }).click();
       await expect(send.getByRole('switch', { name: /^Skipped stops/ })).not.toBeChecked();
       await send.getByRole('textbox', { name: 'Delay threshold' }).click();
-      await page.getByRole('option', { name: '30 minutes' }).click();
-      await expect(send.getByRole('textbox', { name: 'Delay threshold' })).toHaveValue('30 minutes');
+      await page.getByRole('option', { name: '30 min' }).click();
+      await expect(send.getByRole('textbox', { name: 'Delay threshold' })).toHaveValue('30 min');
 
       const quiet = page.getByRole('region', { name: 'Quiet hours' });
       await quiet.getByText('Quiet hours', { exact: true }).click();
@@ -97,7 +97,7 @@ test.describe('Notifications, logged in', () => {
       await page.reload();
       await expect(send.getByRole('switch', { name: /^Skipped stops/ })).not.toBeChecked();
       await expect(send.getByRole('switch', { name: /^Train delays/ })).toBeChecked();
-      await expect(send.getByRole('textbox', { name: 'Delay threshold' })).toHaveValue('30 minutes');
+      await expect(send.getByRole('textbox', { name: 'Delay threshold' })).toHaveValue('30 min');
       await expect(quiet.getByRole('switch', { name: 'Quiet hours' })).toBeChecked();
       await expect(quiet.getByLabel('From')).toHaveValue('22:00');
       await expect(quiet.getByLabel('Until')).toHaveValue('07:00');
