@@ -1,10 +1,12 @@
 import { Group } from '@mantine/core';
-import { JourneySuggestionsToggle } from '@/components/JourneySuggestionsToggle';
 import { NotificationsToggle } from '@/components/NotificationsToggle';
+import { TextLink } from '@/components/TextLink';
 import { PreferencesSection } from './PreferencesSection';
 
-/** Push notifications for this device. Account-backed: the subscription
- * is saved to the account, so this section shows only when logged in. */
+/** Push notifications for this device, and the way to every other
+ * notification setting (`/account/notifications`). Account-backed: the
+ * subscription is saved to the account, so this section shows only when
+ * logged in. */
 export function NotificationsSection() {
   return (
     <PreferencesSection
@@ -15,7 +17,9 @@ export function NotificationsSection() {
       <Group>
         <NotificationsToggle />
       </Group>
-      <JourneySuggestionsToggle />
+      <TextLink href="/account/notifications" size="sm">
+        Choose which notifications you get
+      </TextLink>
     </PreferencesSection>
   );
 }

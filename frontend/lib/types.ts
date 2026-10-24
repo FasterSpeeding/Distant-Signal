@@ -1706,6 +1706,17 @@ export interface NotificationPreferences {
 /** A `PUT /preferences/notifications` body: only the fields sent change. */
 export type NotificationPreferencesUpdate = Partial<NotificationPreferences>;
 
+/** One of `GET /notifications/devices`: a browser push goes to. */
+export interface PushDevice {
+  id: number;
+  /** "Chrome on Android", or null when it could not be worked out. */
+  label: string | null;
+  createdAt: string;
+  lastUsedAt: string;
+  /** Hex SHA-256 of the push endpoint: hash this browser's to find it. */
+  endpointSha256: string;
+}
+
 /** One leg of a `GET /Trips/plan` itinerary
  * (`crates/api/src/data/trip_planning_itinerary.rs::PlannedLeg`,
  * camelCase, discriminated by `kind`). A `transfer` leg has no train

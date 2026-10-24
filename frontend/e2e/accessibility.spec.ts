@@ -237,6 +237,7 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   ['/groups (anonymous login prompt)', '/groups'],
   ['/chat (anonymous login prompt)', '/chat'],
   ['/account/preferences', '/account/preferences'],
+  ['/account/notifications (anonymous login prompt)', '/account/notifications'],
   ['/attribution', '/attribution'],
   // The draft legal pages 404 unless the server has LEGAL_PAGES_PREVIEW or
   // LEGAL_PAGES_PUBLISHED on (frontend/lib/legal.ts). CI sets
@@ -300,6 +301,7 @@ test.describe('accessibility: logged in', () => {
     ['/track/mine/add-ticket', '/track/mine/add-ticket'],
     ['/groups', '/groups'],
     ['/chat', '/chat'],
+    ['/account/notifications', '/account/notifications'],
   ] as const) {
     test(name, async ({ page }) => {
       // Next's error shell is itself accessible, so without this a route that
