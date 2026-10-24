@@ -7,6 +7,7 @@ import {
   isTooLargeSearchError,
   noResultHint,
   trainLegsForTracking,
+  tripPlanStopNames,
   TripPlanError,
   TRIP_PLAN_UNAVAILABLE_MESSAGE,
   satisfiedStationLabel,
@@ -14,6 +15,7 @@ import {
   waypointSatisfiedLabel,
 } from './tripPlan';
 import type { TripPlanItinerary, TripPlanLeg, TripPlanResponse } from './types';
+import { RAIL_TRAM_RAIL } from '@/test/transitPlanFixtures';
 
 describe('buildTripPlanQuery', () => {
   it('builds a minimal query with no waypoints or departAfter', () => {
@@ -504,5 +506,33 @@ describe('station groups (2026-10-07)', () => {
     expect(waypointSatisfiedLabel({ how: 'walk' }, station)).toBe('Walks to ' + station);
     expect(waypointSatisfiedLabel({ how: 'origin' }, station)).toBe('Starts at ' + station);
     expect(waypointSatisfiedLabel({ how: 'destination' }, station)).toBe('Ends at ' + station);
+  });
+});
+
+describe('tram legs in the plan', () => {
+  it('asks for transit legs on every request', () => {
+    const query = buildTripPlanQuery({
+      originCrs: '9400ZZMAPIC',
+      destinationCrs: 'MCV',
+      waypointCrs: [],
+      date: '2026-11-04',
+      results: 'fastest',
+    });
+    const params = new URLSearchParams(query);
+    expect(params.get('transit')).toBe('true');
+    expect(params.get('origin')).toBe('9400ZZMAPIC');
+  });
+
+  it("names a plan's tram stations and never asks the station lookup for them", () => {
+    const plan: TripPlanResponse = {
+      results: 'fastest',
+      segments: [
+        { originCrs: '9400ZZMAPIC', destinationCrs: 'LDS', cappedByMaxChanges: false, itineraries: [RAIL_TRAM_RAIL] },
+      ],
+    };
+    expect(collectTripPlanStationCodes(plan)).not.toContain('9400ZZMAPIC');
+    const names = tripPlanStopNames(plan);
+    expect(names.get('9400ZZMAPIC')).toBe('Piccadilly (Metrolink)');
+    expect(names.get('9400ZZMAVIC')).toBe('Victoria (Metrolink)');
   });
 });

@@ -21,6 +21,7 @@ import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { groupLabels, useStationGroups, withGroupSuggestions } from '@/lib/stationGroups';
 import { isGroupCode, isTflStopCode, normalizeLocationCode } from '@/lib/stationLabel';
 import { searchPlannerEnds } from '@/lib/plannerEnds';
+import { isTransitStopCode } from '@/lib/transitStops';
 import type { Suggestion, TrainSearchDates } from '@/lib/types';
 import { searchDateBounds } from '@/lib/searchDates';
 import type { TripPlanAdvancedOptions, TripPlanQuery } from '@/lib/tripPlan';
@@ -242,16 +243,20 @@ export function PlanTripForm({
     searchPlannerEnds,
   );
 
-  /** Keeps a picked TfL stop's name, so the field can say what its stop
-   * id stands for once the suggestions have moved on. */
+  /** Keeps a picked TfL stop's or tram station's name, so the field can
+   * say what its stop id stands for once the suggestions have moved on. */
   function rememberStop(code: string, suggestions: Suggestion[]) {
     const picked = suggestions.find((s) => s.code === code);
-    if (picked && isTflStopCode(picked.code)) addNames(new Map([[picked.code, picked.name]]));
+    if (picked && (isTflStopCode(picked.code) || isTransitStopCode(picked.code))) {
+      addNames(new Map([[picked.code, picked.name]]));
+    }
   }
 
   /** Under From or To when it holds a TfL stop's id: what it is, and that
-   * the route runs from or to a station nearby. */
+   * the route runs from or to a station nearby. A tram station
+   * (`9400ZZMAPIC`) is just named: the plan rides the tram from it. */
   function stopDescription(code: string, end: 'from' | 'to'): string | undefined {
+    if (isTransitStopCode(code)) return labels.get(normalizeLocationCode(code)) ?? 'A tram stop';
     if (!isTflStopCode(code)) return undefined;
     const name = labels.get(normalizeLocationCode(code)) ?? 'A Tube, DLR or tram stop';
     return end === 'from'

@@ -9,7 +9,7 @@ import { test, expect, type Page } from '@playwright/test';
 // (whose first day is today) keeps the date the URL restores.
 //
 // `/Trips/plan` is rate limited per client (20 a minute, burst 10), so the
-// whole file makes eight plan requests.
+// whole file makes nine plan requests.
 
 const FIXED_NOW = new Date('2026-09-17T06:00:00Z'); // 07:00 in London
 
@@ -102,4 +102,62 @@ test('an arrival just after midnight searches both dates', async ({ page }) => {
   expect(sent.get('acrossMidnight')).toBe('true');
   await expect(page.getByTestId('plan-timing-summary')).toHaveText('Arrive by 00:50, 18 Sep 2026');
   await expect(page.getByText(/^00:10 .*00:40$/)).toBeVisible();
+});
+
+// Rail, tram, rail (transit trip planning §11): the seed's "A rail, tram,
+// rail route for /plan": ZTA 07:00 to MAN 07:30 (E2ETR1), the Blue Line
+// from Piccadilly (9400ZZMAPIC) 07:44 to Victoria (9400ZZMAVIC) 07:52,
+// and MCV 08:10 to ZTB 08:40 (E2ETR2), with walks between MAN and
+// Piccadilly and between Victoria and MCV (`transit_rail_links`). The api
+// plans it for real; saving is answered here, so no journey is left behind
+// for the other specs and screenshots.
+test('plans a route with a tram in the middle, and saves the tram as an untracked leg', async ({ page }) => {
+  let saved: { legs: Record<string, unknown>[] } | null = null;
+  await page.route('**/api/Journeys/itinerary', async (route) => {
+    saved = route.request().postDataJSON() as { legs: Record<string, unknown>[] };
+    await route.fulfill({ json: { journeyId: 990001, legId: 1, trackingId: null, resolutionStatus: null } });
+  });
+  await page.route('**/api/Journeys/990001', (route) => route.fulfill({ status: 404, body: 'Not found' }));
+
+  await openPlan(page, 'origin=ZTA&destination=ZTB&date=2026-09-17&departAfter=06:45');
+  const response = await findRoutes(page);
+  expect(new URL(response.url()).searchParams.get('transit')).toBe('true');
+
+  const card = page.locator('[data-plan-entry]').first();
+  await expect(card.getByText('07:44 Tram (Blue Line) Piccadilly to Victoria 07:52')).toBeVisible();
+  await expect(card.getByText('Tram', { exact: true })).toBeVisible();
+  await expect(card.getByText(/^Walk to Piccadilly tram stop, \d+ min$/)).toBeVisible();
+  await expect(card.getByText(/^Walk from Victoria tram stop, \d+ min$/)).toBeVisible();
+  await expect(card.getByText(/^About \d+ min walk, estimated$/).first()).toBeVisible();
+  await expect(card.getByText('Scheduled times, not live')).toBeVisible();
+  await expect(card).not.toContainText(/on time|expected|late/i);
+
+  await card.getByRole('radio').check();
+  await page.getByRole('button', { name: 'Track this journey' }).click();
+  await expect(page.getByText('First leg tracked')).toBeVisible();
+
+  expect(saved).not.toBeNull();
+  const legs = saved!.legs;
+  expect(legs.map((leg) => leg.transitMode ?? 'train')).toEqual(['train', 'walk', 'tram', 'walk', 'train']);
+  expect(legs[0]).toMatchObject({
+    trainUid: 'E2ETR1',
+    serviceDate: '2026-09-17',
+    originCrs: 'ZTA',
+    destinationCrs: 'MAN',
+  });
+  expect(legs[1]).toMatchObject({ kind: 'untracked', destinationStopId: '9400ZZMAPIC' });
+  // The tram's own timetabled times (07:44 to 07:52 BST), its line and stations.
+  expect(legs[2]).toEqual({
+    kind: 'untracked',
+    transitMode: 'tram',
+    originName: 'Piccadilly',
+    destinationName: 'Victoria',
+    lineName: 'Blue Line',
+    originStopId: '9400ZZMAPIC',
+    destinationStopId: '9400ZZMAVIC',
+    plannedDeparture: '2026-09-17T06:44:00.000Z',
+    plannedArrival: '2026-09-17T06:52:00.000Z',
+  });
+  expect(legs[3]).toMatchObject({ kind: 'untracked', originStopId: '9400ZZMAVIC' });
+  expect(legs[4]).toMatchObject({ trainUid: 'E2ETR2', originCrs: 'MCV', destinationCrs: 'ZTB' });
 });
