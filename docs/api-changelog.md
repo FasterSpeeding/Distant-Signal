@@ -25,6 +25,24 @@ bodies are Metrolink's, with these differences a client may see:
 
 **For ds-mcp:** nothing to change; a transit tool that lists
 `/transit/networks` will see `net` once it is on.
+## 2026-10-24: Tube access legs charge a change between branches
+
+Additive fields, changed estimates. DS-MCP needs no change. See
+docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md §3.
+
+- Once TfL's route sequences are loaded (`pollers.tfl.stops.routes`), an
+  access ride is measured along the line's routes, and a ride that no one
+  route covers (Uxbridge to Rickmansworth, Uxbridge to Heathrow) changes
+  trains at the branch junction: its `minutes` include 10 more (5 to
+  change, 5 waiting). A ride needing two changes on one line is no longer
+  offered. So `access.*.candidates`, their `minutes` and
+  `distanceMetres`, and the plans built on them can differ.
+- New on each `access.origin/destination.candidates[]` entry: `stopCount`
+  (stops ridden, when measured along routes) and `changeAt` (the junction
+  stop, `{id, name, modes, lines}`, when the ride changes). Both absent
+  otherwise.
+- New on an access leg's `access`: `changeAt`, as above, absent when the
+  ride has no change.
 
 ## 2026-10-23: no `email` in the account export
 

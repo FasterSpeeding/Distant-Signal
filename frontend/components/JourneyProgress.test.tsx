@@ -939,7 +939,9 @@ describe('JourneyProgress auto-scroll', () => {
       matches: query === '(prefers-reduced-motion: reduce)',
       media: query,
       onchange: null,
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- MediaQueryList's type still requires the legacy method
       addListener: vi.fn(),
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- as above
       removeListener: vi.fn(),
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
