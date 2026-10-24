@@ -13,7 +13,7 @@ import {
   Text,
   VisuallyHidden,
 } from '@mantine/core';
-import { DateTimePicker, DatePickerInput } from '@mantine/dates';
+import { DateTimePicker, DatePickerInput } from '@/components/LazyDateFields';
 import { PICKER_DATE_FORMAT, PICKER_DATE_TIME_FORMAT } from '@/lib/dateFormat';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
