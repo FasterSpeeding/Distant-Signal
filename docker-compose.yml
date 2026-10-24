@@ -85,7 +85,7 @@ x-direct-database-url: &direct-database-url postgres://${POSTGRES_USER}:${POSTGR
 
 services:
   postgres:
-    image: postgres:16@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97
+    image: postgres:18@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
