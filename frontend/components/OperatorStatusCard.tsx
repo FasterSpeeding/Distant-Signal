@@ -1,5 +1,3 @@
-'use client';
-
 import { Group, Text } from '@mantine/core';
 import { StatusBadge } from './StatusBadge';
 import { LastUpdated } from './LastUpdated';
