@@ -763,7 +763,7 @@ workload's rollout is now:
 | Workload | Rollout | Per-service limit |
 |---|---|---|
 | trust-backlog-consumer, trust-consumer, full-coverage-consumer, enricher | `<component>.updateStrategy`, default `Recreate` | (replicas + maxSurge) × pool + 1; maxSurge is 0 under Recreate |
-| aggregator, notifier, ingest-writer, schedulefeed (schedule-ingest, schedule-reference), every poller | fixed `Recreate` (two copies would double-write) | pool + 1 (writer: pool + lock session) |
+| aggregator, notifier, ingest-writer, schedulefeed (schedule-ingest, schedule-reference), every poller | fixed `Recreate` (two copies would double-write) | pool + 1 (writer: pool + lock session + 1) |
 | api | `api.strategy.type`, Recreate or RollingUpdate (maxSurge 1, maxUnavailable 0) | (replicas + 1) × pool + 2 + the api-maintenance pool |
 | movement-relay | RollingUpdate, maxSurge 1 (no Postgres) | none |
 
@@ -1551,7 +1551,7 @@ StatefulSet with no replication, backup or restore story.
 | `postgresql.roles.perService.writer.password` | `""` | Password. |
 | `postgresql.roles.perService.writer.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
 | `postgresql.roles.perService.writer.existingSecretPasswordKey` | `postgres-writer-password` | Key within `existingSecret` (and in the chart's Secret). |
-| `postgresql.roles.perService.writer.connectionLimit` | `""` | CONNECTION LIMIT. Empty: `ingestWriter.database.maxConnections` + 1 (the loop-lock session). |
+| `postgresql.roles.perService.writer.connectionLimit` | `""` | CONNECTION LIMIT. Empty: its pool (`ingestWriter.database.maxConnections`), plus 1 for the loop-lock session, plus the 1 every role has for a probe or brief overlap (pool 6, limit 8). |
 | `postgresql.roles.perService.schedule_ingest.connect` | `true` | Connect schedule-ingest (`scheduleFeed.enabled`) as `distant_signal_schedule_ingest`: a narrow role, not a member of app, with only the CORPUS and feed-marker grants. Created with the others whenever `perService.enabled`, unused until then. Default since release A (2026-10-09; docs/ingest-phase5-runbook.md, "Release A"): takes effect only while the component is deployed, and then needs `perService.enabled`, `postgresql.roles.enabled` and `setupJob.enabled` (the render fails otherwise, never falling back to the app role). |
 | `postgresql.roles.perService.schedule_ingest.password` | `""` | Password. |
 | `postgresql.roles.perService.schedule_ingest.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
@@ -1900,9 +1900,12 @@ Used only when `postgresql.enabled` is `false`.
 | `api.tflArrivals.enabled` | `true` | Live arrivals on `/tfl/stops/{id}` (`GET /public/tfl/stops/{id}/arrivals`), fetched from TfL on demand. Off, that route answers 503. Needs egress to `baseUrl`; the api's internet rule allows it and gains `baseUrl`'s port. |
 | `api.tflArrivals.baseUrl` | `https://api.tfl.gov.uk` | TfL Unified API root. |
 | `api.tflArrivals.useTflPollerKey` | `true` | Send `pollers.tfl`'s subscription key (its Secret, when `pollers.tfl` is enabled or has an `existingSecret`; `optional`). Without a key the api calls TfL anonymously, at TfL's lower rate limit. |
-| `api.tflArrivals.cacheSecs` | `30` | How long one stop's arrivals are served from the api's in-memory cache (per pod; one upstream call per stop at a time). |
+| `api.tflArrivals.cacheSecs` | `30` | How long one stop's arrivals are served from the cache (one upstream call per stop at a time, across every replica with `sharedCache`). |
 | `api.tflArrivals.errorCacheSecs` | `10` | How long a failed TfL fetch is remembered before the next try. |
 | `api.tflArrivals.timeoutSecs` | `5` | Per-request timeout for the TfL call. |
+| `api.tflArrivals.sharedCache` | `true` | Share each stop's answer between the api's replicas through Postgres (`tfl_arrivals_cache`, an UNLOGGED table): the replica that finds it stale claims a short lease and fetches, the others serve the previous answer (up to `staleSecs` old) or wait for the new one. Off, or with Postgres unreachable, each pod caches on its own. |
+| `api.tflArrivals.memoryCacheSecs` | `5` | With `sharedCache`: how long a pod keeps a shared answer in memory before reading the row again (never past the answer's own `cacheSecs`). |
+| `api.tflArrivals.staleSecs` | `120` | With `sharedCache`: how old an answer may be and still be served while another replica fetches its replacement. |
 | `api.fullCoverageEnabledDefault` | `true` | Treat every catalogued line as `full_coverage_enabled`, whatever its `lines/*.toml` entry says, so TRUST-vs-schedule delay and cancellation data is used everywhere. Set `aggregator.fullCoverageEnabledDefault` to the same value: both services gate on it. |
 | `api.malloc.arenaMax` | `"2"` | `MALLOC_ARENA_MAX`: caps glibc's retained per-arena memory. |
 | `api.malloc.mmapThreshold` | `"131072"` | `MALLOC_MMAP_THRESHOLD_` in bytes: allocations at least this large are returned to the OS on free. |

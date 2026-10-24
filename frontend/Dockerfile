@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 # Multi-stage build for the `frontend` service.
 #
 # Build from the repo root so relative paths work the same way as every
@@ -16,7 +16,7 @@
 #                            `dev.env` pulls in via COMPOSE_FILE.
 # builder-base is shared so the prod-only `npm run build` step never runs
 # when only the dev target is requested.
-FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS builder-base
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS builder-base
 
 # Next.js (^16.2.10 here) collects anonymous telemetry on `next dev`/
 # `next build`/`next start`/`next lint` by default and prints a notice on
@@ -64,7 +64,7 @@ FROM builder-base AS builder-prod
 # resulting layer.
 RUN --mount=type=cache,id=next-cache,target=/app/.next/cache npm run build
 
-FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS runtime-prod
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime-prod
 
 # See builder-base's identical ENV above for why this is repeated per stage
 # rather than set once: the standalone `server.js` below still boots
@@ -172,7 +172,7 @@ USER 1000:1000
 EXPOSE 3000
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "server.js"]
 
-FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS runtime-dev
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime-dev
 
 # See builder-base's identical ENV above for why this is repeated per stage
 # rather than set once: `next dev` runs the `next` CLI too, and this stage
