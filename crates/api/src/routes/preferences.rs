@@ -209,10 +209,6 @@ async fn put_notification_preferences(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[expect(
-    clippy::struct_field_names,
-    reason = "field names are the camelCase wire keys"
-)]
 struct PreferencesResponse {
     pinned_lines: Vec<String>,
     pinned_stations: Vec<String>,
