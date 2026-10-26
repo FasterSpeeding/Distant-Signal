@@ -4366,6 +4366,7 @@ mod db_tests {
                 "delayMinutes": 4,
                 "delayProvisional": false,
                 "cancelled": false,
+                "cancelReason": null,
                 "lastReportedLocation": "Reading",
             }),
         );

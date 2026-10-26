@@ -3,6 +3,56 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-26: `cancellation`, full or partial, with its reason
+
+Additive. DS-MCP can keep reading `cancelled` and `cancelReason*`, which
+are unchanged, but should prefer `cancellation` (DS-181; rules in
+`crates/api/src/data/cancellation.rs`, docs/trust-reason-codes.md).
+
+- New on `GET /Train/by-uid/{uid}/{date}`, `GET /Train/{trackingId}` and
+  each journey leg's `trackedTrainState`: `cancellation`, `null` when no
+  part of the run is cancelled (including a train reinstated from where it
+  was cancelled):
+
+  ```json
+  "cancellation": {
+    "kind": "partial",
+    "startsFrom": null,
+    "terminatesAt": { "crs": "RAY", "name": "Raynes Park", "stopIndex": 5 },
+    "from": { "crs": "RAY", "name": "Raynes Park", "stopIndex": 5 },
+    "to": { "crs": "WAT", "name": "London Waterloo", "stopIndex": 11 },
+    "sections": [{ "from": { ... }, "to": { ... } }],
+    "reason": { "code": "JP", "text": "Failure to maintain vegetation ...", "source": "trust" },
+    "at": "2026-10-25T20:50:00Z"
+  }
+  ```
+
+  `kind` is `full` or `partial`. `sections` are the parts of the route not
+  run, each named by the calls either side ("cancelled between `from` and
+  `to`"). `startsFrom`/`terminatesAt` name the first/last call still
+  served when the train starts or terminates short. `from`/`to` repeat the
+  only section's ends, `null` with several. `stopIndex` indexes
+  `journeyStops`. `reason.source` is `ldbws` (Darwin's own sentence from a
+  live departure board) ahead of `trust` (the delay attribution code and
+  its Network Rail glossary text, `text` `null` for `PD`/`ZW`); `darwin`
+  is reserved for Darwin Push Port and will rank first. `at` is when the
+  cancellation was made.
+- New on every `journeyStops[]`: `cancelled` (boolean), the call is in a
+  cancelled part of the run. A skipped call is not counted.
+- Changed: `journeyStops[].status` is `Cancelled` only for those calls. A
+  train cancelled en route used to mark every stop it had not reached; a
+  terminated-short train's stops up to where it ends no longer read
+  `Cancelled`, and a section cancelled between two stations now does, even
+  before a later reported stop (it used to read `NoReport`).
+- `cancelled`, `cancelReasonCode` and `cancelReason` keep their meaning
+  (`status == "cancelled"`). A train started short by a change of origin
+  has `cancelled: false` but a partial `cancellation`.
+- New on the compact `live` object of the line summary and schedule lists:
+  `cancelReason`, the TRUST glossary text while `cancelled`.
+- Ingest: TRUST `0005` Reinstatements, and `0002`/`0006` messages without a
+  reason code, are now kept (`train_reasons`), so reinstatement and
+  location are known for them. Only messages processed after the deploy.
+
 ## 2026-10-24: a TfL stop with its own station gets rides too
 
 Changed candidates and plans, no new fields. DS-MCP needs no change. See

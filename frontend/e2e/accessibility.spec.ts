@@ -456,6 +456,19 @@ test.describe('accessibility: /train/[uid]/[date]', () => {
     await expectNoViolations(owned);
     await context.close();
   });
+
+  // A train cut short (DS-181, the seed's W81181): the red notice, and the
+  // struck-through call with its "Cancelled" badge, in both schemes.
+  for (const colorScheme of ['light', 'dark'] as const) {
+    test.describe(`part cancelled, ${colorScheme} scheme`, () => {
+      test.use({ colorScheme });
+      test('anonymous', async ({ page }) => {
+        await page.goto('/train/W81181/2026-12-03');
+        await expect(page.getByRole('alert').filter({ hasText: 'Terminates at York' })).toBeVisible();
+        await expectNoViolations(page);
+      });
+    });
+  }
 });
 
 // The states below do not exist in any page's first-paint DOM, so a

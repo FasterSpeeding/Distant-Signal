@@ -368,7 +368,11 @@ function JourneyStopRow({
   // (`stop.stopStatus` is whole-route and server-computed; `skippedCrs` is
   // the leg's own origin/destination check) but they mean the same thing
   // about this row's time.
-  const estimated = skipped || isSkippedOnLeg ? null : (stop.estimatedDeparture ?? stop.estimatedArrival);
+  // In a cancelled part of the run (DS-181): struck through, with a
+  // "Cancelled" badge so the strike-through is never the only signal, and
+  // no estimate (the train won't be there).
+  const cancelled = stop.cancelled === true;
+  const estimated = skipped || isSkippedOnLeg || cancelled ? null : (stop.estimatedDeparture ?? stop.estimatedArrival);
   const reached = actual !== null;
   const caption = skipped ? skipCaption(stop.skipSource) : null;
   // 2026-09-22 UX review finding I16/2.7: the train's own `Origin`/
@@ -387,7 +391,11 @@ function JourneyStopRow({
     <TableTr>
       <TableTd>
         <Group gap={6} wrap="nowrap">
-          <Text fw={bold ? 700 : 400} {...((isPastLegDestination || !reached) && { c: 'dimmed' })}>
+          <Text
+            fw={bold ? 700 : 400}
+            {...((isPastLegDestination || !reached) && { c: 'dimmed' })}
+            {...(cancelled && { td: 'line-through', 'data-cancelled': 'true' })}
+          >
             {/* A bus stop or ferry terminal has no station page of its own:
                 it links to the station it belongs to, when it has one. */}
             {isRoadOrWaterStop(stop) && stop.parentCrs ? (
@@ -401,6 +409,11 @@ function JourneyStopRow({
           {isSkippedOnLeg && (
             <StateBadge tone="critical" size="sm">
               Skipped
+            </StateBadge>
+          )}
+          {cancelled && (
+            <StateBadge tone="critical" size="sm">
+              Cancelled
             </StateBadge>
           )}
           {/* "Set down only" / "Pick up only" / "Request stop": text, not
@@ -424,7 +437,7 @@ function JourneyStopRow({
       </TableTd>
       <TableTd>
         {scheduled && (
-          <Text size="sm" c="dimmed">
+          <Text size="sm" c="dimmed" {...(cancelled && { td: 'line-through' })}>
             {formatTime(scheduled)}
           </Text>
         )}

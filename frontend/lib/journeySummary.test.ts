@@ -175,6 +175,48 @@ describe('journeyDetailSummary: the journey is judged at its final destination',
     ).toMatchObject({ group: 'good' });
   });
 
+  it('a lone train cut short is part cancelled, not cancelled (DS-181)', () => {
+    const raynes = { crs: 'RAY', name: 'Raynes Park', stopIndex: 5 };
+    const waterloo = { crs: 'WAT', name: 'London Waterloo', stopIndex: 11 };
+    const shortened = {
+      kind: 'partial' as const,
+      startsFrom: null,
+      terminatesAt: raynes,
+      from: raynes,
+      to: waterloo,
+      sections: [{ from: raynes, to: waterloo }],
+      reason: null,
+      at: null,
+    };
+    expect(
+      journeyDetailSummary([
+        leg(1, 'CSS', 'WAT', { trackedTrainState: state({ status: 'cancelled', cancellation: shortened }) }),
+      ]),
+    ).toMatchObject({ group: 'partCancelled' });
+    // Started short and running: part cancelled too, though not "cancelled".
+    expect(
+      journeyDetailSummary([
+        leg(1, 'CSS', 'WAT', {
+          trackedTrainState: state({
+            status: 'en_route',
+            cancellation: { ...shortened, terminatesAt: null, startsFrom: raynes },
+          }),
+        }),
+      ]),
+    ).toMatchObject({ group: 'partCancelled' });
+    // Wholly cancelled stays "Cancelled".
+    expect(
+      journeyDetailSummary([
+        leg(1, 'CSS', 'WAT', {
+          trackedTrainState: state({
+            status: 'cancelled',
+            cancellation: { ...shortened, kind: 'full', terminatesAt: null },
+          }),
+        }),
+      ]),
+    ).toMatchObject({ group: 'severe' });
+  });
+
   it('one cancelled leg of two is part cancelled, beside the final arrival delay', () => {
     const legs: JourneyLegDetail[] = [
       leg(1, 'KGX', 'YRK', { trackedTrainState: state({ status: 'completed', delayMinutes: 0 }) }),

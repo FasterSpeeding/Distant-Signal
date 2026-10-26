@@ -661,3 +661,35 @@ describe('JourneyTimeline public times and stop direction', () => {
     expect(isGenuineCallingPoint(stop({ crs: 'WFJ', workingPass: '2026-10-01T10:52:30Z' }))).toBe(false);
   });
 });
+
+describe('JourneyTimeline cancelled calls (DS-181)', () => {
+  it('strikes through a cancelled call, says "Cancelled" in words and drops its estimate', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({
+            crs: 'RAY',
+            name: 'Raynes Park',
+            scheduledDeparture: '2026-10-25T12:24:00Z',
+            actualArrival: '2026-10-25T14:03:00Z',
+          }),
+          stop({
+            crs: 'WIM',
+            name: 'Wimbledon',
+            scheduledDeparture: '2026-10-25T12:28:00Z',
+            estimatedDeparture: '2026-10-25T14:08:00Z',
+            cancelled: true,
+          }),
+        ]}
+      />,
+    );
+    const rows = screen.getAllByRole('row');
+    const wimbledon = rows.find((row) => row.textContent.includes('Wimbledon'));
+    const raynes = rows.find((row) => row.textContent.includes('Raynes Park'));
+    expect(wimbledon).toHaveTextContent('Cancelled');
+    expect(wimbledon).not.toHaveTextContent('est.');
+    expect(wimbledon?.querySelector('[data-cancelled="true"]')).not.toBeNull();
+    expect(raynes).not.toHaveTextContent('Cancelled');
+    expect(raynes?.querySelector('[data-cancelled]')).toBeNull();
+  });
+});

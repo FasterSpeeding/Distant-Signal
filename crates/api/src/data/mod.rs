@@ -1,5 +1,6 @@
 pub mod account;
 pub mod alternative_ranking;
+pub mod cancellation;
 pub mod config;
 pub mod corpus;
 pub mod corpus_comparison;
