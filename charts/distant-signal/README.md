@@ -1872,7 +1872,7 @@ Used only when `postgresql.enabled` is `false`.
 | `api.pastTravelRetentionDays` | `548` | Days after the travel date that tracked trains, tickets, journeys and template skip markers are kept (18 months). `0` disables. See `docs/personal-data-retention.md`. |
 | `api.stalePushSubscriptionDays` | `365` | Drop push subscriptions whose user has not logged in (and that were not renewed) for this many days. `0` disables. |
 | `api.inactiveAccountRetentionDays` | `0` | Delete accounts with no login and no live session for this many days. Off by default: the app holds no email addresses, so users cannot be warned first, and enabling it is an operator decision the privacy notice must state. |
-| `api.transitNetworks` | `[]` | The transit networks `/public/transit` serves (`API_TRANSIT_NETWORKS`). Empty: every `/public/transit` route answers 404 and the frontend hides its pages. List a network (`[metrolink]`) only after its timetable has been applied for a day. |
+| `api.transitNetworks` | `[]` | The transit networks `/public/transit` serves (`API_TRANSIT_NETWORKS`). Empty: every `/public/transit` route answers 404 and the frontend hides its pages. List a network (`[metrolink]`, `[metrolink, net]`) only after its timetable has been applied for a day. |
 | `api.adminGroup` | `""` | SSO group whose members may end any user's sessions (`POST /api/admin/users/revoke-sessions`). Empty: nobody is an admin. Read at login. See `docs/session-revocation.md`. |
 | `api.oidcStoredGroupsExtra` | `""` | Extra IdP groups kept on the user at login besides `adminGroup`; every other group is dropped. Comma-separated; `""` keeps none. Nothing reads extra groups today: distant-signal-mcp takes its groups straight from Authentik. |
 | `api.timeouts.requestTimeoutSecs` | `30` | Public requests still running after this get a 408. |
@@ -1884,7 +1884,7 @@ Used only when `postgresql.enabled` is `false`.
 | `api.tripPlanGraphCache.maxAgeSecs` | `600` | Rebuild a cached graph after this long, or after a new schedule publish. |
 | `api.tripPlanMaxWaypoints` | `20` | Most `?waypoints=` one `/Trips/plan` request may name (clamped to 1-20). |
 | `api.tripPlanRoadWaterChangeMinutes` | `5` | Extra minutes `/Trips/plan` adds to a change on each bus or ferry side of it (clamped to 0-30): bus-to-train +N, bus-to-bus +2N, never at the start or end of the journey. |
-| `api.tripPlanMaxOptionsSearchSize` | `252` | Largest `results=options` `/Trips/plan` search: `(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2)` (a 400 above it; clamped to 8-504). |
+| `api.tripPlanMaxOptionsSearchSize` | `252` | Largest `results=options` `/Trips/plan` search: `(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2)` (a 400 above it; clamped to 14-504). |
 | `api.tripPlanLive.enabled` | `true` | Apply TRUST and Darwin data to `/Trips/plan` for today's and yesterday's service dates: cancelled trains and calls are withdrawn, known delays applied, and the plan re-run. `false` is the kill-switch: every plan is timetable-only, as with `?live=false`. |
 | `api.tripPlanLive.maxReplans` | `3` | Extra planning passes per `results=fastest` request when newly read live data changes the plan. |
 | `api.tripPlanLive.maxReplansOptions` | `1` | The same for `results=options` (RAPTOR, the expensive pass); 1 keeps the worst case near 1 s. |
@@ -1980,6 +1980,7 @@ Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-
 | `ingestWriter.streams.ioi-live` | `off` | Mode of `ds:ingest:ioi-live` (`pollerIrishRailLive`: `ioi-station-samples`), as `ioi-gtfs`. |
 | `ingestWriter.streams.transit-metrolink` | `off` | Mode of `ds:ingest:transit-metrolink` (the transit networks' metrolink producer: `transit-timetable`, `transit-timetable-commit`, `transit-situations`, which also writes the network's `line_status` rows). `apply` needs `postgresql.roles.perService.writer.connect`, as `tfl` does. |
 | `ingestWriter.streams.darwin` | `off` | Mode of `ds:ingest:darwin` (darwin-relay's Darwin Push Port batches, `darwin-pushport`; DS-152). `apply` needs `postgresql.roles.perService.writer.connect`, as `tfl` does; `darwinRelay.enabled` needs it on `apply`. |
+| `ingestWriter.streams.transit-net` | `off` | Mode of `ds:ingest:transit-net` (the transit networks' net producer, Nottingham Express Transit: its timetable only, as NET has no disruptions source). `apply` needs `postgresql.roles.perService.writer.connect`, as `tfl` does. |
 | `ingestWriter.changedRowsOnly` | `false` | Changed rows only (`INGEST_WRITER_CHANGED_ROWS_ONLY`, plan 3a.9): `station_full_coverage_samples` rows whose stats are unchanged are not rewritten, and readers derive their age from the feed's observed time. The other snapshot tables keep their per-row time. Turn on only after the api with the derived readers is deployed and `streams.full-coverage` has soaked on `apply`. |
 | `ingestWriter.unsupportedDeadlineSecs` | `3600` | `INGEST_WRITER_UNSUPPORTED_DEADLINE_SECS`: an entry pending as unsupported (a newer schema or envelope version) this long is dead-lettered, reason `unsupported_expired`, instead of blocking its stream for good. Roll the writer forward within this time. `0` never dead-letters it. |
 | `ingestWriter.database.maxConnections` | `6` | Its Postgres pool; counted, plus its one loop-lock session, in the connection budgets. |
@@ -2159,6 +2160,7 @@ used for and why persistence defaults on.
 | `redis.acl.clients.pollerIrishRailGtfs` / `.pollerIrishRailLive` / `.pollerNirStations` | `false` | The island-of-Ireland pollers (each one's only sink is its own `ds:ingest:ioi-gtfs`, `ds:ingest:ioi-live` or `ds:ingest:ioi-nir`, D8), as users `poller-irish-rail-gtfs`, `poller-irish-rail-live` and `poller-nir-stations`. |
 | `redis.acl.clients.pollerTransitMetrolink` | `false` | poller-transit-schedule for network metrolink (transit networks; off by default), as user `poller-transit-metrolink` (`~ds:ingest:transit-metrolink +xadd +xrevrange`). An `optional` user: rendered into the ACL file, and so needing the `poller-transit-metrolink-password` Secret key, only while this is on; turning it on restarts Redis once (docs/redis-acl.md). |
 | `redis.acl.clients.darwinRelay` | `false` | darwin-relay (off by default; DS-152), as user `darwin-relay` (`~ds:ingest:darwin +xadd +xrevrange`). An `optional` user like `pollerTransitMetrolink`: it needs the `darwin-relay-password` Secret key only while this is on, and turning it on restarts Redis once. |
+| `redis.acl.clients.pollerTransitNet` | `false` | poller-transit-schedule for network net (Nottingham Express Transit; off by default), as user `poller-transit-net` (`~ds:ingest:transit-net +xadd +xrevrange`). An `optional` user, as `pollerTransitMetrolink`: needs the `poller-transit-net-password` Secret key while on; turning it on restarts Redis once. |
 | `redis.image.repository` | `redis` | Redis image repository (upstream image; this repo builds no Redis image). |
 | `redis.image.tag` | `7.4.11@sha256:…` | Redis 7.4, digest-pinned in the tag. |
 | `redis.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
@@ -2772,7 +2774,7 @@ spec's §15.1.
 | `pollerTransitSchedule.logLevel` | `info` | `RUST_LOG` value. |
 | `pollerTransitSchedule.metricsPort` | `9091` | Prometheus `/metrics` port. |
 | `pollerTransitSchedule.networks.metrolink.enabled` | `false` | Deploy Metrolink's producer. Needs `redis.acl.clients.pollerTransitMetrolink: true` and `ingestWriter.streams.transit-metrolink: apply`. |
-| `pollerTransitSchedule.networks.metrolink.adapter` | `gtfs` | `TRANSIT_ADAPTER`; only `gtfs` exists. |
+| `pollerTransitSchedule.networks.metrolink.adapter` | `gtfs` | `TRANSIT_ADAPTER`: `gtfs` or `txc`; must be the network file's. |
 | `pollerTransitSchedule.networks.metrolink.gtfsUrl` | BODS North West GTFS | The timetable zip (see values.yaml for the URL). |
 | `pollerTransitSchedule.networks.metrolink.gtfsMaxBytes` | `419430400` | The GTFS download's byte cap. |
 | `pollerTransitSchedule.networks.metrolink.situationsUrl` | BODS SIRI-SX bulk archive | The disruptions archive (a 302 to a signed URL on `download.bus-data.dft.gov.uk`). |
@@ -2791,6 +2793,29 @@ spec's §15.1.
 | `pollerTransitSchedule.networks.metrolink.affinity` | `{}` | Pod affinity rules. |
 | `pollerTransitSchedule.networks.metrolink.podAnnotations` | `{}` | Pod annotations. |
 | `pollerTransitSchedule.networks.metrolink.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
+| `pollerTransitSchedule.networks.net.enabled` | `false` | Deploy Nottingham Express Transit's producer (docs/superpowers/specs/2026-10-24-nottingham-net-design.md). Needs `redis.acl.clients.pollerTransitNet: true`, `ingestWriter.streams.transit-net: apply` and, with an `ftp://` `txcUrl`, `txcCredentials.existingSecret`. |
+| `pollerTransitSchedule.networks.net.adapter` | `txc` | `TRANSIT_ADAPTER`: `gtfs` or `txc`; must be the network file's (the producer refuses otherwise). |
+| `pollerTransitSchedule.networks.net.txcUrl` | TNDS East Midlands over FTP | `TRANSIT_TXC_URL`: the TransXChange zip, filtered to NOC `NEXT` (`ftp://ftp.tnds.co.uk/EM.zip`; OGL). An `https://` zip of TXC documents works too, without a login. With `networkPolicy.egress.internetPorts` set, passive FTP also needs `networkPolicy.components.poller-transit-schedule.internetPorts: []`. |
+| `pollerTransitSchedule.networks.net.txcMaxBytes` | `419430400` | The TXC download's byte cap. |
+| `pollerTransitSchedule.networks.net.txcCredentials.existingSecret` | `""` | A Secret with the Traveline (TNDS) FTP login, as `TRANSIT_TXC_USERNAME` and `TRANSIT_TXC_PASSWORD`. Required while enabled with an `ftp://` `txcUrl`. Plain FTP sends it in clear; it is a free registration guarding nothing else. |
+| `pollerTransitSchedule.networks.net.txcCredentials.usernameKey` | `username` | The Secret's key for the login name. |
+| `pollerTransitSchedule.networks.net.txcCredentials.passwordKey` | `password` | The Secret's key for the password. |
+| `pollerTransitSchedule.networks.net.situationsUrl` | BODS SIRI-SX bulk archive | Unused while `situationsEnabled` is off (BODS has no Nottingham participant). |
+| `pollerTransitSchedule.networks.net.naptanUrl` | NaPTAN access nodes | `{area}` is the network file's NaPTAN area. |
+| `pollerTransitSchedule.networks.net.timetableIntervalSecs` | `86400` | Seconds between timetable fetches (TNDS updates Monday to Thursday; the daily re-send keeps the freshness moving). |
+| `pollerTransitSchedule.networks.net.situationsIntervalSecs` | `300` | Seconds between SIRI-SX fetches (unused while off). |
+| `pollerTransitSchedule.networks.net.situationsEnabled` | `false` | Must stay off: NET's network file names no SIRI-SX participant, and the producer refuses to start with it on. Its stream is budgeted for the timetable only. |
+| `pollerTransitSchedule.networks.net.horizonDays` | `60` | Days of service dates stored after today. |
+| `pollerTransitSchedule.networks.net.feedMaxDropFraction` | `0.3` | As metrolink's. |
+| `pollerTransitSchedule.networks.net.timetableRefresh` | `""` | A one-shot timetable refresh token, as metrolink's. |
+| `pollerTransitSchedule.networks.net.workDirSizeLimit` | `512Mi` | The `/work` emptyDir's size limit (the TXC zip). |
+| `pollerTransitSchedule.networks.net.resources` | requests `100m`/`192Mi`, limit `768Mi` | Container resource requests/limits. |
+| `pollerTransitSchedule.networks.net.extraEnv` | `[]` | Extra env vars for the container. One named like a chart-set var replaces it. |
+| `pollerTransitSchedule.networks.net.nodeSelector` | `{}` | Pod node selector. |
+| `pollerTransitSchedule.networks.net.tolerations` | `[]` | Pod tolerations. |
+| `pollerTransitSchedule.networks.net.affinity` | `{}` | Pod affinity rules. |
+| `pollerTransitSchedule.networks.net.podAnnotations` | `{}` | Pod annotations. |
+| `pollerTransitSchedule.networks.net.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
 
 ### scheduleFeed
 

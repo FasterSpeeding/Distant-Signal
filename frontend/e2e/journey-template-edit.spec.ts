@@ -46,13 +46,14 @@ test.describe('edit a journey template', () => {
     try {
       await page.goto(`/journeys/templates/${templateId}`);
       const to = page.getByRole('combobox', { name: 'To station' });
+      // The seed has no name for EDB, so it shows bare.
       await expect(to).toHaveValue('EDB');
 
       await to.fill('London Euston');
       await expect(page.getByRole('option', { name: 'EUS · London Euston' })).toBeVisible();
-      // Left as the typed name, without picking the suggestion.
+      // Leaving the field picks the station the typed name matches exactly.
       await to.press('Tab');
-      await expect(to).toHaveValue('London Euston');
+      await expect(to).toHaveValue('London Euston (EUS)');
       await expect(page.getByText('Must be a 3-letter station code')).toHaveCount(0);
 
       // Waited on directly so a rejected save fails here with its status,

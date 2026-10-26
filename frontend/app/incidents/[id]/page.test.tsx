@@ -326,6 +326,8 @@ describe('generateMetadata', () => {
     const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
     expect(metadata.title).toBe('Signal failure at Woking');
     expect(metadata.description).toBe('Real-Time incident affecting South Western Main Line.');
+    // One incident, gone within hours: crawlable, never indexed.
+    expect(metadata.robots).toEqual({ index: false, follow: true });
     expect(metadata.openGraph?.title).toBe('Signal failure at Woking · Distant Signal');
     expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });

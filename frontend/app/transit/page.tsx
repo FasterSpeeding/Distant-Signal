@@ -5,7 +5,9 @@ import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
 import { getTransitNetworks } from '@/lib/api';
 import { pageMetadata } from '@/lib/pageMetadata';
 
-export const metadata: Metadata = pageMetadata('Trams', 'Tram networks: lines, stops and scheduled departures.');
+export const metadata: Metadata = pageMetadata('Trams', 'Tram networks: lines, stops and scheduled departures.', {
+  path: '/transit',
+});
 
 /** `/transit`: the tram networks we show. Not found while there are none
  * (the default: `API_TRANSIT_NETWORKS` is empty), so nothing about trams is

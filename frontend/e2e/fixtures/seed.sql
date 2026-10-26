@@ -431,6 +431,30 @@ FROM journeys j
 WHERE j.custom_name IN ('Fixture door to door', 'Fixture walk and Tube')
 ON CONFLICT DO NOTHING;
 
+-- Two past journeys of fixture-member's, shared into the same group, for
+-- the Journeys page's merged history (DS-178, journeys-page.spec.ts): one
+-- the day after fixture-owner's planned journey 900001 (2026-09-17) and one
+-- a week before, so its Past list reads shared, own, shared, newest first.
+-- Fixed ids well clear of the serial ones, fixed dates long gone, nobody
+-- follows them, and walks have no train for any other spec to meet.
+INSERT INTO journeys (id, user_id, custom_name, created_at, updated_at)
+VALUES
+  (900101, 'fixture-member', 'Fixture shared later walk', NOW(), NOW()),
+  (900102, 'fixture-member', 'Fixture shared earlier walk', NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO journey_legs (journey_id, leg_order, service_date, match_mode, kind, transit_mode, origin_place, destination_place, planned_departure, planned_arrival)
+VALUES
+  (900101, 1, '2026-09-18', 'manual', 'untracked', 'walk', 'Islington', 'Angel', '2026-09-18T08:00:00Z', '2026-09-18T08:20:00Z'),
+  (900102, 1, '2026-09-10', 'manual', 'untracked', 'walk', 'Angel', 'Islington', '2026-09-10T17:00:00Z', '2026-09-10T17:20:00Z')
+ON CONFLICT (journey_id, leg_order) DO NOTHING;
+
+INSERT INTO group_journeys (group_id, journey_id, added_by, added_at)
+VALUES
+  ('fixture-group-1', 900101, 'fixture-member', NOW()),
+  ('fixture-group-1', 900102, 'fixture-member', NOW())
+ON CONFLICT DO NOTHING;
+
 -- ---------------------------------------------------------------------
 -- Transit: a small Manchester Metrolink network (transit networks spec;
 -- the pages under /transit, shown because ci.yml's frontend-e2e job sets

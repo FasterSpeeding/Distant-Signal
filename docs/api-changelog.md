@@ -66,6 +66,36 @@ section 6.2 item 3), off by default (`pollers.ldbws.trackedStopArrivals`).
   "cancelled"`. `platformChanged` compares it with `bookedPlatform`.
   `board` (the departure board's row) is unchanged and stays `null` there.
 
+## 2026-10-26: journey lists in one travel order, shared journeys merged in
+
+Additive parameter and fields; two lists change order. DS-MCP needs no
+change: a delegated caller's `GET /Journeys/mine` is unchanged.
+
+- `GET /Journeys/mine?include=` now takes a comma-separated list:
+  `followed` (as before), `shared`, or `followed,shared`. `shared` adds the
+  journeys other members shared into the caller's groups (exactly the ones
+  `GET /public/groups/shared-journeys` lists) to the SAME list as the
+  caller's own: one travel order, one cap (100), so own and shared rows
+  interleave by when they travel. Each such row has `sharedVia`: one
+  `{groupId, groupName, addedByName, addedByTag, addedAt}` per group, newest
+  share first, and like a followed row no `createdVia` and a `null`
+  `trainSubscriptionId`. A followed journey that is also shared carries both
+  `followedFrom` and `sharedVia`, once. Anything else in `include` is still
+  `400`. A delegated caller gets its own journeys only, whatever it asks.
+- New on every `GET /Journeys/mine` row: `departsAt`, the list's sort key,
+  the first leg's departure (an untracked leg's planned departure; a train
+  leg's timetabled departure from its origin, else its pinned departure,
+  else its train's scheduled departure, else the London start of its date).
+  New on every `GET /Train/mine` row: `departsAt`, likewise (the pinned
+  departure, else the train's, else the start of its date).
+- The order every journey list now uses (it was already `GET
+  /Journeys/mine`'s): still to come or under way, soonest `departsAt`
+  first; then travelled, newest first; newest journey id on a tie.
+  `GET /public/groups/{id}/journeys` (was oldest share first) and `GET
+  /public/groups/shared-journeys` (was newest share first; still one row per
+  group and journey, a journey's rows together, newest share first) now come
+  in it, and their caps count journeys in that order.
+
 ## 2026-10-24: a TfL stop with its own station gets rides too
 
 Changed candidates and plans, no new fields. DS-MCP needs no change. See
@@ -84,6 +114,69 @@ docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md §2.
   `940GZZLUODS` is one Northern line transfer leg (`access.end:
   "destination"`), not a train via Moorgate and a walk.
 
+## 2026-10-24: a second transit network, `net` (dark)
+
+Additive, and nothing changes until it is switched on: `net`, Nottingham
+Express Transit, is a network id the `/public/transit/{network}/...` routes
+can serve once `API_TRANSIT_NETWORKS` lists it (empty in production; see
+docs/superpowers/specs/2026-10-24-nottingham-net-design.md). The routes and
+bodies are Metrolink's, with these differences a client may see:
+
+- Line ids are `net:1` and `net:2` (local ids `1` and `2`), stops NET's
+  NaPTAN codes (`9400ZZNONOT`, Nottingham Station).
+- Its lines' `status.state` is always `none`: no source publishes NET's
+  disruptions, so `/transit/net/situations` is empty and stops carry no
+  notices. Boards are scheduled only (`"realtime": false`), as Metrolink's.
+- `/transit/networks` and `/transit/net` carry its `attribution`:
+  "Contains public sector information licensed under the Open Government
+  Licence v3.0. Timetables: Traveline National Dataset (Traveline
+  Information Ltd). Stops: NaPTAN (Department for Transport)." Show it
+  with the data.
+- `/transit/rail-links?crs=NOT` (and `BLW`, `HKN`) gains NET's stop.
+
+**For ds-mcp:** nothing to change; a transit tool that lists
+`/transit/networks` will see `net` once it is on.
+
+## 2026-10-24: `/Trips/plan` `maxChanges` cap raised to 12, default 4
+
+No new fields. Every request that was valid before is still valid. See
+docs/superpowers/specs/2026-10-24-trips-plan-max-changes-12-design.md.
+
+- **Cap raised:** `maxChanges` accepts 0 to 12 (was 0 to 6). Out of range
+  is a 400: `maxChanges must be a whole number from 0 to 12 (default 4),
+  not '13'`.
+- **Default raised:** an omitted or empty `maxChanges` is now 4 (was 2).
+  With `results=options`, a journey that needs 3 or 4 changes is now
+  returned instead of an empty segment with `cappedByMaxChanges: true`.
+  With `results=fastest`, `exceedsRecommendedChanges` is now `true` only
+  above 4 changes. A caller that wants the old behaviour sends
+  `maxChanges=2`.
+- **Default and the search-size guard:** with `results=options`, an
+  omitted `maxChanges` is 4 only where `(waypoints + 1) * (2 * vias + 1) *
+  (maxChanges + 2)` fits the guard (252 by default). Where it doesn't, the
+  default is the highest value that fits, down to 2, so a request that
+  fitted at the old default still fits. The top-level `maxChanges` echoes
+  the value used.
+- **Guard limits at the new caps** (default bound 252): without vias, all
+  20 waypoints up to `maxChanges=10`, 18 at 11 and 17 at 12; with 1 via, 7,
+  6 and 5 waypoints at 8, 10 and 12; with 3 vias, 2, 2 and 1. The chart's
+  `api.tripPlanMaxOptionsSearchSize` now accepts 14-504 (was 8-504).
+
+DS-MCP: its own default of 4 now matches DS. Its schema's ceiling of 24
+is above DS's 12; values 13 to 24 are a 400 from DS.
+
+## 2026-10-26: station code and TfL stop id lists
+
+Additive: two new public, unauthenticated routes for the web app's
+`/sitemap.xml`. Nothing existing changes. DS-MCP needs no change.
+
+- **New: `GET /public/stations/codes`**: `{"codes": ["AAP", ...]}`, every
+  station's CRS code, sorted. Just the codes; names come from
+  `GET /public/stations?q=`.
+- **New: `GET /public/tfl/stops/ids`**: `{"ids": ["940GZZLUEUS", ...]}`,
+  every TfL Tube, DLR and tram stop id, sorted (empty until the TfL stops
+  job has run).
+- Both send `Cache-Control: public, max-age=3600` and are not rate limited.
 ## 2026-10-24: Tube access legs charge a change between branches
 
 Additive fields, changed estimates. DS-MCP needs no change. See

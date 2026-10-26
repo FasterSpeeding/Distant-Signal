@@ -74,7 +74,8 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
       ? `${kind} incident affecting ${affectedLines.join(', ')}.`
       : `${kind} incident: ${incident.summary}.`;
 
-  return pageMetadata(title, description);
+  // One incident, gone within hours: worth following, not worth indexing.
+  return pageMetadata(title, description, { noindex: true });
 }
 
 export default async function IncidentDetailPage({ params }: { params: Promise<{ id: string }> }) {

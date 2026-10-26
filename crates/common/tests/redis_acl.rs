@@ -227,10 +227,10 @@ fn allowed(user: &str, conn: &mut redis::Connection, args: &[&str]) {
         cmd.arg(*arg);
     }
     if let Err(e) = cmd.query::<redis::Value>(conn) {
-        let text = e.to_string();
+        // By code, not text: redis-rs 1.x displays NOPERM as `NoPerm: ...`.
         assert!(
-            !text.contains("NOPERM") && !text.contains("NOAUTH"),
-            "{user} must be allowed {args:?}: {text}"
+            !matches!(e.code(), Some("NOPERM" | "NOAUTH")),
+            "{user} must be allowed {args:?}: {e}"
         );
     }
 }
@@ -346,6 +346,7 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
         "poller-nir-stations",
         "poller-transit-metrolink",
         "darwin-relay",
+        "poller-transit-net",
         "ingest-writer",
         "ds-admin",
     ] {
@@ -608,6 +609,18 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
             "darwin-relay",
             "ds:ingest:darwin",
             "ds:ingest:station-samples",
+        ),
+        // Nottingham NET (NET design §7): neither network's user may
+        // write the other's stream.
+        (
+            "poller-transit-net",
+            "ds:ingest:transit-net",
+            "ds:ingest:transit-metrolink",
+        ),
+        (
+            "poller-transit-metrolink",
+            "ds:ingest:transit-metrolink",
+            "ds:ingest:transit-net",
         ),
     ] {
         let own = h.key(own);

@@ -1,7 +1,7 @@
 'use client';
 
 import { useId, useMemo, useState, type SubmitEvent } from 'react';
-import { Autocomplete, Button, Checkbox, Group, Loader, MultiSelect, Stack, Text, VisuallyHidden } from '@mantine/core';
+import { Button, Checkbox, Group, Loader, MultiSelect, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { nowInLondon } from '@/lib/londonWallClock';
@@ -12,9 +12,7 @@ import { ListFilterBar, SearchIcon, type ListNoun } from './ListFilterBar';
 import { noOptionsFound } from './noOptionsFound';
 import type { TrainSearchDates, TrainSearchPage } from '@/lib/types';
 import { searchDateBounds, searchDateDescription } from '@/lib/searchDates';
-import { searchStations } from '@/lib/suggestions';
-import { useSuggestions } from '@/lib/useSuggestions';
-import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { StationField } from './StationField';
 import { useLiveSearch } from '@/lib/useLiveSearch';
 import { paramValue, useInitialSearchParams } from '@/lib/useInitialSearchParams';
 import { replaceUrlParams, useUrlFilterSync } from '@/lib/useUrlFilterSync';
@@ -119,7 +117,7 @@ const CRS_PATTERN = /^[A-Za-z]{3}$/;
  *
  * "Stops at (optional)" replaced the earlier single-valued "Terminating at"
  * (the schedule's TRUE destination): structurally the same single-station
- * `Autocomplete` (the same `useSuggestions`/`searchStations` pair the other
+ * `StationField` (the same one the other
  * single-station fields above use), but a train matches as long as it calls
  * at this station, true destination or not -- PROVIDED that call falls
  * LATER in the journey than Station (2026-09-22; this used to be a
@@ -278,18 +276,6 @@ export function TrainSearchForm({
   const [loadingMore, setLoadingMore] = useState(false);
 
   const stationErrorId = useId();
-  const { suggestions: stationSuggestions, loading: stationSuggestionsLoading } = useSuggestions(
-    stationCrs,
-    searchStations,
-  );
-  const { suggestions: originSuggestions, loading: originSuggestionsLoading } = useSuggestions(
-    originCrs,
-    searchStations,
-  );
-  const { suggestions: stopsAtSuggestions, loading: stopsAtSuggestionsLoading } = useSuggestions(
-    stopsAt,
-    searchStations,
-  );
 
   const stationValid = CRS_PATTERN.test(stationCrs.trim());
   const originValid = originCrs.trim() === '' || CRS_PATTERN.test(originCrs.trim());
@@ -495,11 +481,6 @@ export function TrainSearchForm({
   }
 
   const stationError = stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter station code' : null;
-  const stationAutocompleteProps = suggestionAutocompleteProps(stationSuggestions, {
-    query: stationCrs,
-    loading: stationSuggestionsLoading,
-    noMatchMessage: 'No matching stations',
-  });
 
   // Inside the filters popover the option lists and the date picker render
   // in place (`withinPortal: false`): a portalled dropdown counts as outside
@@ -527,31 +508,21 @@ export function TrainSearchForm({
         clearButtonProps={{ 'aria-label': 'Clear the date' }}
         {...(inPanel && { popoverProps: { withinPortal: false } })}
       />
-      <Autocomplete
+      <StationField
         label="Departing from (optional)"
         placeholder="e.g. Paddington or PAD"
         description="Where the journey actually begins."
         value={originCrs}
         onChange={setOriginCrs}
-        {...suggestionAutocompleteProps(originSuggestions, {
-          query: originCrs,
-          loading: originSuggestionsLoading,
-          noMatchMessage: 'No matching stations',
-        })}
         {...comboboxProps}
         error={originCrs.length > 0 && !originValid ? 'Must be a 3-letter station code' : null}
       />
-      <Autocomplete
+      <StationField
         label="Stops at (optional)"
         placeholder="e.g. Reading or RDG"
         description="A station this train reaches later in its journey than Station, its destination included."
         value={stopsAt}
         onChange={setStopsAt}
-        {...suggestionAutocompleteProps(stopsAtSuggestions, {
-          query: stopsAt,
-          loading: stopsAtSuggestionsLoading,
-          noMatchMessage: 'No matching stations',
-        })}
         {...comboboxProps}
         error={stopsAt.length > 0 && !stopsAtValid ? 'Must be a 3-letter station code' : null}
       />
@@ -718,12 +689,11 @@ export function TrainSearchForm({
       <Stack gap="md">
         <ListFilterBar
           search={
-            <Autocomplete
+            <StationField
               aria-label="Station"
               placeholder="Station, e.g. Reading or RDG"
               value={stationCrs}
               onChange={setStationCrs}
-              {...stationAutocompleteProps}
               // Only the red outline here: the bar is one fixed-height row,
               // so the message itself goes below it.
               error={stationError !== null}
@@ -761,13 +731,12 @@ export function TrainSearchForm({
 
   return (
     <Stack gap="md" component="form" onSubmit={handleSubmit}>
-      <Autocomplete
+      <StationField
         label="Station"
         placeholder="e.g. Reading or RDG"
         description="Any station this train calls at along its route."
         value={stationCrs}
         onChange={setStationCrs}
-        {...stationAutocompleteProps}
         error={stationError}
         required
       />

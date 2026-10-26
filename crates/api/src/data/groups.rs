@@ -1669,11 +1669,17 @@ fn first_last_legs_sql() -> String {
 }
 
 /// `list_group_journeys`'s query, with the first and last legs'
-/// ends from [`first_last_legs_sql`].
+/// ends from [`first_last_legs_sql`], in travel order and capped by
+/// [`crate::data::journeys::travel_ranked_journeys_ctes`] (DS-178).
 static LIST_GROUP_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     let first_last_legs = first_last_legs_sql();
+    let ranked = crate::data::journeys::travel_ranked_journeys_ctes(
+        "j.id IN (SELECT gj0.journey_id FROM group_journeys gj0 WHERE gj0.group_id = $1)",
+        "$2",
+    );
     format!(
-        "SELECT gj.journey_id, j.custom_name, \
+        "WITH {ranked} \
+         SELECT gj.journey_id, j.custom_name, \
                 (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = j.id) AS leg_count, \
                 COALESCE(ts.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
                 COALESCE(ts.pin_destination_crs, tr.destination_crs) AS pin_destination_crs, \
@@ -1688,7 +1694,8 @@ static LIST_GROUP_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLoc
                 gj.added_by, u.name AS added_by_name, u.username AS added_by_username, \
                 (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) AS timetable_on_row, \
                 jl.kind, jl.transit_mode, jl.planned_departure, jl.planned_arrival \
-         FROM group_journeys gj \
+         FROM recent r \
+         JOIN group_journeys gj ON gj.journey_id = r.id AND gj.group_id = $1 \
          JOIN journeys j ON j.id = gj.journey_id \
          JOIN journey_legs jl ON jl.journey_id = j.id \
              AND jl.id = (SELECT jl3.id FROM journey_legs jl3 WHERE jl3.journey_id = j.id \
@@ -1702,13 +1709,14 @@ static LIST_GROUP_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLoc
          LEFT JOIN stations sd ON sd.crs = UPPER(COALESCE(ts.pin_destination_crs, tr.destination_crs))::bpchar \
          LEFT JOIN stations sfo ON sfo.crs = UPPER(fl.origin_crs)::bpchar \
          LEFT JOIN stations sld ON sld.crs = UPPER(ll.destination_crs)::bpchar \
-         WHERE gj.group_id = $1 \
-         ORDER BY gj.added_at DESC, gj.journey_id DESC \
-         LIMIT $2"
+         ORDER BY r.position"
     )
 });
 
-/// Every journey shared into `group_id`, oldest-shared first. No
+/// Every journey shared into `group_id`, in travel order (DS-178, as
+/// `GET /Journeys/mine`): still to come or under way soonest first, then
+/// travelled most recent first, newest journey id on a tie; capped at
+/// `MAX_GROUP_LIST_ITEMS` in that order. It was oldest-shared first. No
 /// permission check here -- the route's own `require_member` call gates
 /// "is the caller even a member," the same split [`list_group_trains`]
 /// already uses.
@@ -1744,7 +1752,7 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
         .bind(MAX_GROUP_LIST_ITEMS)
         .fetch_all(pool)
         .await?;
-    let mut items: Vec<GroupJourney> = rows.into_iter().rev().map(GroupJourney::from).collect();
+    let mut items: Vec<GroupJourney> = rows.into_iter().map(GroupJourney::from).collect();
     crate::data::stop_delay::apply_public_delays(pool, &mut items).await?;
     let now = Utc::now();
     for item in &mut items {
@@ -2153,12 +2161,93 @@ impl From<SharedJourneyRow> for SharedJourney {
     }
 }
 
+/// The ids of the journeys shared into a group the caller (`$1`) is a
+/// member of, as a SQL subquery: the same rule as the group arm of
+/// [`crate::data::journeys::journey_readable_by`] and as
+/// [`shared_journey_groups`]. The caller excludes its own journeys.
+const SHARED_WITH_USER_SQL: &str = "SELECT sgj.journey_id FROM group_journeys sgj \
+     JOIN group_members sgm ON sgm.group_id = sgj.group_id AND sgm.user_id = $1";
+
+/// One group a journey reached the caller through (`GET /Journeys/mine`'s
+/// `sharedVia`, DS-178): the same attribution a group's own shared row
+/// shows (`GroupJourney.addedByName`/`addedByTag`), and no more.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedVia {
+    pub group_id: String,
+    pub group_name: String,
+    /// The sharer's display name (`users::MemberDisplay`); `None` when no
+    /// name is on file, then `added_by_tag` is set.
+    pub added_by_name: Option<String>,
+    pub added_by_tag: Option<String>,
+    pub added_at: DateTime<Utc>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SharedViaRow {
+    journey_id: i64,
+    group_id: String,
+    group_name: String,
+    added_by: String,
+    added_by_name: Option<String>,
+    added_by_username: Option<String>,
+    added_at: DateTime<Utc>,
+}
+
+/// Every journey another member shared into a group `user_id` belongs to,
+/// with the groups it came through (newest share first): exactly the
+/// journeys `GET /public/groups/shared-journeys` lists, uncapped, keyed by
+/// journey id. `GET /Journeys/mine?include=shared` lists these with the
+/// caller's own (DS-178).
+pub async fn shared_journey_groups(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<std::collections::HashMap<i64, Vec<SharedVia>>> {
+    let rows: Vec<SharedViaRow> = sqlx::query_as(
+        "SELECT gj.journey_id, g.id AS group_id, g.name AS group_name, gj.added_by, \
+                u.name AS added_by_name, u.username AS added_by_username, gj.added_at \
+         FROM group_members me \
+         JOIN groups g ON g.id = me.group_id \
+         JOIN group_journeys gj ON gj.group_id = g.id \
+         JOIN journeys j ON j.id = gj.journey_id \
+         JOIN users u ON u.id = gj.added_by \
+         WHERE me.user_id = $1 AND j.user_id <> $1 \
+         ORDER BY gj.journey_id, gj.added_at DESC, g.id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    let mut by_journey: std::collections::HashMap<i64, Vec<SharedVia>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let added_by =
+            users::MemberDisplay::of(row.added_by_name, row.added_by_username, &row.added_by);
+        by_journey
+            .entry(row.journey_id)
+            .or_default()
+            .push(SharedVia {
+                group_id: row.group_id,
+                group_name: row.group_name,
+                added_by_name: added_by.label,
+                added_by_tag: added_by.tag,
+                added_at: row.added_at,
+            });
+    }
+    Ok(by_journey)
+}
+
 /// `list_shared_journeys_for_user`'s query, with the first and last legs'
-/// ends from [`first_last_legs_sql`].
+/// ends from [`first_last_legs_sql`], in travel order and capped by
+/// [`crate::data::journeys::travel_ranked_journeys_ctes`] (DS-178).
 static LIST_SHARED_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     let first_last_legs = first_last_legs_sql();
+    let ranked = crate::data::journeys::travel_ranked_journeys_ctes(
+        &format!("j.user_id <> $1 AND j.id IN ({SHARED_WITH_USER_SQL})"),
+        "$2",
+    );
     format!(
-        "SELECT g.id AS group_id, g.name AS group_name, \
+        "WITH {ranked} \
+         SELECT g.id AS group_id, g.name AS group_name, \
                 gj.journey_id, j.custom_name, \
                 (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = j.id) AS leg_count, \
                 COALESCE(ts.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
@@ -2174,9 +2263,10 @@ static LIST_SHARED_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLo
                 gj.added_by, u.name AS added_by_name, u.username AS added_by_username, \
                 (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) AS timetable_on_row, \
                 jl.kind, jl.transit_mode, jl.planned_departure, jl.planned_arrival \
-         FROM group_members me \
-         JOIN groups g ON g.id = me.group_id \
-         JOIN group_journeys gj ON gj.group_id = g.id \
+         FROM recent r \
+         JOIN group_journeys gj ON gj.journey_id = r.id \
+         JOIN group_members me ON me.group_id = gj.group_id AND me.user_id = $1 \
+         JOIN groups g ON g.id = gj.group_id \
          JOIN journeys j ON j.id = gj.journey_id \
          JOIN journey_legs jl ON jl.journey_id = j.id \
              AND jl.id = (SELECT jl3.id FROM journey_legs jl3 WHERE jl3.journey_id = j.id \
@@ -2190,15 +2280,17 @@ static LIST_SHARED_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLo
          LEFT JOIN stations sd ON sd.crs = UPPER(COALESCE(ts.pin_destination_crs, tr.destination_crs))::bpchar \
          LEFT JOIN stations sfo ON sfo.crs = UPPER(fl.origin_crs)::bpchar \
          LEFT JOIN stations sld ON sld.crs = UPPER(ll.destination_crs)::bpchar \
-         WHERE me.user_id = $1 AND j.user_id <> $1 \
-         ORDER BY gj.added_at DESC, gj.journey_id DESC \
-         LIMIT $2"
+         WHERE j.user_id <> $1 \
+         ORDER BY r.position, gj.added_at DESC, gj.group_id"
     )
 });
 
 /// Every journey shared into ANY group `user_id` belongs to, EXCLUDING the
-/// ones they own themselves -- mirrors [`list_shared_trains_for_user`]
-/// exactly, including its `LIMIT`/ordering/one-row-per-pair reasoning; see
+/// ones they own themselves, in travel order (DS-178, as `GET
+/// /Journeys/mine`; it was newest share first), one row per (group,
+/// journey) pair, a journey's rows newest share first. The cap
+/// (`MINE_LIST_LIMIT`) counts journeys, not pairs. Otherwise mirrors
+/// [`list_shared_trains_for_user`], including its one-row-per-pair reasoning; see
 /// that function's own doc comment for the full justification, which
 /// applies here unchanged with `journeys`/`group_journeys` in place of
 /// `train_subscriptions`/`group_trains`.

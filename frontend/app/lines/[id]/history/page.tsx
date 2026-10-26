@@ -87,7 +87,9 @@ async function resolveRetention(): Promise<{
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const name = await resolveLineName((await params).id);
-  return pageMetadata(`${name} history`, `Delays, cancellations and status changes on ${name} over time.`);
+  return pageMetadata(`${name} history`, `Delays, cancellations and status changes on ${name} over time.`, {
+    noindex: true,
+  });
 }
 
 export default async function LineHistoryPage({
