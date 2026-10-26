@@ -8,3 +8,16 @@ export function badgeTextTransform(labelEl: HTMLElement): string {
   if (!root) throw new Error('not inside a Mantine Badge');
   return root.style.textTransform;
 }
+
+/** The text a screen reader gets from `el`: its text content without
+ * anything under `aria-hidden="true"` (a badge's phone form, a drawing
+ * the badge says in words instead). */
+export function spokenText(el: Element | null): string {
+  if (el === null) return '';
+  let text = '';
+  for (const node of el.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) text += node.textContent ?? '';
+    else if (node instanceof Element && node.getAttribute('aria-hidden') !== 'true') text += spokenText(node);
+  }
+  return text;
+}
