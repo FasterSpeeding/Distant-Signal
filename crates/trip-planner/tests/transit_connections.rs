@@ -307,7 +307,10 @@ fn a_platform_change_is_charged_at_the_network_change_time() {
 /// through.
 #[test]
 fn set_down_only_and_pick_up_only_stops_are_honoured() {
-    let data = interchange(2);
+    // No walks: otherwise Victoria, MCV, the ALF transfer and MAN lead back
+    // to Piccadilly on foot.
+    let mut data = interchange(2);
+    data.fixed_links_from_crs.clear();
     let mut through = conn(
         "metrolink:0",
         "9400ZZMAALT1",
@@ -390,9 +393,23 @@ fn the_tram_buffer_applies_on_each_side_and_arrive_by_mirrors_it() {
             hm(8, 14),
         ),
     ]);
-    let journey = csa(&onto, &interchange(0), &["STKP"], &[VIC], hm(7, 45)).unwrap();
+    let journey = csa(
+        &onto,
+        &interchange(0),
+        &["STKP"],
+        &["9400ZZMAVIC1"],
+        hm(7, 45),
+    )
+    .unwrap();
     assert_eq!(rides(&journey.legs), ["C10001", "WALK:2", "metrolink:0"]);
-    let journey = csa(&onto, &interchange(2), &["STKP"], &[VIC], hm(7, 45)).unwrap();
+    let journey = csa(
+        &onto,
+        &interchange(2),
+        &["STKP"],
+        &["9400ZZMAVIC1"],
+        hm(7, 45),
+    )
+    .unwrap();
     assert_eq!(rides(&journey.legs), ["C10001", "WALK:4", "metrolink:1"]);
 
     // Tram to rail: the 08:02 tram reaches Victoria at 08:08, + 4 (walk) +
