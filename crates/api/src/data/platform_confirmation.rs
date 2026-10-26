@@ -527,6 +527,10 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 platform_confirmation::db_tests -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end fixture; splitting it would scatter the seeded state"
+    )]
     async fn tracking_data_confirms_the_origin_and_a_changed_intermediate_platform() {
         let pool = connect().await;
         let now = Utc::now();

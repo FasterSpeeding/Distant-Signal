@@ -1015,6 +1015,10 @@ pub(crate) struct StopVisit {
     pub(crate) members: Vec<usize>,
 }
 
+/// One visit while [`assign_visits_to_stops`] places it: `(start instant,
+/// crs, winning event, every event)`.
+type PlacedVisit<'a> = (Option<DateTime<Utc>>, &'a String, usize, Vec<usize>);
+
 /// [`assign_events_to_stops`], keeping every event of each placed visit
 /// as well as its winner (DS-180: a platform may be on the arrival when
 /// the departure won).
@@ -1049,7 +1053,7 @@ pub(crate) fn assign_visits_to_stops(
     }
 
     // Phase one: `(start instant, crs, winning event, every event)` per visit.
-    let mut visits: Vec<(Option<DateTime<Utc>>, &String, usize, Vec<usize>)> = Vec::new();
+    let mut visits: Vec<PlacedVisit<'_>> = Vec::new();
     for (crs, report_indices) in reports {
         let groups = if calls[crs].len() < 2 {
             vec![report_indices]
