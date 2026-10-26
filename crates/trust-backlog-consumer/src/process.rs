@@ -454,6 +454,7 @@ pub(crate) fn process_message(
                 delay_minutes,
                 dedup_key: dedup,
                 gbtt_timestamp: gbtt,
+                platform: trust_schema::schema::movement_reported_platform(movement),
             })
         }
 

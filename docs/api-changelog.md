@@ -3,6 +3,30 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-26: platforms confirmed from tracking data
+
+Changed values, no new fields. DS-MCP needs no change, though it may now
+see `platformBasis: "confirmed"` (until now reserved). DS-180.
+
+- `journeyStops[].platformBasis` is `confirmed` when tracking data ties
+  this train to the platform: its own automatic (train describer)
+  arrival or departure report at that stop named it, or, at the origin
+  before departure, the train that forms it has arrived at that platform
+  and not moved since. A timetable-inferred previous working only
+  confirms the booked platform; it never moves it.
+- On a confirmed stop `platform` and `displayPlatform` are the confirmed
+  platform (even when a live board shows another), `platformStatus` is
+  `active`, `plannedPlatform` is the booked platform when the timetable
+  has one (else the board's first-seen platform, as before), and
+  `platformChanged` compares the confirmed platform with it. So a train
+  booked into platform 3 that arrived at platform 5 now reads `platform:
+  "5"`, `plannedPlatform: "3"`, `bookedPlatform: "3"`, `platformChanged:
+  true`, `platformBasis: "confirmed"`.
+- A stop the train has called at used to lose its platform once it left
+  the board (`platform: null`, `platformBasis: "booked"`). It now keeps
+  the reported one. Reports from before this release carry no platform,
+  so older trains are unchanged.
+
 ## 2026-10-24: a TfL stop with its own station gets rides too
 
 Changed candidates and plans, no new fields. DS-MCP needs no change. See

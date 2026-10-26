@@ -160,6 +160,7 @@ mod tests {
                 working_minute_departure: at(scheduled),
                 ..StopTimetable::default()
             },
+            platform_evidence: None,
         }
     }
 
