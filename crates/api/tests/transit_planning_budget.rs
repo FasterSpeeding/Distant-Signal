@@ -27,7 +27,8 @@
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::unwrap_used,
-    reason = "test code: small known values; a panic is the right failure"
+    clippy::print_stdout,
+    reason = "test code: small known values; a panic is the right failure; benchmark output"
 )]
 
 use std::collections::HashMap;
