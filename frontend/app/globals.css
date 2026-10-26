@@ -145,6 +145,10 @@ html:root[data-mantine-color-scheme='light'] {
        planned         blue    91%   #165b9c   5.65:1  6.98:1  blue 9  4.93
        critical        red     86%   #ad2424   5.68:1  6.87:1  red 9   4.51
 
+     `PlatformBadge` reads the same blue and red for a changed (light,
+     unconfirmed) and a cancelled platform. Its confirmed fills are the
+     `--ds-status-badge-*` tokens below, which this does not touch.
+
      Neutral (gray 9, 13.87:1) and action (grape 9, 5.59:1) keep Mantine's
      shade 9: both already clear the 5.5:1 floor the test holds these
      pills to.
