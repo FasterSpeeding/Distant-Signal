@@ -1263,6 +1263,11 @@ pub struct TrackedTrainListItem {
     /// reached its destination. Rows come still-to-come first, so the first
     /// `true` is where past trains begin. Additive (2026-10-21).
     pub travelled: bool,
+    /// The list's sort key (DS-178): the departure `pinScheduledDeparture`
+    /// serves, else the London start of `serviceDate`, so a client merging
+    /// these rows with `GET /Journeys/mine`'s (whose `departsAt` is the
+    /// same kind of key) can place them. Additive (2026-10-26).
+    pub departs_at: DateTime<Utc>,
 }
 
 impl crate::data::tracking_phase::PhaseRow for TrackedTrainListItem {
@@ -1357,7 +1362,7 @@ static LIST_TRACKED_TRAINS_SQL: std::sync::LazyLock<String> = std::sync::LazyLoc
                         WHERE ts2.user_id = tt.user_id AND ts2.trains_id = tt.trains_id)) \
                     AS journey_ids, \
                 {single_leg_journey_ids} AS single_leg_journey_ids, \
-                k.travelled \
+                k.travelled, k.departs_at \
          FROM train_subscriptions tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
@@ -4778,9 +4783,10 @@ mod journey_leg_list_tests {
     use super::*;
     use crate::data::journey_templates::{TemplateLegInput, create_template, materialize_template};
     use crate::data::journeys::{
-        AddLegOutcome, ItineraryLeg, add_known_train_leg_to_journey, add_window_leg_to_journey,
-        create_journey_from_itinerary, create_journey_with_known_train_leg,
-        create_subscription_and_bind_leg, list_journeys_for_user,
+        AddLegOutcome, ItineraryLeg, ListInclude, add_known_train_leg_to_journey,
+        add_window_leg_to_journey, create_journey_from_itinerary,
+        create_journey_with_known_train_leg, create_subscription_and_bind_leg,
+        list_journeys_for_user,
     };
     use chrono::NaiveDate;
     use common::TimeWindow;
@@ -4946,7 +4952,7 @@ mod journey_leg_list_tests {
 
         // The root cause, pinned: `GET /Journeys/mine` names one current leg
         // per journey, so a filter built from it misses every later leg.
-        let journeys = list_journeys_for_user(&pool, user_id, false)
+        let journeys = list_journeys_for_user(&pool, user_id, ListInclude::OWN)
             .await
             .expect("list journeys");
         let current_leg_ids: Vec<i64> = journeys

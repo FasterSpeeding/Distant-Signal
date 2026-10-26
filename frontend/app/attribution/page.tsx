@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic';
 const METADATA_TITLE = 'Data sources and licences';
 const METADATA_DESCRIPTION = 'The open data Distant Signal uses, and the credit each licence requires.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, { path: '/attribution' });
 
 /** `/attribution`: always public (unlike the draft legal pages), because the
  * licences below require the attribution now. Content lives in

@@ -34,7 +34,10 @@ export const revalidate = 0;
 const METADATA_TITLE = 'Status';
 const METADATA_DESCRIPTION = 'Live status of every National Rail and TfL line: how many have problems, and which ones.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, {
+  ...OWN_PREVIEW_IMAGE,
+  path: '/status',
+});
 
 const COUNTRY_LABELS: Record<Country, string> = {
   Gb: 'GB',

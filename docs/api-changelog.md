@@ -62,6 +62,36 @@ routes. DS-MCP needs no change.
 - **New: `DELETE /public/notifications/devices/{id}`**: stops pushes to
   one of the caller's devices. `204`; `404` when it is not theirs.
 
+## 2026-10-26: journey lists in one travel order, shared journeys merged in
+
+Additive parameter and fields; two lists change order. DS-MCP needs no
+change: a delegated caller's `GET /Journeys/mine` is unchanged.
+
+- `GET /Journeys/mine?include=` now takes a comma-separated list:
+  `followed` (as before), `shared`, or `followed,shared`. `shared` adds the
+  journeys other members shared into the caller's groups (exactly the ones
+  `GET /public/groups/shared-journeys` lists) to the SAME list as the
+  caller's own: one travel order, one cap (100), so own and shared rows
+  interleave by when they travel. Each such row has `sharedVia`: one
+  `{groupId, groupName, addedByName, addedByTag, addedAt}` per group, newest
+  share first, and like a followed row no `createdVia` and a `null`
+  `trainSubscriptionId`. A followed journey that is also shared carries both
+  `followedFrom` and `sharedVia`, once. Anything else in `include` is still
+  `400`. A delegated caller gets its own journeys only, whatever it asks.
+- New on every `GET /Journeys/mine` row: `departsAt`, the list's sort key,
+  the first leg's departure (an untracked leg's planned departure; a train
+  leg's timetabled departure from its origin, else its pinned departure,
+  else its train's scheduled departure, else the London start of its date).
+  New on every `GET /Train/mine` row: `departsAt`, likewise (the pinned
+  departure, else the train's, else the start of its date).
+- The order every journey list now uses (it was already `GET
+  /Journeys/mine`'s): still to come or under way, soonest `departsAt`
+  first; then travelled, newest first; newest journey id on a tie.
+  `GET /public/groups/{id}/journeys` (was oldest share first) and `GET
+  /public/groups/shared-journeys` (was newest share first; still one row per
+  group and journey, a journey's rows together, newest share first) now come
+  in it, and their caps count journeys in that order.
+
 ## 2026-10-24: a TfL stop with its own station gets rides too
 
 Changed candidates and plans, no new fields. DS-MCP needs no change. See
@@ -130,6 +160,19 @@ docs/superpowers/specs/2026-10-24-trips-plan-max-changes-12-design.md.
 
 DS-MCP: its own default of 4 now matches DS. Its schema's ceiling of 24
 is above DS's 12; values 13 to 24 are a 400 from DS.
+
+## 2026-10-26: station code and TfL stop id lists
+
+Additive: two new public, unauthenticated routes for the web app's
+`/sitemap.xml`. Nothing existing changes. DS-MCP needs no change.
+
+- **New: `GET /public/stations/codes`**: `{"codes": ["AAP", ...]}`, every
+  station's CRS code, sorted. Just the codes; names come from
+  `GET /public/stations?q=`.
+- **New: `GET /public/tfl/stops/ids`**: `{"ids": ["940GZZLUEUS", ...]}`,
+  every TfL Tube, DLR and tram stop id, sorted (empty until the TfL stops
+  job has run).
+- Both send `Cache-Control: public, max-age=3600` and are not rate limited.
 ## 2026-10-24: Tube access legs charge a change between branches
 
 Additive fields, changed estimates. DS-MCP needs no change. See

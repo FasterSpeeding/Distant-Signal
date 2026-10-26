@@ -16,7 +16,11 @@ export const dynamic = 'force-dynamic';
 
 export function generateMetadata(): Metadata {
   return withAbsoluteTitle(
-    legalPageMetadata('Contact', 'How to contact Distant Signal, report content or make a privacy request.'),
+    legalPageMetadata(
+      'Contact',
+      'How to contact Distant Signal, report content or make a privacy request.',
+      '/contact',
+    ),
   );
 }
 

@@ -1253,6 +1253,11 @@ export interface TrackedTrainListItem extends ServiceModeFields, TrackingPhaseFi
    * first `true` is where travelled rows begin. Optional: absent from an
    * older backend (`lib/upcomingPast.ts` then reads the order instead). */
   travelled?: boolean;
+  /** The list's sort key (DS-178): the departure `pinScheduledDeparture`
+   * serves, else the London start of `serviceDate`. What
+   * `lib/upcomingPast.ts`'s `mergeTravelOrder` places a train by among
+   * journeys. Optional: absent from an older backend. */
+  departsAt?: string;
 }
 
 /** `common::TimeWindow` on the wire -- `crates/common/src/lib.rs`. Both
@@ -1338,6 +1343,28 @@ export interface JourneyListItem extends UntrackedLegFields, TrackingPhaseFields
    * with `include=followed`): who shared it and how. Such a row is
    * read-only. */
   followedFrom?: FollowedFrom;
+  /** Set on a journey another member shared into the caller's groups
+   * (DS-178, only with `include=shared`): one entry per group, newest share
+   * first. Such a row is read-only. A followed journey shared into one of
+   * the caller's groups has both. */
+  sharedVia?: SharedVia[];
+  /** The list's sort key (DS-178): when the journey sets off, its first
+   * leg's departure (the timetabled one for a train leg, else the pinned
+   * departure, else the London start of its date). Rows still to come are
+   * soonest first, travelled ones newest first, newest id on a tie.
+   * Optional: absent from an older backend. */
+  departsAt?: string | null;
+}
+
+/** One group a shared journey reached the caller through
+ * (`crates/api/src/data/groups.rs::SharedVia`, DS-178). */
+export interface SharedVia {
+  groupId: string;
+  groupName: string;
+  /** The sharer, by the member label rules (`lib/memberLabel.ts`). */
+  addedByName: string | null;
+  addedByTag: string | null;
+  addedAt: string;
 }
 
 /** Who shared a followed journey, and how (`crates/api/src/data/

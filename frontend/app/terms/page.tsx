@@ -22,7 +22,7 @@ import { withAbsoluteTitle } from '@/lib/pageMetadata';
 export const dynamic = 'force-dynamic';
 
 export function generateMetadata(): Metadata {
-  return withAbsoluteTitle(legalPageMetadata('Terms of use', 'The terms for using Distant Signal.'));
+  return withAbsoluteTitle(legalPageMetadata('Terms of use', 'The terms for using Distant Signal.', '/terms'));
 }
 
 export default function TermsPage() {
