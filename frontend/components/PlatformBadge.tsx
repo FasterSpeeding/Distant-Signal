@@ -1,149 +1,146 @@
+import type { ReactNode } from 'react';
 import { Badge, VisuallyHidden } from '@mantine/core';
-import { compactPlatformLabel, isPlatformChange, platformLabel } from '@/lib/platformLabel';
-import type { PlatformBasis, PlatformStatus } from '@/lib/types';
+import {
+  platformDisplay,
+  platformTooltip,
+  spokenPlatformLabel,
+  type PlatformDisplay,
+  type PlatformFacts,
+} from '@/lib/platformLabel';
+import { statusBadgeColors } from '@/lib/severity';
 import { PhoneLabel } from './PhoneLabel';
 
-/** A small colour+text badge naming a calling point's Darwin/LDBWS
- * platform, shared between `ScheduleRow.tsx` (list-view rows) and
- * `JourneyTimeline.tsx`/`JourneyProgress.tsx` (the single-train journey
- * page) so the "planned vs current, and whether it changed" convention
- * can't drift between the two consumers.
+/** The app's one platform badge: every National Rail platform on screen
+ * (departure rows, the calling-point table, the progress line) is this
+ * component, so booked, live, confirmed, changed and cancelled look the
+ * same everywhere. `platformDisplay` (lib/platformLabel.ts) picks the
+ * state from the api's fields; docs/style-guide.md, "PlatformBadge", has
+ * the table.
  *
- * Renders nothing at all when `platform` is `null` -- "not known" (see
- * `JourneyStop.platform`'s own doc comment for why that's the honest
- * answer for most calling points) is a genuinely different fact from "on
- * platform X", and this component never fabricates one to fill the gap.
+ * Three cues, each carried by more than colour (WCAG 1.4.1):
  *
- * WCAG 1.4.1 (colour is never the only signal): when the platform HAS
- * changed, the badge's colour (blue, vs. the neutral grey of an
- * unchanged platform) is only ever a secondary cue -- the badge's own
- * TEXT always names both the current platform and the one originally
- * planned ("Platform 9 (changed from 6)"), so the fact survives even
- * without colour vision, a screen reader, or a black-and-white printout.
- * `data-platform-changed` mirrors this codebase's other CSS-attribute
- * test hooks (`StatusRow`'s `data-status-row`) rather than relying on
- * colour or text content alone to prove the state in a test.
+ * - How sure: an outline badge with the number underlined in dots and
+ *   "(booked)" for a booked platform; a light badge for one a live board
+ *   shows; a filled badge once it is confirmed.
+ * - Changed: blue, the app's colour for a changed arrangement (never
+ *   orange, which a delay badge beside it uses for lateness), with the old
+ *   number struck through before the new one: "Platform ~~6~~ 9".
+ * - Cancelled: red, the whole label struck through.
  *
- * Review §2.4/I20: this used to be `orange`, the exact colour a filled
- * delay badge sits next to on the same departure row ("+11 MIN") --
- * two adjacent orange badges for two unrelated facts ("where to stand"
- * vs. "how late") read at a glance as "two warnings about the same
- * thing". `blue` is the app's colour for a planned or changed
- * arrangement -- not a fault, but different from the timetable (planned
- * closures, "Planned Work"; docs/style-guide.md "Semantic roles") --
- * leaving orange/red free to mean lateness/cancellation only, the one
- * axis the rest of the app already reserves them for.
+ * A screen reader hears `spokenPlatformLabel` at every width ("Platform 9
+ * (changed from 6)"), never a bare struck-through number: that drawing is
+ * `aria-hidden`, and the words the look stands for are visually hidden
+ * beside it. `title` repeats the state for a mouse user and adds nothing
+ * the badge doesn't already show or say.
  *
- * A `platformStatus` of `cancelled` (a journey stop whose own board row
- * Darwin lists as cancelled: the platform it was allocated, but the train
- * no longer calls there) renders red -- the app's cancellation colour, as
- * in `ScheduleRow`'s "Cancelled" badge -- with the platform text struck
- * through. Neither cue is announced by a screen reader, so a visually
- * hidden " (cancelled)" completes the text: "Platform 4 (cancelled)".
- * Any other status (including one this client doesn't know yet) renders
- * as a normal platform.
+ * Renders nothing when no platform is known: "not known" is a different
+ * fact from "on platform X", and this never fabricates one.
  *
- * A stop with no live `platform` but a timetable `bookedPlatform` on
- * `platformBasis` `booked` (DS-127) shows that booked platform as
- * provisional: a grey outline badge with the number underlined in dots,
- * the tooltip "Booked platform, not yet shown on station boards", and a
- * visually hidden " (booked, not confirmed)" so a screen reader hears it
- * too ("Platform 4 (booked, not confirmed)"). `data-platform-basis`
- * marks it for tests.
- *
- * A live platform on `platformBasis` `confirmed` (DS-152: the Darwin
- * Push Port's confirmed flag) keeps the board style plus a check glyph,
- * with the tooltip "Platform confirmed by the operator" and a visually
- * hidden ", confirmed" ("Platform 4, confirmed"); the glyph itself is
- * hidden from screen readers. A changed platform that is also confirmed
- * stays blue, with the check.
- *
- * `compact` (under a "Platform" column header, `JourneyTimeline`) shows
- * the short form below `sm`: "4", or "9 (was 6)" for a change, so the
- * change is still in words. Screen readers keep the full label
- * (`PhoneLabel`). `data-platform-badge` opts the badge out of Mantine's
- * ellipsis (`app/globals.css`): it is never cut short, whatever its
- * width. */
-/** The confirmed badge's tooltip (DS-152). */
-export const CONFIRMED_PLATFORM_TOOLTIP = 'Platform confirmed by the operator';
-
-/** The booked badge's tooltip (DS-127). */
-export const BOOKED_PLATFORM_TOOLTIP = 'Booked platform, not yet shown on station boards';
-
-export function PlatformBadge({
-  platform,
-  plannedPlatform,
-  platformChanged,
-  platformStatus = null,
-  bookedPlatform = null,
-  platformBasis = null,
-  compact = false,
-}: {
-  platform: string | null;
-  plannedPlatform: string | null;
-  platformChanged: boolean;
-  platformStatus?: PlatformStatus | null | undefined;
-  bookedPlatform?: string | null | undefined;
-  platformBasis?: PlatformBasis | null | undefined;
-  compact?: boolean;
-}) {
-  if (platform === null) {
-    if (platformBasis !== 'booked' || !bookedPlatform) return null;
-    const full = `Platform ${bookedPlatform}`;
-    return (
-      <Badge
-        color="gray"
-        variant="outline"
-        tt="none"
-        data-platform-badge
-        data-platform-changed={false}
-        data-platform-basis="booked"
-        title={BOOKED_PLATFORM_TOOLTIP}
-      >
-        <span className="platformBadge__booked">
-          {compact ? <PhoneLabel full={full} compact={bookedPlatform} /> : full}
-        </span>
-        <VisuallyHidden> (booked, not confirmed)</VisuallyHidden>
-      </Badge>
-    );
-  }
-
-  const facts = { platform, plannedPlatform, platformChanged };
-  const changed = isPlatformChange(facts);
-  const fullLabel = platformLabel(facts);
-  const label = compact ? <PhoneLabel full={fullLabel} compact={compactPlatformLabel(facts)} /> : fullLabel;
-
-  if (platformStatus === 'cancelled') {
-    return (
-      <Badge
-        color="red"
-        variant="light"
-        tt="none"
-        data-platform-badge
-        data-platform-changed={changed}
-        data-platform-cancelled="true"
-        title="Cancelled: the train no longer calls at this platform"
-      >
-        <s>{label}</s>
-        <VisuallyHidden> (cancelled)</VisuallyHidden>
-      </Badge>
-    );
-  }
-
-  const confirmed = platformBasis === 'confirmed';
+ * `compact` (under a "Platform" column header, `JourneyTimeline`) drops
+ * the word "Platform" and "(booked)" below `sm`: "4", "~~6~~ 9". The
+ * spoken words are the same. `data-platform-badge` opts the badge out of
+ * Mantine's ellipsis (`app/globals.css`); `data-platform-state` names the
+ * state for tests and styles. */
+export function PlatformBadge({ compact = false, ...facts }: PlatformFacts & { compact?: boolean }) {
+  const display = platformDisplay(facts);
+  if (display === null) return null;
+  const { color, variant } = BADGE_LOOK[display.state];
+  const confirmed = (display.state === 'live' || display.state === 'changed') && display.confirmed;
+  const suffix = spokenSuffix(display);
+  // A confirmed platform is a filled pill, painted from the same measured
+  // fill and label tokens as `StatusBadge` (`--ds-status-badge-*`, white on
+  // gray 7/8 or blue 9/8), not Mantine's filled shade with `autoContrast`,
+  // whose black-on-gray and black-on-blue labels read poorly at badge size.
+  const filled = confirmed ? statusBadgeColors(display.state === 'changed' ? 'planned' : 'informational') : null;
   return (
     <Badge
-      color={changed ? 'blue' : 'gray'}
-      variant="light"
+      color={filled?.fill ?? color}
+      {...(filled ? { c: filled.text } : {})}
+      variant={filled ? 'filled' : variant}
       tt="none"
       data-platform-badge
-      data-platform-changed={changed}
-      data-platform-basis={confirmed ? 'confirmed' : 'board'}
-      title={confirmed ? CONFIRMED_PLATFORM_TOOLTIP : undefined}
-      leftSection={confirmed ? <span aria-hidden="true">✓</span> : undefined}
+      data-platform-state={display.state}
+      data-platform-confirmed={confirmed || undefined}
+      data-platform-changed={display.state === 'changed'}
+      data-platform-cancelled={display.state === 'cancelled' || undefined}
+      title={platformTooltip(display)}
     >
-      {label}
-      {confirmed && <VisuallyHidden>, confirmed</VisuallyHidden>}
+      {compact ? <PhoneLabel full={fullLabel(display)} compact={shortLabel(display)} /> : fullLabel(display)}
+      {suffix && <VisuallyHidden>{suffix}</VisuallyHidden>}
     </Badge>
   );
+}
+
+const BADGE_LOOK: Record<PlatformDisplay['state'], { color: string; variant: 'outline' | 'light' }> = {
+  booked: { color: 'gray', variant: 'outline' },
+  live: { color: 'gray', variant: 'light' },
+  changed: { color: 'blue', variant: 'light' },
+  cancelled: { color: 'red', variant: 'light' },
+};
+
+/** The words on screen from `sm` up, and, with `spokenSuffix`, what a
+ * screen reader hears at every width: together they read as
+ * `spokenPlatformLabel`. */
+function fullLabel(display: PlatformDisplay): ReactNode {
+  const name = `Platform ${display.platform}`;
+  switch (display.state) {
+    case 'booked':
+      return (
+        <>
+          <span className="platformBadge__booked">{name}</span>
+          <span aria-hidden="true"> (booked)</span>
+        </>
+      );
+    case 'cancelled':
+      return <s>{name}</s>;
+    case 'changed':
+      return (
+        <>
+          <span aria-hidden="true">
+            Platform{' '}
+            <span className="platformBadge__numbers">
+              <s className="platformBadge__previous">{display.previous}</s> {display.platform}
+            </span>
+          </span>
+          <VisuallyHidden>{spokenPlatformLabel(display)}</VisuallyHidden>
+        </>
+      );
+    case 'live':
+      return name;
+  }
+}
+
+/** The phone form under a "Platform" column header: the same look without
+ * the word "Platform" or "(booked)". `PhoneLabel` hides it from screen
+ * readers. */
+function shortLabel(display: PlatformDisplay): ReactNode {
+  switch (display.state) {
+    case 'booked':
+      return <span className="platformBadge__booked">{display.platform}</span>;
+    case 'cancelled':
+      return <s>{display.platform}</s>;
+    case 'changed':
+      return (
+        <>
+          <s className="platformBadge__previous">{display.previous}</s> {display.platform}
+        </>
+      );
+    case 'live':
+      return display.platform;
+  }
+}
+
+/** The spoken words `fullLabel` leaves out, visually hidden at every
+ * width: "(booked, not confirmed)", "(confirmed)", "(cancelled)". */
+function spokenSuffix(display: PlatformDisplay): string | null {
+  switch (display.state) {
+    case 'booked':
+      return ' (booked, not confirmed)';
+    case 'cancelled':
+      return ' (cancelled)';
+    case 'changed':
+      return null;
+    case 'live':
+      return display.confirmed ? ' (confirmed)' : null;
+  }
 }
