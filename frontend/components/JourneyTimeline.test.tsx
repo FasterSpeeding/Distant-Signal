@@ -1,21 +1,9 @@
 import { screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { renderWithMantine } from '@/test/render';
-import { badgeTextTransform } from '@/test/badge';
+import { badgeTextTransform, spokenText } from '@/test/badge';
 import { JourneyTimeline, isGenuineCallingPoint } from './JourneyTimeline';
 import type { JourneyStop } from '@/lib/types';
-
-/** An element's text as a screen reader gets it: `aria-hidden` subtrees
- * (a `PhoneLabel`'s short form) left out. */
-function spokenText(el: Element | null): string {
-  if (el === null) return '';
-  let text = '';
-  for (const node of el.childNodes) {
-    if (node.nodeType === Node.TEXT_NODE) text += node.textContent ?? '';
-    else if (node instanceof Element && node.getAttribute('aria-hidden') !== 'true') text += spokenText(node);
-  }
-  return text;
-}
 
 function stop(overrides: Partial<JourneyStop>): JourneyStop {
   return {
@@ -175,7 +163,7 @@ describe('JourneyTimeline', () => {
       />,
     );
     expect(screen.getByRole('columnheader', { name: 'Platform' })).toBeInTheDocument();
-    const badge = document.querySelector('[data-platform-basis="booked"]');
+    const badge = document.querySelector('[data-platform-state="booked"]');
     expect(spokenText(badge)).toBe('Platform 4 (booked, not confirmed)');
   });
 
@@ -292,9 +280,12 @@ describe('JourneyTimeline', () => {
         ]}
       />,
     );
-    const platform = screen.getByText('9 (was 6)');
-    expect(platform).toHaveAttribute('aria-hidden', 'true');
-    expect(spokenText(platform.closest('.mantine-Badge-root'))).toBe('Platform 9 (changed from 6)');
+    const badge = document.querySelector('[data-platform-state="changed"]');
+    const short = badge?.querySelector('.phoneLabel__compact');
+    expect(short).toHaveAttribute('aria-hidden', 'true');
+    expect(short).toHaveTextContent('6 9');
+    expect(short?.querySelector('s')).toHaveTextContent('6');
+    expect(spokenText(badge ?? null)).toBe('Platform 9 (changed from 6)');
 
     const delays = screen.getAllByText('+12 min');
     expect(delays).toHaveLength(2);
