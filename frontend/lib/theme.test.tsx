@@ -73,10 +73,29 @@ describe('theme', () => {
     expect(resolved.color).toBe('var(--mantine-color-white)');
   });
 
-  it('leaves red/green/yellow/orange to autoContrast', () => {
-    const resolved = theme.variantColorResolver!({ color: 'red', variant: 'filled', theme: mergedTheme });
+  it.each(['green', 'yellow', 'orange'])('leaves filled %s to autoContrast', (color) => {
+    const resolved = theme.variantColorResolver!({ color, variant: 'filled', theme: mergedTheme });
     expect(resolved.color).not.toBe('var(--mantine-color-white)');
     expect(resolved.color).not.toContain('light-dark');
+    expect(resolved.color).not.toContain('--ds-');
+  });
+
+  // The destructive confirm button (`ConfirmActionButton`): white on red 9
+  // in both schemes, from the tokens in app/globals.css, rather than
+  // autoContrast's black on red 6/8. app/globals.test.ts measures them.
+  it('sends filled red to the --ds-filled-red-* tokens', () => {
+    const resolved = theme.variantColorResolver!({ color: 'red', variant: 'filled', theme: mergedTheme });
+    expect(resolved.background).toBe('var(--ds-filled-red-fill)');
+    expect(resolved.hover).toBe('var(--ds-filled-red-fill-hover)');
+    expect(resolved.color).toBe('var(--ds-filled-red-text)');
+  });
+
+  it("leaves non-filled red on Mantine's own variables", () => {
+    for (const variant of ['light', 'outline', 'subtle']) {
+      const resolved = theme.variantColorResolver!({ color: 'red', variant, theme: mergedTheme });
+      expect(resolved.background).not.toContain('--ds-filled-red');
+      expect(resolved.color).not.toContain('--ds-filled-red');
+    }
   });
 
   // Regression coverage for a real bug found during this plan's Task 6
@@ -90,11 +109,20 @@ describe('theme', () => {
   // 4.18:1 (blue) -- both fail AA, regressing an already-passing dark-mode
   // pairing (white was 11.51:1 / 5.02:1). See lib/theme.ts's
   // SCHEME_BLIND_FILLED_COLORS comment for the full derivation.
-  it.each(['gray', 'blue'])(
+  // Pink and indigo: black on shade 8 is 3.71:1 for both.
+  it.each(['gray', 'blue', 'pink', 'indigo'])(
     "pins filled %s to a scheme-aware light-dark() rather than autoContrast's scheme-blind black",
     (color) => {
       const resolved = theme.variantColorResolver!({ color, variant: 'filled', theme: mergedTheme });
       expect(resolved.color).toBe('light-dark(var(--mantine-color-black), var(--mantine-color-white))');
     },
   );
+
+  // Mantine's default is hover only, so a keyboard user never opened a
+  // tooltip (components/Tooltip.test.tsx renders the effect).
+  it('opens every tooltip on focus as well as hover', () => {
+    expect(theme.components?.Tooltip?.defaultProps).toEqual({
+      events: { hover: true, focus: true, touch: false },
+    });
+  });
 });

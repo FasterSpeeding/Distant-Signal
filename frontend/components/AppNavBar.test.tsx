@@ -93,7 +93,7 @@ describe('AppNavBar', () => {
   it('shows a log in link, and no account menu, to an anonymous visitor', () => {
     renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
     expect(screen.getByRole('link', { name: 'Log in' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Account menu for/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /, account menu for / })).not.toBeInTheDocument();
   });
 
   it('keeps the brand and the freshness readout in the bar, and no theme or pride control', () => {

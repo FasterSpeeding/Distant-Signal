@@ -13,7 +13,7 @@ vi.mock('next/navigation', () => ({
 /** Opens the modal and waits for its form to be live. */
 async function openModal() {
   fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
-  await waitFor(() => screen.getByRole('button', { name: 'Confirm rename group' }));
+  await waitFor(() => screen.getByRole('button', { name: 'Save' }));
 }
 
 describe('RenameGroupButton', () => {
@@ -32,7 +32,7 @@ describe('RenameGroupButton', () => {
 
     expect(screen.getByLabelText('Group name', { exact: false })).toHaveValue('Family');
     fireEvent.change(screen.getByLabelText('Group name', { exact: false }), { target: { value: '   ' } });
-    expect(screen.getByRole('button', { name: 'Confirm rename group' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
   it('PUTs the new name and refreshes', async () => {
@@ -42,7 +42,7 @@ describe('RenameGroupButton', () => {
     renderWithMantine(<RenameGroupButton groupId="grp-1" currentName="Family" />);
     await openModal();
     fireEvent.change(screen.getByLabelText('Group name', { exact: false }), { target: { value: 'Commute crew' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm rename group' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -60,7 +60,7 @@ describe('RenameGroupButton', () => {
     renderWithMantine(<RenameGroupButton groupId="grp-1" currentName="Family" />);
     await openModal();
     fireEvent.change(screen.getByLabelText('Group name', { exact: false }), { target: { value: 'Crew' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm rename group' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(await screen.findByRole('link', { name: 'Log in to rename this group' })).toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
@@ -73,7 +73,7 @@ describe('RenameGroupButton', () => {
     renderWithMantine(<RenameGroupButton groupId="grp-1" currentName="Family" />);
     await openModal();
     fireEvent.change(screen.getByLabelText('Group name', { exact: false }), { target: { value: 'Crew' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm rename group' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(await screen.findByText('Enter a name for this group.')).toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
