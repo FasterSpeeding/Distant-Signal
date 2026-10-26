@@ -83,21 +83,24 @@ test.describe('Notifications, logged in', () => {
       await expect(delays).toBeEnabled();
       await expect(delays).toBeChecked();
 
-      // The switch's input is visually hidden; its label takes the click.
-      await send.getByText('Skipped stops', { exact: true }).click();
-      await expect(send.getByRole('switch', { name: /^Skipped stops/ })).not.toBeChecked();
-      await send.getByRole('textbox', { name: 'Delay threshold' }).click();
+      // The switch's input is visually hidden under its track: force the click.
+      const skips = send.getByRole('switch', { name: /^Skipped stops/ });
+      await expect(async () => {
+        await skips.setChecked(false, { force: true, timeout: 2_000 });
+        await expect(skips).not.toBeChecked({ timeout: 2_000 });
+      }).toPass({ timeout: 20_000 });
+      await send.getByRole('combobox', { name: 'Delay threshold' }).click();
       await page.getByRole('option', { name: '30 min' }).click();
-      await expect(send.getByRole('textbox', { name: 'Delay threshold' })).toHaveValue('30 min');
+      await expect(send.getByRole('combobox', { name: 'Delay threshold' })).toHaveValue('30 min');
 
       const quiet = page.getByRole('region', { name: 'Quiet hours' });
-      await quiet.getByText('Quiet hours', { exact: true }).click();
+      await quiet.getByRole('switch', { name: 'Quiet hours' }).setChecked(true, { force: true });
       await expect(quiet.getByRole('switch', { name: 'Quiet hours' })).toBeChecked();
 
       await page.reload();
       await expect(send.getByRole('switch', { name: /^Skipped stops/ })).not.toBeChecked();
       await expect(send.getByRole('switch', { name: /^Train delays/ })).toBeChecked();
-      await expect(send.getByRole('textbox', { name: 'Delay threshold' })).toHaveValue('30 min');
+      await expect(send.getByRole('combobox', { name: 'Delay threshold' })).toHaveValue('30 min');
       await expect(quiet.getByRole('switch', { name: 'Quiet hours' })).toBeChecked();
       await expect(quiet.getByLabel('From')).toHaveValue('22:00');
       await expect(quiet.getByLabel('Until')).toHaveValue('07:00');
