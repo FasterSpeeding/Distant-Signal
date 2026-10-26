@@ -6,7 +6,8 @@ import { test, expect, type Page } from '@playwright/test';
 // ellipsis, and in the calling-point table that left "4 …" and
 // "Platform …" at every phone width. The seed's train (e2e/fixtures/
 // seed.sql) has a 4 minute delay at York and a changed origin platform,
-// "Platform 9 (changed from 6)", the longest badge there is.
+// drawn "Platform ~~6~~ 9" ("~~6~~ 9" at phone width) and spoken
+// "Platform 9 (changed from 6)".
 
 const TRAIN_UID = process.env.E2E_TRAIN_UID ?? 'W12345';
 const TRAIN_DATE = process.env.E2E_TRAIN_DATE ?? '2026-09-17';
@@ -64,7 +65,9 @@ for (const width of [320, 360, 390]) {
 
       // The table's short forms, with the full words still what a screen
       // reader gets.
-      await expect(table.getByText('9 (was 6)')).toBeVisible();
+      const platform = table.locator('[data-platform-state="changed"]');
+      await expect(platform.locator('.phoneLabel__compact')).toBeVisible();
+      await expect(platform.locator('.phoneLabel__compact')).toHaveText('6 9');
       // The delay is in the DOM twice, in the hidden Delay column and
       // under the Actual time; only the second is displayed.
       await expect(table.getByText('+4 min').filter({ visible: true })).toHaveCount(1);
@@ -101,7 +104,11 @@ test.describe('train page badges on a desktop', () => {
   test('keeps the full words and the Delay column', async ({ page }) => {
     await page.goto(PATH);
     const table = page.getByRole('table', { name: 'Journey timeline' });
-    await expect(table.getByText('Platform 9 (changed from 6)')).toBeVisible();
+    const platform = table.locator('[data-platform-state="changed"]');
+    await expect(platform.locator('.phoneLabel__full > [aria-hidden="true"]')).toHaveText('Platform 6 9');
+    await expect(platform.locator('.phoneLabel__full > [aria-hidden="true"]')).toBeVisible();
+    await expect(platform.locator('.phoneLabel__compact')).toBeHidden();
+    await expect(platform.getByText('Platform 9 (changed from 6)')).toBeAttached();
     await expect(table.getByText('4 min late').filter({ visible: true })).toHaveCount(1);
     await expect(table.getByText('+4 min').filter({ visible: true })).toHaveCount(0);
     await expect(table.getByRole('columnheader', { name: 'Delay' })).toBeVisible();
