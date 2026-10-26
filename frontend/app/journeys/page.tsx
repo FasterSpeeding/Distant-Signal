@@ -1,13 +1,7 @@
 import { Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import { CardTitleLink, ClickableCard, StaticCard } from '@/components/ClickableCard';
-import {
-  getMyTrackedTrains,
-  getMyTickets,
-  getSharedGroupJourneys,
-  getSharedGroupTrains,
-  getMyJourneys,
-} from '@/lib/api';
+import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains, getMyJourneys } from '@/lib/api';
 import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { ButtonLink } from '@/components/ButtonLink';
@@ -28,22 +22,12 @@ import { TrackedTrainRowMenu } from '@/components/TrackedTrainRowMenu';
 import { TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
 import { formatDate, formatTime, londonDayKey } from '@/lib/dateFormat';
 import { trackedTrainDisplayName, trackedTrainHref, trackedTrainRouteLabel } from '@/lib/trackingName';
-import {
-  mergeSharedJourneys,
-  mergeSharedTrains,
-  type MergedSharedJourney,
-  type MergedSharedTrain,
-} from '@/lib/sharedTrains';
+import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
-import { groupJourneyRowStatus, trackedTrainRowStatus, type TrackedRowStatus } from '@/lib/trackedRowStatus';
-import { splitByStatus, splitJourneyRows, splitTrainRows } from '@/lib/upcomingPast';
-import {
-  groupJourneyNameInput,
-  journeyDisplayName,
-  journeyListItemNameInput,
-  journeyPreviewLine,
-} from '@/lib/journeyName';
+import type { TrackedRowStatus } from '@/lib/trackedRowStatus';
+import { journeysPageSections, type JourneysPageEntry } from '@/lib/journeyHistory';
+import { journeyDisplayName, journeyListItemNameInput, journeyPreviewLine } from '@/lib/journeyName';
 import type { DelayRepayEstimateResponse, TrackedTrainListItem, TicketListItem, JourneyListItem } from '@/lib/types';
 import type { Metadata } from 'next';
 
@@ -123,17 +107,22 @@ export const metadata: Metadata = {
  * whose whole status is "needs you to come back and pick a train" did not.
  * Gated and null-on-401 exactly like the first two, and `.catch(() => null)`
  * for the same "auxiliary, don't lose the whole page over it" reason as
- * `getSharedGroupTrains()`. */
+ * `getSharedGroupTrains()`.
+ *
+ * Since DS-178 that one call also brings every journey shared with the
+ * caller, followed or shared into one of their groups
+ * (`include=followed,shared`), merged with their own by the api in travel
+ * order under one cap. It replaced a separate `getSharedGroupJourneys()`
+ * whose rows were listed in a block after the caller's own. */
 export default async function JourneysPage() {
-  const [trains, tickets, sharedTrains, journeys, sharedJourneyRows] = await Promise.all([
+  const [trains, tickets, sharedTrains, journeys] = await Promise.all([
     getMyTrackedTrains(),
     getMyTickets(),
     getSharedGroupTrains().catch(() => null),
-    getMyJourneys({ includeFollowed: true }).catch(() => null),
-    // Journeys other members shared into the caller's groups. Since
-    // DS-124 a shared tracked train is its one-leg journey, so this is
-    // where most shares now arrive; auxiliary like the shared trains.
-    getSharedGroupJourneys().catch(() => null),
+    // The caller's own journeys, the ones they follow and the ones other
+    // members shared into their groups (since DS-124 a shared tracked
+    // train is its one-leg journey, so most shares arrive here): one list.
+    getMyJourneys({ includeFollowed: true, includeShared: true }).catch(() => null),
   ]);
 
   if (trains === null) {
@@ -169,10 +158,6 @@ export default async function JourneysPage() {
   // see `mergeSharedTrains`' own doc comment for why both halves of that
   // are the frontend's job rather than the query's.
   const shared = mergeSharedTrains(sharedTrains ?? [], new Set(trains.map((t) => t.id)));
-  const sharedJourneys = mergeSharedJourneys(
-    sharedJourneyRows ?? [],
-    new Set((journeys ?? []).map((journey) => journey.id)),
-  );
 
   // Split deliberately. `hasOwnContent` is the OLD `!nothingToShow`, and
   // still gates the reliability digest alone: that card is the caller's
@@ -207,40 +192,50 @@ export default async function JourneysPage() {
   // state would both be wrong and (since it's the branch that hides the
   // list) hide the very row C1 exists to add.
   const hasOwnContent = trains.length > 0 || unattachedTickets.length > 0;
-  const nothingToShow =
-    !hasOwnContent && shared.length === 0 && sharedJourneys.length === 0 && journeyRows.length === 0;
+  const nothingToShow = !hasOwnContent && shared.length === 0 && journeyRows.length === 0;
 
   // Two lists with one cut-off: Upcoming (still to come, or under way now)
-  // and Past (travelled). Journeys and the caller's own lone trains come in
-  // the api's travel order, and `lib/upcomingPast.ts` finds where that order
-  // crosses from still to come to travelled, by the same "is it over" rule
-  // the home page and the api share. Shared trains come in their group
-  // endpoint's order, so each is placed by its own status.
-  //
-  // Lone and shared trains are folded into the same two lists, not given a
-  // section of their own: a train tracked on its own is a one-leg journey
-  // (`trackedTrainRowStatus` reads it as one), and a third list would blur
-  // the one cut-off this page is built around. Within each list, journeys
-  // lead, then the caller's own trains, then shared ones, each in its
-  // endpoint's order, so the caller's own rows always come first.
+  // and Past (travelled), by the same "is it over" rule the home page and
+  // the api share. Each is ONE list in one order (DS-178,
+  // `lib/journeyHistory.ts`): Upcoming soonest first, Past newest first,
+  // by when the travel happens. The caller's own journeys and every
+  // journey shared with them come merged and ordered from the api; trains
+  // with no journey (a lone train of the caller's, a bare train shared
+  // into a group) are merged in by the same key, not given a block of
+  // their own. Each shared or followed row carries its "From <group>" /
+  // "Shared by <who>" tags, since in a merged list a row with no
+  // attribution reads as one the caller tracked themselves.
   const today = londonDayKey(new Date());
-  const journeyItems = splitJourneyRows(journeyRows, today);
-  const trainItems = splitTrainRows(standaloneTrains, today);
-  const sharedItems = splitByStatus(
-    shared.map((row) => ({ row, status: trackedTrainRowStatus(row.train, today) })),
-    (item) => item.status.finished,
+  const sections = journeysPageSections(
+    { journeys: journeyRows, trains: standaloneTrains, sharedTrains: shared },
+    today,
   );
-  const sharedJourneyItems = splitByStatus(
-    sharedJourneys.map((row) => ({ row, status: groupJourneyRowStatus(row.journey, today) })),
-    (item) => item.status.finished,
-  );
-  const upcomingCount =
-    journeyItems.upcoming.length +
-    trainItems.upcoming.length +
-    sharedItems.upcoming.length +
-    sharedJourneyItems.upcoming.length;
-  const pastCount =
-    journeyItems.past.length + trainItems.past.length + sharedItems.past.length + sharedJourneyItems.past.length;
+  const upcomingCount = sections.upcoming.length;
+  const pastCount = sections.past.length;
+  const renderEntry = (entry: JourneysPageEntry) => {
+    switch (entry.kind) {
+      case 'journey':
+        return (
+          <JourneyListRow
+            key={entry.key}
+            journey={entry.journey}
+            status={entry.status}
+            tickets={ticketsForJourney(entry.journey.id)}
+          />
+        );
+      case 'train':
+        return (
+          <TrackedTrainListRow
+            key={entry.key}
+            train={entry.train}
+            status={entry.status}
+            tickets={ticketsByTrain.get(entry.train.id) ?? []}
+          />
+        );
+      case 'sharedTrain':
+        return <SharedTrainListRow key={entry.key} row={entry.row} status={entry.status} />;
+    }
+  };
 
   return (
     <Stack p="lg" gap="xl">
@@ -257,33 +252,7 @@ export default async function JourneysPage() {
             <Stack component="section" aria-labelledby="upcoming-heading" gap="xs">
               <SectionTitle id="upcoming-heading">Upcoming</SectionTitle>
               {upcomingCount === 0 && <Text c="dimmed">No upcoming journeys.</Text>}
-              {journeyItems.upcoming.map(({ journey, status }) => (
-                <JourneyListRow
-                  key={journey.id}
-                  journey={journey}
-                  status={status}
-                  tickets={ticketsForJourney(journey.id)}
-                />
-              ))}
-              {/* The caller's own trains and trains shared with them in one
-                  list, not a "shared with me" section of its own: each
-                  shared row carries its "From <group>"/"Shared by <who>"
-                  tags, since in a merged list a row with no attribution
-                  reads as one the caller tracked themselves. */}
-              {trainItems.upcoming.map(({ train, status }) => (
-                <TrackedTrainListRow
-                  key={train.id}
-                  train={train}
-                  status={status}
-                  tickets={ticketsByTrain.get(train.id) ?? []}
-                />
-              ))}
-              {sharedItems.upcoming.map(({ row, status }) => (
-                <SharedTrainListRow key={row.train.trainSubscriptionId} row={row} status={status} />
-              ))}
-              {sharedJourneyItems.upcoming.map(({ row, status }) => (
-                <SharedJourneyListRow key={row.journey.journeyId} row={row} status={status} />
-              ))}
+              {sections.upcoming.map(renderEntry)}
             </Stack>
           )}
           {/* Below Upcoming and above Past (DS-115): the caller's own record
@@ -291,32 +260,11 @@ export default async function JourneysPage() {
               what is over. */}
           {hasOwnContent && <ReliabilityDigest trains={trains} tickets={tickets ?? []} />}
           {pastCount > 0 && (
-            // Travelled, most recent first. A cancelled one keeps its red
-            // badge here.
+            // Travelled, newest first, own and shared together. A
+            // cancelled one keeps its red badge here.
             <Stack component="section" aria-labelledby="past-heading" gap="xs">
               <SectionTitle id="past-heading">Past</SectionTitle>
-              {journeyItems.past.map(({ journey, status }) => (
-                <JourneyListRow
-                  key={journey.id}
-                  journey={journey}
-                  status={status}
-                  tickets={ticketsForJourney(journey.id)}
-                />
-              ))}
-              {trainItems.past.map(({ train, status }) => (
-                <TrackedTrainListRow
-                  key={train.id}
-                  train={train}
-                  status={status}
-                  tickets={ticketsByTrain.get(train.id) ?? []}
-                />
-              ))}
-              {sharedItems.past.map(({ row, status }) => (
-                <SharedTrainListRow key={row.train.trainSubscriptionId} row={row} status={status} />
-              ))}
-              {sharedJourneyItems.past.map(({ row, status }) => (
-                <SharedJourneyListRow key={row.journey.journeyId} row={row} status={status} />
-              ))}
+              {sections.past.map(renderEntry)}
             </Stack>
           )}
           {unattachedTickets.length > 0 && (
@@ -394,6 +342,10 @@ function JourneyListRow({
 }) {
   const name = journeyListItemNameInput(journey);
   const preview = journeyPreviewLine(name);
+  // A followed journey is labelled as followed (below) even when it is
+  // also shared into one of the caller's groups, as before DS-178.
+  const sharedVia = journey.followedFrom ? [] : (journey.sharedVia ?? []);
+  const firstShare = sharedVia[0];
 
   return (
     <ClickableCard>
@@ -411,6 +363,24 @@ function JourneyListRow({
           <Text size="sm" c="dimmed">
             {preview}
           </Text>
+        )}
+        {/* A journey shared into one or more of the caller's groups
+            (DS-178): where it came from and who shared it, as the group's
+            own row says, and the way to follow it. Read-only. */}
+        {firstShare && (
+          <>
+            <Group gap="xs" wrap="wrap">
+              {sharedVia.map((via) => (
+                <StateBadge key={via.groupId} tone="action">
+                  From {via.groupName}
+                </StateBadge>
+              ))}
+              <Text size="sm" c="dimmed">
+                Shared by {memberLabel(firstShare.addedByName, firstShare.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
+              </Text>
+            </Group>
+            <FollowJourneyButton journeyId={journey.id} following={false} groupId={firstShare.groupId} />
+          </>
         )}
         {/* A journey the caller follows (DS-146): whose it is, and the way
             to stop. It is read-only, and holds none of their tickets. */}
@@ -635,52 +605,6 @@ function SharedTrainListRow({ row, status }: { row: MergedSharedTrain; status: T
         </Group>
       </Stack>
     </Frame>
-  );
-}
-
-/** A journey another member shared into a group the caller belongs to:
- * since DS-124 how a shared tracked train arrives, as its one-leg journey.
- * Named and badged by the same rules as `/groups/{id}`'s shared journey
- * rows (`groupJourneyNameInput`, `groupJourneyRowStatus`), tagged like
- * `SharedTrainListRow`. Links to `/journeys/{id}`, which a member of a
- * group it is shared into may read (`journeys::journey_readable_by`). */
-function SharedJourneyListRow({ row, status }: { row: MergedSharedJourney; status: TrackedRowStatus }) {
-  const { journey, groupNames } = row;
-  const name = groupJourneyNameInput(journey);
-  const preview = journeyPreviewLine(name);
-  return (
-    <ClickableCard>
-      <Stack gap={4}>
-        <StatusRow
-          align="flex-start"
-          title={
-            <Text fw={500} lineClamp={2} miw={0}>
-              <CardTitleLink href={`/journeys/${String(journey.journeyId)}`}>{journeyDisplayName(name)}</CardTitleLink>
-            </Text>
-          }
-          trailing={<TrackedRowStatusBadge status={status} />}
-        />
-        {preview && (
-          <Text size="sm" c="dimmed">
-            {preview}
-          </Text>
-        )}
-        <Group gap="xs" wrap="wrap">
-          {groupNames.map((groupName) => (
-            <StateBadge key={groupName} tone="action">
-              From {groupName}
-            </StateBadge>
-          ))}
-          <Text size="sm" c="dimmed">
-            Shared by {memberLabel(journey.addedByName, journey.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
-          </Text>
-        </Group>
-        {/* Following moves it in with the caller's own journeys (DS-146),
-            labelled with whose it is: a followed journey is never listed
-            here (`mergeSharedJourneys` drops the ids of `GET /Journeys/mine`). */}
-        <FollowJourneyButton journeyId={journey.journeyId} following={false} groupId={journey.groupId} />
-      </Stack>
-    </ClickableCard>
   );
 }
 
