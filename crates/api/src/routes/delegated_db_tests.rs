@@ -492,12 +492,12 @@ async fn delegated_reads_need_an_active_grant_and_the_scope() {
     assert!(last_used.is_some(), "a use is recorded");
     // Journeys shared with the user (DS-178) stay a session feature: a
     // delegated caller asking for them gets its own journeys only.
-    let sharer = format!("{prefix}sharer");
-    seed_user(&pool, &sharer, &format!("{prefix}s2")).await;
+    let group_owner = format!("{prefix}sharer");
+    seed_user(&pool, &group_owner, &format!("{prefix}s2")).await;
     let group = format!("{prefix}g");
     sqlx::query("INSERT INTO groups (id, name, created_by) VALUES ($1, 'Shared', $2)")
         .bind(&group)
-        .bind(&sharer)
+        .bind(&group_owner)
         .execute(&pool)
         .await
         .expect("seed group");
@@ -505,7 +505,7 @@ async fn delegated_reads_need_an_active_grant_and_the_scope() {
         "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner'), ($1, $3, 'member')",
     )
     .bind(&group)
-    .bind(&sharer)
+    .bind(&group_owner)
     .bind(&user)
     .execute(&pool)
     .await
@@ -518,14 +518,14 @@ async fn delegated_reads_need_an_active_grant_and_the_scope() {
                            now() + INTERVAL '1 hour' FROM j) \
          SELECT id FROM j",
     )
-    .bind(&sharer)
+    .bind(&group_owner)
     .fetch_one(&pool)
     .await
     .expect("seed shared journey");
     sqlx::query("INSERT INTO group_journeys (group_id, journey_id, added_by) VALUES ($1, $2, $3)")
         .bind(&group)
         .bind(shared)
-        .bind(&sharer)
+        .bind(&group_owner)
         .execute(&pool)
         .await
         .expect("share the journey");
