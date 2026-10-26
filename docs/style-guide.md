@@ -330,11 +330,24 @@ used, rather than as a literal in a component.
   (`statusBadgeColors`), not `autoContrast`: black text on a red, blue, gray
   or green fill passes WCAG 2's ratio but is hard to read at badge size, so
   every fill takes white except yellow, which takes black.
-- **PlatformBadge**: light, sentence case. Unchanged gray; changed blue with
-  the old platform in words; cancelled red, struck through, with a hidden
-  "(cancelled)" and a `title` tooltip. A null platform renders nothing.
-  `compact` (under a Platform column header) reads "4" or "9 (was 6)"
-  below `sm`, the column header "Plat", both spoken in full.
+- **PlatformBadge**: the one badge for every National Rail platform,
+  sentence case. The variant says how sure it is, the colour whether it
+  changed, a strike-through what no longer applies; the spoken words say
+  all of it (`lib/platformLabel.ts`). A null platform renders nothing.
+
+  | State | Look | On screen (`compact`) | Spoken |
+  | --- | --- | --- | --- |
+  | Booked (timetable only) | gray outline, number underlined in dots | Platform 4 (booked) ("4") | Platform 4 (booked, not confirmed) |
+  | Live (on a board, unchanged) | gray light | Platform 4 ("4") | Platform 4 |
+  | Confirmed | filled gray (`StatusBadge`'s informational fill and label tokens) | Platform 4 ("4") | Platform 4 (confirmed) |
+  | Changed | blue light, filled once confirmed (`StatusBadge`'s planned tokens); old number struck through | Platform ~~6~~ 9 ("~~6~~ 9") | Platform 9 (changed from 6) |
+  | Cancelled | red light, struck through | ~~Platform 4~~ ("~~4~~") | Platform 4 (cancelled) |
+
+  Every state but a plain live one has a `title` tooltip, which only
+  repeats what is shown or spoken. A changed platform is blue, never
+  orange or yellow: those mean late and disrupted, and a delay badge sits
+  beside it. `compact` (under a Platform column header) is the short form
+  below `sm`, the column header "Plat".
 - **Badges are never cut short.** Mantine's Badge ellipsis is off for
   `StatusBadge`, `DelayBadge` and `PlatformBadge` (`globals.css`): a
   badge is as wide as its words, and a layout too narrow for them shortens
@@ -659,7 +672,8 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
 - Focus: Mantine's 2px outline in filled primary, 2px offset.
 - Not colour alone: every status badge has a text label; cancelled
   platforms are struck through and say "(cancelled)"; changed platforms
-  spell out the old number; the open-leg card has a border, tint, bold
+  strike through the old number and say "changed from" it; booked ones
+  say "(booked)"; the open-leg card has a border, tint, bold
   title and glyph.
 - Landmarks: `main`, `nav aria-label="Main"`, footer
   `nav aria-label="Site information"`; sections use `aria-labelledby`.

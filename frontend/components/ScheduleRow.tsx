@@ -103,6 +103,7 @@ export function ScheduleRow({ row, onSelect }: { row: ScheduleRowData; onSelect?
         platform={row.platform}
         plannedPlatform={row.plannedPlatform}
         platformChanged={row.platformChanged}
+        platformStatus={row.isCancelled ? 'cancelled' : null}
       />
       {statusBadge(row)}
     </Group>

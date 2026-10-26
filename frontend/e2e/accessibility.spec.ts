@@ -436,6 +436,16 @@ test.describe('accessibility: /train/[uid]/[date]', () => {
     await expectNoViolations(page);
   });
 
+  // The page with the most badges (delay, platform, stop states), in both
+  // schemes: the changed platform's blue and its struck-through number.
+  test.describe('dark scheme', () => {
+    test.use({ colorScheme: 'dark' });
+    test('anonymous', async ({ page }) => {
+      await page.goto(`/train/${TRAIN_UID}/${TRAIN_DATE}`);
+      await expectNoViolations(page);
+    });
+  });
+
   test('as the tracking owner', async ({ browser }) => {
     test.skip(!SESSION_COOKIE, 'set E2E_SESSION_COOKIE');
     // The owner view adds the rename/stop-tracking/share controls and the
