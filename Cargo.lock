@@ -1058,7 +1058,7 @@ dependencies = [
  "rdkafka",
  "redis",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
 ]
