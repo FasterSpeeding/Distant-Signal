@@ -2466,6 +2466,11 @@ pub struct JourneyListItem {
     /// every leg is finished. Rows come still-to-come first, so the first
     /// `true` is where past journeys begin.
     pub travelled: bool,
+    /// The list's sort key (DS-178): when the journey sets off, its first
+    /// leg's departure (see [`list_journeys_for_user`] for the fallbacks),
+    /// so a client merging rows from another list (a train tracked on its
+    /// own) can place them without re-deriving it. Additive, 2026-10-26.
+    pub departs_at: Option<DateTime<Utc>>,
     pub cancelled_leg_count: i64,
     pub unmatched_leg_count: i64,
     pub finished_leg_count: i64,
@@ -2502,6 +2507,41 @@ pub struct JourneyListItem {
     #[sqlx(skip)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub followed_from: Option<crate::data::journey_follows::FollowedFrom>,
+    /// Set on a journey another member shared into one or more of the
+    /// caller's groups (DS-178, `include=shared` only): one entry per such
+    /// group, newest share first. Such a row is read-only. Absent on the
+    /// caller's own journeys; a followed journey that is also shared into
+    /// one of their groups carries both.
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shared_via: Vec<crate::data::groups::SharedVia>,
+}
+
+/// What `GET /Journeys/mine` lists besides the caller's own journeys.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ListInclude {
+    /// The journeys the caller follows (DS-146).
+    pub followed: bool,
+    /// The journeys other members shared into the caller's groups (DS-178).
+    pub shared: bool,
+}
+
+impl ListInclude {
+    /// The caller's own journeys only.
+    pub const OWN: Self = Self {
+        followed: false,
+        shared: false,
+    };
+    /// Own and followed journeys (DS-146).
+    pub const FOLLOWED: Self = Self {
+        followed: true,
+        shared: false,
+    };
+    /// Everything the caller can read: own, followed and group-shared.
+    pub const ALL: Self = Self {
+        followed: true,
+        shared: true,
+    };
 }
 
 /// One journey's final arrival, for [`apply_public_delays`]: the last
@@ -2600,20 +2640,25 @@ impl crate::data::stop_delay::PublicDelayFields for JourneyListItem {
     }
 }
 
-/// `list_journeys_for_user`'s query, built once: its sort key is assembled
-/// from `travel_order`'s shared fragments.
-static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+/// The common part of every travel-ordered journey list (`travel_order`,
+/// DS-112): `WITH`-able CTEs ending in `recent`, the first `limit` (a SQL
+/// expression, usually a bind parameter) journeys matching `scope` (a SQL
+/// condition over `journeys j`) in travel order, with columns `id`,
+/// `custom_name`, `created_at`, `created_via`, `travelled`, `departs_at`
+/// (the sort key, see [`list_journeys_for_user`]) and `position` (1-based,
+/// the order to list them in). A journey with no legs is never in it.
+///
+/// Every journey list builds on this so they all sort alike: the caller's
+/// own list (with the journeys shared with them), a group's shared
+/// journeys and the journeys shared with the caller (DS-178).
+pub(crate) fn travel_ranked_journeys_ctes(scope: &str, limit: &str) -> String {
     use crate::data::travel_order::{
         day_start_sql, order_by_sql, scheduled_departure_sql, train_arrived_sql,
     };
     let k_origin = leg_crs_sql(LegEnd::Origin, "l", "ts", "ktr");
     let k_destination = leg_crs_sql(LegEnd::Destination, "l", "ts", "ktr");
-    let r_origin = leg_crs_sql(LegEnd::Origin, "jl", "ts", "tr");
-    let r_destination = leg_crs_sql(LegEnd::Destination, "jl", "ts", "tr");
-    let r_origin_place = leg_place_sql(LegEnd::Origin, "jl");
-    let r_destination_place = leg_place_sql(LegEnd::Destination, "jl");
     format!(
-        "WITH keyed AS ( \
+        "keyed AS ( \
              SELECT j.id, j.custom_name, j.created_at, j.created_via, \
                     s.first_kind, s.first_service_date, s.first_origin_crs, \
                     s.first_planned_departure, s.first_trains_id, s.first_pin, \
@@ -2660,7 +2705,7 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
                  WHERE l.journey_id = j.id \
                  HAVING COUNT(*) > 0 \
              ) s \
-             WHERE (j.user_id = $1 OR j.id = ANY($3)) \
+             WHERE {scope} \
          ), \
          candidates AS ( \
              SELECT k.*, RANK() OVER (ORDER BY {coarse_order}) AS coarse_rank \
@@ -2675,15 +2720,52 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
                              END, \
                              {first_day_start}) AS departs_at \
              FROM candidates c \
-             WHERE c.coarse_rank <= $2 \
+             WHERE c.coarse_rank <= {limit} \
          ), \
          recent AS ( \
-             SELECT t.id, t.custom_name, t.created_at, t.created_via, t.travelled, \
+             SELECT t.id, t.custom_name, t.created_at, t.created_via, t.travelled, t.departs_at, \
                     ROW_NUMBER() OVER (ORDER BY {order}, t.id DESC) AS position \
              FROM timed t \
              ORDER BY position \
-             LIMIT $2 \
-         ), \
+             LIMIT {limit} \
+         )",
+        last_arrived = train_arrived_sql(
+            "s.last_trains_id",
+            "(SELECT lt.train_uid FROM trains lt WHERE lt.id = s.last_trains_id)",
+            "s.last_service_date",
+            "s.last_destination_crs",
+            "s.last_delay",
+        ),
+        // A cancelled last train never arrives: the journey is over once
+        // that train's timetabled departure has passed, as on the home page.
+        last_departure = scheduled_departure_sql(
+            "(SELECT lt.train_uid FROM trains lt WHERE lt.id = s.last_trains_id)",
+            "s.last_service_date",
+            "s.last_origin_crs",
+        ),
+        last_day_end = day_start_sql("s.last_service_date + 1"),
+        coarse_order = order_by_sql("k.travelled", "k.first_date"),
+        first_departure = scheduled_departure_sql(
+            "(SELECT ft.train_uid FROM trains ft WHERE ft.id = c.first_trains_id)",
+            "c.first_service_date",
+            "c.first_origin_crs",
+        ),
+        first_day_start = day_start_sql("c.first_date"),
+        order = order_by_sql("t.travelled", "t.departs_at"),
+    )
+}
+
+/// `list_journeys_for_user`'s query, built once: its order and cap come
+/// from [`travel_ranked_journeys_ctes`]. `$1` is the caller, `$2` the cap
+/// and `$3` the ids of the journeys shared with them that it lists too.
+static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    use crate::data::travel_order::train_arrived_sql;
+    let r_origin = leg_crs_sql(LegEnd::Origin, "jl", "ts", "tr");
+    let r_destination = leg_crs_sql(LegEnd::Destination, "jl", "ts", "tr");
+    let r_origin_place = leg_place_sql(LegEnd::Origin, "jl");
+    let r_destination_place = leg_place_sql(LegEnd::Destination, "jl");
+    format!(
+        "WITH {ranked}, \
          ranked_legs AS ( \
              SELECT jl.id, jl.journey_id, jl.leg_order, \
                     {r_origin} AS origin_crs, {r_destination} AS destination_crs, \
@@ -2750,7 +2832,7 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
                                    ORDER BY (jl.kind = 'train') DESC, jl.leg_order DESC), \
                     journey AS (PARTITION BY jl.journey_id) \
          ) \
-         SELECT r.id, r.custom_name, r.created_at, r.created_via, r.travelled, \
+         SELECT r.id, r.custom_name, r.created_at, r.created_via, r.travelled, r.departs_at, \
                 rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.service_date, \
                 COALESCE(so.name, rl.origin_place) AS origin_name, \
                 COALESCE(sd.name, rl.destination_place) AS destination_name, \
@@ -2773,29 +2855,7 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
          LEFT JOIN stations sfo ON sfo.crs = UPPER(rl.first_origin_crs)::bpchar \
          LEFT JOIN stations sld ON sld.crs = UPPER(rl.last_destination_crs)::bpchar \
          ORDER BY r.position",
-        last_arrived = train_arrived_sql(
-            "s.last_trains_id",
-            "(SELECT lt.train_uid FROM trains lt WHERE lt.id = s.last_trains_id)",
-            "s.last_service_date",
-            "s.last_destination_crs",
-            "s.last_delay",
-        ),
-        // A cancelled last train never arrives: the journey is over once
-        // that train's timetabled departure has passed, as on the home page.
-        last_departure = scheduled_departure_sql(
-            "(SELECT lt.train_uid FROM trains lt WHERE lt.id = s.last_trains_id)",
-            "s.last_service_date",
-            "s.last_origin_crs",
-        ),
-        last_day_end = day_start_sql("s.last_service_date + 1"),
-        coarse_order = order_by_sql("k.travelled", "k.first_date"),
-        first_departure = scheduled_departure_sql(
-            "(SELECT ft.train_uid FROM trains ft WHERE ft.id = c.first_trains_id)",
-            "c.first_service_date",
-            "c.first_origin_crs",
-        ),
-        first_day_start = day_start_sql("c.first_date"),
-        order = order_by_sql("t.travelled", "t.departs_at"),
+        ranked = travel_ranked_journeys_ctes("(j.user_id = $1 OR j.id = ANY($3))", "$2"),
         leg_arrived = train_arrived_sql(
             "ts.trains_id",
             "tr.train_uid",
@@ -2842,27 +2902,62 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
 /// journeys (seeded, EXPLAIN ANALYZE) the query takes about 30 ms against
 /// 5 ms for the old `created_at` order.
 ///
-/// **Followed journeys (DS-146).** With `include_followed`, the journeys
-/// `user_id` follows (`journey_follows`, only while the share they came
-/// through still lets them in) are ordered and capped with their own, by
-/// the same rules, and carry `followed_from`. Their `created_via` and
-/// `train_subscription_id` (the owner's) are blanked: the follower sees
-/// what the share shows and no more.
+/// **Followed and shared journeys (DS-146, DS-178).** With
+/// `include.followed`, the journeys `user_id` follows (`journey_follows`,
+/// only while the share they came through still lets them in) and, with
+/// `include.shared`, the journeys other members shared into a group
+/// `user_id` is in (`groups::shared_journey_groups`, the same rule as
+/// `GET /public/groups/shared-journeys` and [`journey_readable_by`]'s
+/// group arm) are ordered and capped WITH their own, by the same rules, in
+/// one query: one list, one cap, so no own journey is dropped for a shared
+/// one that sorts after it, or the other way round. A followed row carries
+/// `followed_from`, a shared one `shared_via`. Their `created_via` and
+/// `train_subscription_id` (the owner's) are blanked: the reader sees what
+/// the share shows and no more.
+///
+/// "Newest" (DS-178) is `departs_at`, the first leg's departure as above:
+/// when the travel happens, not when the journey was saved or shared. A
+/// journey always has a leg (a leg-less one is never listed) and every leg
+/// a date, so the key is never missing; `id`, newest first, breaks a tie.
 pub async fn list_journeys_for_user(
     pool: &PgPool,
     user_id: &str,
-    include_followed: bool,
+    include: ListInclude,
 ) -> anyhow::Result<Vec<JourneyListItem>> {
-    let mut followed = if include_followed {
+    list_journeys_for_user_capped(
+        pool,
+        user_id,
+        include,
+        crate::data::train_tracking::MINE_LIST_LIMIT,
+    )
+    .await
+}
+
+/// [`list_journeys_for_user`] with its cap as a parameter, so a test can
+/// reach the cap without seeding a hundred journeys.
+pub(crate) async fn list_journeys_for_user_capped(
+    pool: &PgPool,
+    user_id: &str,
+    include: ListInclude,
+    limit: i64,
+) -> anyhow::Result<Vec<JourneyListItem>> {
+    let mut followed = if include.followed {
         crate::data::journey_follows::valid_follows(pool, user_id, None).await?
     } else {
         std::collections::HashMap::new()
     };
-    let followed_ids: Vec<i64> = followed.keys().copied().collect();
+    let mut shared = if include.shared {
+        crate::data::groups::shared_journey_groups(pool, user_id).await?
+    } else {
+        std::collections::HashMap::new()
+    };
+    let mut readable_ids: Vec<i64> = followed.keys().chain(shared.keys()).copied().collect();
+    readable_ids.sort_unstable();
+    readable_ids.dedup();
     let rows = sqlx::query_as::<_, JourneyListItem>(LIST_JOURNEYS_SQL.as_str())
         .bind(user_id)
-        .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
-        .bind(&followed_ids)
+        .bind(limit)
+        .bind(&readable_ids)
         .fetch_all(pool)
         .await?;
     let mut rows = rows;
@@ -2885,8 +2980,11 @@ pub async fn list_journeys_for_user(
     let open: std::collections::HashMap<i64, i64> = open.into_iter().collect();
     for row in &mut rows {
         row.open_break_id = open.get(&row.id).copied();
-        if let Some(from) = followed.remove(&row.id) {
-            row.followed_from = Some(from);
+        let followed_from = followed.remove(&row.id);
+        let shared_via = shared.remove(&row.id).unwrap_or_default();
+        if followed_from.is_some() || !shared_via.is_empty() {
+            row.followed_from = followed_from;
+            row.shared_via = shared_via;
             row.created_via.clear();
             row.train_subscription_id = None;
         }
@@ -5825,7 +5923,7 @@ mod db_tests {
         .expect("insert leg 2");
 
         // Call list_journeys_for_user and verify that leg 2 is returned
-        let journeys = list_journeys_for_user(&pool, user_id, false)
+        let journeys = list_journeys_for_user(&pool, user_id, ListInclude::OWN)
             .await
             .expect("list journeys");
 
@@ -5940,7 +6038,7 @@ mod db_tests {
         .expect("mark leg 2 as completed");
 
         // Now both legs are completed, should still show leg 2 (the last one)
-        let journeys = list_journeys_for_user(&pool, user_id, false)
+        let journeys = list_journeys_for_user(&pool, user_id, ListInclude::OWN)
             .await
             .expect("list journeys after all legs completed");
 
@@ -6386,7 +6484,7 @@ mod db_tests {
         // No leg: never listed.
         let _legless = journey().await;
 
-        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id, false)
+        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id, ListInclude::OWN)
             .await
             .expect("list")
             .iter()
@@ -6476,7 +6574,7 @@ mod db_tests {
         .await
         .expect("seed arrival report");
 
-        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id, false)
+        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id, ListInclude::OWN)
             .await
             .expect("list")
             .iter()
@@ -6539,7 +6637,7 @@ mod db_tests {
             .expect("seed state");
         }
 
-        let rows = list_journeys_for_user(&pool, user_id, false)
+        let rows = list_journeys_for_user(&pool, user_id, ListInclude::OWN)
             .await
             .expect("list");
         let row = rows.iter().find(|r| r.id == journey).expect("journey row");
@@ -6563,7 +6661,7 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("drop leg 3");
-        let rows = list_journeys_for_user(&pool, user_id, false)
+        let rows = list_journeys_for_user(&pool, user_id, ListInclude::OWN)
             .await
             .expect("list");
         let row = rows.iter().find(|r| r.id == journey).expect("journey row");
@@ -6647,7 +6745,7 @@ mod db_tests {
             .await
             .expect("seed leg-less journey");
 
-        let listed = list_journeys_for_user(&pool, user_id, false)
+        let listed = list_journeys_for_user(&pool, user_id, ListInclude::OWN)
             .await
             .expect("list");
         assert_eq!(listed.len() as i64, limit, "capped");
@@ -6701,7 +6799,7 @@ mod db_tests {
         .await
         .expect("seed legs");
 
-        let listed = list_journeys_for_user(&pool, user_id, false)
+        let listed = list_journeys_for_user(&pool, user_id, ListInclude::OWN)
             .await
             .expect("list");
         let row = listed.iter().find(|j| j.id == journey_id).expect("listed");
@@ -7848,7 +7946,7 @@ mod db_tests {
         assert_eq!(legs[0].destination_name.as_deref(), Some("Testbury Ell"));
         assert_eq!(legs[0].train_subscription_id, Some(tracking_id));
 
-        let mine = list_journeys_for_user(&pool, owner, false)
+        let mine = list_journeys_for_user(&pool, owner, ListInclude::OWN)
             .await
             .expect("list the owner's journeys");
         let row = mine
@@ -7917,7 +8015,7 @@ mod db_tests {
             .expect("follow the shared journey"),
             crate::data::journey_follows::FollowOutcome::Followed
         );
-        let followed = list_journeys_for_user(&pool, viewer, true)
+        let followed = list_journeys_for_user(&pool, viewer, ListInclude::FOLLOWED)
             .await
             .expect("list the viewer's journeys with the followed ones");
         let followed = followed

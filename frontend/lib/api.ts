@@ -930,14 +930,21 @@ export async function getJourneyByShareToken(token: string): Promise<JourneyDeta
 /** `GET /Journeys/mine` -- `null` on a `401`, same "not logged in" signal
  * `getMyTrackedTrains` already uses (no id in this route's path to
  * disambiguate a second way). With `includeFollowed`, the journeys the
- * caller follows (DS-146) are listed with their own, in travel order, each
- * carrying `followedFrom`: what the home page and `/journeys` show. Without
- * it, the caller's own journeys only (what a picker of journeys to share
- * or template wants). */
-export async function getMyJourneys({ includeFollowed = false }: { includeFollowed?: boolean } = {}): Promise<
-  JourneyListItem[] | null
-> {
-  const url = `${baseUrl()}/Journeys/mine${includeFollowed ? '?include=followed' : ''}`;
+ * caller follows (DS-146) are listed with their own, each carrying
+ * `followedFrom`: what the home page shows. With `includeShared` too, the
+ * journeys other members shared into the caller's groups (DS-178), each
+ * carrying `sharedVia`: what `/journeys` shows. Either way ONE list, merged
+ * and in travel order by the api under one cap, so a caller never re-sorts
+ * it. Without either, the caller's own journeys only (what a picker of
+ * journeys to share or template wants). */
+export async function getMyJourneys({
+  includeFollowed = false,
+  includeShared = false,
+}: { includeFollowed?: boolean; includeShared?: boolean } = {}): Promise<JourneyListItem[] | null> {
+  const include = [includeFollowed ? 'followed' : null, includeShared ? 'shared' : null]
+    .filter((part) => part !== null)
+    .join(',');
+  const url = `${baseUrl()}/Journeys/mine${include ? `?include=${include}` : ''}`;
   const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
@@ -1192,9 +1199,9 @@ export async function getGroupJourneys(id: string): Promise<GroupJourney[]> {
 
 /** `GET /public/groups/shared-journeys` -- every journey OTHER members
  * have shared into any group the caller belongs to (never the caller's
- * own). Not called by any page yet -- see this feature's plan, Judgment
- * Call 4 -- built now for parity with `getSharedGroupTrains`/
- * `getSharedGroupCustomLines`. `null` on a `401`, same reasoning as those
+ * own), in travel order. Not called by any page: `/journeys` reads these
+ * journeys through `getMyJourneys({ includeShared: true })`, merged with
+ * the caller's own (DS-178). `null` on a `401`, same reasoning as those
  * two: no id in the path, so a `401` can only ever mean "not logged in". */
 export async function getSharedGroupJourneys(): Promise<SharedGroupJourney[] | null> {
   const url = `${baseUrl()}/public/groups/shared-journeys`;
