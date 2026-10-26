@@ -112,7 +112,7 @@ export function parsePlanSearchParams(raw: RawSearchParams): PlanFormInitial {
   const avoidChange = codeList(first(raw.avoidChange), { allowStops: true, max: MAX_AVOIDED });
   if (avoidChange.length > 0) initial.avoidChangeCrs = avoidChange;
   const maxChanges = first(raw.maxChanges);
-  if (maxChanges && /^\d$/.test(maxChanges) && Number(maxChanges) <= MAX_CHANGES_LIMIT) {
+  if (maxChanges && /^\d{1,2}$/.test(maxChanges) && Number(maxChanges) <= MAX_CHANGES_LIMIT) {
     initial.maxChanges = Number(maxChanges);
   }
   return initial;

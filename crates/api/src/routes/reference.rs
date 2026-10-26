@@ -12,7 +12,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use serde::Deserialize;
 
 use crate::app::{App, Router};
@@ -37,6 +37,7 @@ const NEARBY_MAX_LIMIT: i64 = 50;
 pub fn router() -> Router {
     Router::new()
         .route("/stations", axum::routing::get(search_stations))
+        .route("/stations/codes", axum::routing::get(list_station_codes))
         .route(
             "/stations/{crs}/accessibility",
             axum::routing::get(get_station_accessibility),
@@ -187,6 +188,33 @@ fn normalize_nearby_limit(raw: Option<&str>) -> Result<i64, (StatusCode, String)
         ));
     }
     Ok(parsed.min(NEARBY_MAX_LIMIT))
+}
+
+/// `Cache-Control` of `/stations/codes`: the station list changes a few
+/// times a year, and its one reader (the frontend's sitemap) caches it for
+/// hours anyway.
+pub(crate) const ID_LIST_CACHE: &str = "public, max-age=3600";
+
+/// `GET /public/stations/codes`: `{"codes": ["AAP", ...]}`, every
+/// station's CRS code, sorted. Just the codes, for the frontend's sitemap;
+/// names come from `/stations`. Unauthenticated and not rate limited (one
+/// primary-key scan, cacheable).
+async fn list_station_codes(
+    State(app): State<App>,
+) -> Result<
+    (
+        [(header::HeaderName, &'static str); 1],
+        Json<serde_json::Value>,
+    ),
+    (StatusCode, String),
+> {
+    let codes = reference::all_station_codes(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok((
+        [(header::CACHE_CONTROL, ID_LIST_CACHE)],
+        Json(serde_json::json!({ "codes": codes })),
+    ))
 }
 
 async fn list_all_tocs(
@@ -731,5 +759,47 @@ mod db_tests {
             StatusCode::BAD_REQUEST,
             "an out-of-range latitude must 400: {body}"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                station_codes_route -- --ignored --test-threads=1`"]
+    async fn station_codes_route_lists_every_code_sorted_and_cacheable() {
+        let pool = connect().await;
+        let _cleanup = station_cleanup(&pool, &["9JB", "9JA"]).await;
+        seed(&pool, "9JB", "Codes Fixture B", serde_json::json!({})).await;
+        seed(&pool, "9JA", "Codes Fixture A", serde_json::json!({})).await;
+
+        let app: axum::Router = Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/stations/codes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            ID_LIST_CACHE
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let codes: Vec<String> =
+            serde_json::from_value(json["codes"].clone()).expect("a `codes` array of strings");
+        assert!(
+            codes.windows(2).all(|pair| pair[0] < pair[1]),
+            "sorted, unique"
+        );
+        let a = codes.iter().position(|c| c == "9JA").expect("9JA listed");
+        let b = codes.iter().position(|c| c == "9JB").expect("9JB listed");
+        assert!(a < b);
+        assert!(codes.iter().all(|c| c.len() == 3), "CRS codes, unpadded");
     }
 }

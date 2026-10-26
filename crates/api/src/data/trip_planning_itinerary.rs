@@ -1,9 +1,9 @@
 //! Turns a raw `trip_planner::Journey`/`RaptorJourney` (`TIPLOC`-keyed,
 //! minutes-from-midnight) into the CRS/human-time-keyed shape
 //! `routes::trips` serializes, applies this feature's interchange cap
-//! (design spec §4: ≤2 by default, caller-raisable to ≤6 via
-//! `?maxChanges=`; a hard filter in `options` mode only, a flag in
-//! `fastest` mode -- see [`plan_segment`]), and chains ordered waypoints
+//! (≤4 by default, caller-raisable to ≤12 via `?maxChanges=`, see
+//! [`DEFAULT_MAX_CHANGES`] and [`MAX_CHANGES_LIMIT`]; a hard filter in
+//! `options` mode only, a flag in `fastest` mode -- see [`plan_segment`]), and chains ordered waypoints
 //! into independently-solved sub-journeys (design spec §4: "Not a
 //! traveling-salesman-style... problem"). See
 //! docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase5-planning-api-plan.md's
@@ -14,25 +14,36 @@ use chrono::{NaiveDate, NaiveTime};
 use schedule_query::InterchangeData;
 use trip_planner::{ArriveByOptions, JourneyLeg, RaptorJourney, Restrictions};
 
-/// Design spec §4's default cap, at most 2 interchanges (3 legs) per
-/// computed itinerary -- applied here, in the presentation layer, never
-/// inside `scan_connections`/`raptor_search` themselves (Phase 3/4's own
-/// Judgment Calls: neither algorithm has an interchange-count concept built
-/// in). This is what `GET /Trips/plan` uses when the caller omits
-/// `?maxChanges=`, so existing callers (this app's own frontend included)
-/// see exactly the pre-parameter behaviour.
-pub const DEFAULT_MAX_CHANGES: u32 = 2;
+/// The cap `GET /Trips/plan` uses when the caller omits `?maxChanges=`:
+/// at most 4 interchanges (5 legs) per itinerary -- applied here, in the
+/// presentation layer, never inside `scan_connections`/`raptor_search`
+/// themselves (Phase 3/4's own Judgment Calls: neither algorithm has an
+/// interchange-count concept built in).
+///
+/// It was design spec §4's 2 until 2026-10-24 (DS-85). On prod's timetable
+/// that left a third of `options` searches between rural or cross-country
+/// stations (Pwllheli to Whitby, Stranraer to Cromer, a Tube stop to a
+/// rural station) with no itinerary at all, because their fewest-change
+/// route needs 3 or 4; at 4, every extra change an `options` answer offered
+/// was 21 to 175 minutes faster but one, and a direct or one-change London
+/// trip got the same answer as at 2 (the Pareto set never adds a change that
+/// isn't faster). 4 is also the Distant-Signal-MCP's own default. Measured
+/// in docs/superpowers/specs/2026-10-24-trips-plan-max-changes-12-design.md.
+pub const DEFAULT_MAX_CHANGES: u32 = 4;
 
-/// Upper bound on a caller-requested `?maxChanges=`. It was 4, the
-/// sibling `Distant-Signal-MCP` project's `PLAN_MAX_CHANGES` default; that
-/// project fell back to its own engine for anything higher. Raised to 6 on
-/// 2026-10-06 so DS serves those requests too (an obscure cross-country
-/// route can need 5 or 6). Bounded rather than open because every extra
-/// change is one more full RAPTOR sweep over the day's connections graph in
-/// `options` mode -- see `routes::trips::get_trip_plan`'s own `DoS` notes for
-/// the worst-case arithmetic, and `routes::trips::MAX_OPTIONS_SEARCH_SIZE`
-/// for the guard that keeps 6 affordable with many waypoints or vias.
-pub const MAX_CHANGES_LIMIT: u32 = 6;
+/// Upper bound on a caller-requested `?maxChanges=`. It was 4 until
+/// 2026-10-06, then 6; raised to 12 on 2026-10-24 (DS-85), when via and
+/// waypoint plans on prod's timetable already reached exactly 6 end to end
+/// (changes are counted over the whole journey) with the headroom round
+/// the only thing left to see a 7th. RAPTOR stops at the first round that
+/// improves nothing, and every real search measured had converged by its
+/// 8th round, so 12 cost nothing measurable over 6. Bounded rather than open
+/// because a search that doesn't converge pays one full sweep over the
+/// day's connections per round in `options` mode -- see
+/// `routes::trips::get_trip_plan`'s own `DoS` notes for the worst-case
+/// arithmetic, and `routes::trips::OPTIONS_SEARCH_SIZE_LIMIT` for the guard
+/// that bounds rounds times waypoints and vias.
+pub const MAX_CHANGES_LIMIT: u32 = 12;
 
 /// Phase 4's own Judgment Call 2: `max_rounds` for RAPTOR is NEVER the
 /// library's own default -- `max_changes + 1` trips needed for
@@ -2473,7 +2484,7 @@ mod tests {
             "MKC",
             NaiveTime::MIN,
             "fastest",
-            DEFAULT_MAX_CHANGES,
+            2,
         )
         .unwrap();
         assert_eq!(itineraries.len(), 1);
@@ -2514,14 +2525,10 @@ mod tests {
             "MKC",
             NaiveTime::MIN,
             "options",
-            DEFAULT_MAX_CHANGES,
+            2,
         )
         .unwrap();
-        assert!(
-            itineraries
-                .iter()
-                .all(|i| i.change_count <= DEFAULT_MAX_CHANGES)
-        );
+        assert!(itineraries.iter().all(|i| i.change_count <= 2));
         assert!(
             capped,
             "a strictly faster, over-cap itinerary exists and must be flagged"
@@ -2573,12 +2580,13 @@ mod tests {
         (connections, interchange)
     }
 
-    /// The raised ceiling (2026-10-06): 5- and 6-change routes are found
-    /// exactly when `maxChanges` allows them, and flagged as capped one below.
+    /// The raised ceilings (6 on 2026-10-06, 12 on 2026-10-24): routes of 5
+    /// to 12 changes are found exactly when `maxChanges` allows them, and
+    /// flagged as capped one below.
     #[test]
-    fn options_mode_reaches_five_and_six_changes_under_the_raised_ceiling() {
-        assert_eq!(MAX_CHANGES_LIMIT, 6);
-        for changes in [5, 6] {
+    fn options_mode_reaches_every_change_count_up_to_the_ceiling() {
+        assert_eq!(MAX_CHANGES_LIMIT, 12);
+        for changes in [5, 6, 7, 11, MAX_CHANGES_LIMIT] {
             let (connections, interchange) = chain_network(changes);
             let plan = |max_changes| {
                 plan_segment(
@@ -2633,17 +2641,20 @@ mod tests {
             .unwrap()
         };
 
-        let (at_default, capped_at_default) = plan(DEFAULT_MAX_CHANGES);
-        assert!(at_default.is_empty(), "{at_default:?}");
+        let (at_two, capped_at_two) = plan(2);
+        assert!(at_two.is_empty(), "{at_two:?}");
         assert!(
-            capped_at_default,
-            "the only route needs 3 changes, so the default cap of 2 genuinely bound it"
+            capped_at_two,
+            "the only route needs 3 changes, so a cap of 2 (the default before 2026-10-24) \
+             genuinely bound it"
         );
 
-        let (at_three, capped_at_three) = plan(3);
-        assert_eq!(at_three.len(), 1, "{at_three:?}");
-        assert_eq!(at_three[0].change_count, 3);
-        assert!(!capped_at_three);
+        for cap in [3, DEFAULT_MAX_CHANGES] {
+            let (found, capped) = plan(cap);
+            assert_eq!(found.len(), 1, "{cap}: {found:?}");
+            assert_eq!(found[0].change_count, 3);
+            assert!(!capped);
+        }
     }
 
     /// Proves the headroom round scales with the requested cap rather than
@@ -2716,8 +2727,10 @@ mod tests {
             assert_eq!(itineraries.len(), 1);
             itineraries[0].exceeds_recommended_changes
         };
-        assert_eq!(flag(DEFAULT_MAX_CHANGES), Some(true));
+        assert_eq!(flag(2), Some(true));
         assert_eq!(flag(3), Some(false));
+        // The default of 4 (DS-85) no longer flags a 3-change route.
+        assert_eq!(flag(DEFAULT_MAX_CHANGES), Some(false));
     }
 
     #[test]

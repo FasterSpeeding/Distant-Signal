@@ -85,10 +85,14 @@ const MAX_VIA_STATIONS: usize = 54;
 ///
 /// The default bound is 252, twice what 20 waypoints at `maxChanges=4` (the
 /// worst case before the ceiling was raised to 6) cost: the user's decision
-/// of 2026-10-06. Without vias that never binds below [`MAX_WAYPOINTS`];
-/// with 1 via, `maxChanges` 2/4/5/6 allow 20/13/11/9 waypoints; with 3
-/// vias, 8/5/4/3. `fastest` (one CSA sweep, no rounds) is not limited
-/// beyond [`MAX_WAYPOINTS`] and [`MAX_VIAS`].
+/// of 2026-10-06, kept when the ceiling went to 12 (2026-10-24, DS-85).
+/// Without vias it binds only above `maxChanges=10` (18 waypoints at 11,
+/// 17 at 12); with 1 via, `maxChanges` 2/4/6/8/10/12 allow 20/13/9/7/6/5
+/// waypoints; with 3 vias, 8/5/3/2/2/1. A request that leaves `maxChanges`
+/// out gets the default of 4 only where it fits, else the most that does
+/// down to the old default of 2 ([`default_max_changes`]), so no request
+/// valid before the default rose is refused. `fastest` (one CSA sweep, no
+/// rounds) is not limited beyond [`MAX_WAYPOINTS`] and [`MAX_VIAS`].
 ///
 /// `TRIP_PLAN_MAX_OPTIONS_SEARCH_SIZE` (chart `api.tripPlanMaxOptionsSearchSize`)
 /// sets it, clamped to [`MIN_OPTIONS_SEARCH_SIZE`]..=[`MAX_OPTIONS_SEARCH_SIZE`];
@@ -96,8 +100,9 @@ const MAX_VIA_STATIONS: usize = 54;
 /// docs/superpowers/specs/2026-10-06-trips-plan-via-and-max-changes-design.md.
 const DEFAULT_OPTIONS_SEARCH_SIZE: usize = 252;
 /// The lowest bound accepted: every request with no waypoints and no vias
-/// still fits at any allowed `maxChanges` (1 * 1 * 8).
-const MIN_OPTIONS_SEARCH_SIZE: usize = 8;
+/// still fits at any allowed `maxChanges` (1 * 1 * 14 at 12).
+const MIN_OPTIONS_SEARCH_SIZE: usize =
+    trip_planning_itinerary::max_rounds(trip_planning_itinerary::MAX_CHANGES_LIMIT) as usize;
 /// The highest bound accepted: four times the pre-2026-10-06 worst case,
 /// about 4x the latency of 20 waypoints at `maxChanges=4`.
 const MAX_OPTIONS_SEARCH_SIZE: usize = 504;
@@ -253,9 +258,9 @@ struct TripPlanParams {
     via: Option<String>,
     #[serde(default = "default_results")]
     results: String,
-    /// Optional interchange cap, `?maxChanges=0`..`=6` (inclusive). Absent
-    /// or empty means [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (2),
-    /// exactly this route's behaviour before the parameter existed. Kept as
+    /// Optional interchange cap, `?maxChanges=0`..`=12` (inclusive). Absent
+    /// or empty means [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (4;
+    /// 2 before 2026-10-24), see [`default_max_changes`]. Kept as
     /// a raw string and validated by [`parse_max_changes`] rather than
     /// deserialized straight into an integer, so a bad value gets this
     /// route's own clear 400 message rather than axum's generic
@@ -395,7 +400,7 @@ fn default_results() -> String {
 
 /// `GET /Trips/plan?origin=&destination=&date=[&waypoints=][&via=]
 /// [&departAfter=|&arriveBy=][&dayOffset=0|1][&acrossMidnight=true][&avoid=][&avoidStop=][&avoidChange=]
-/// [&results=fastest|options][&maxChanges=0..6][&live=true|false]`.
+/// [&results=fastest|options][&maxChanges=0..12][&live=true|false]`.
 ///
 /// - `dayOffset=1` (2026-10-19): the `departAfter`/`arriveBy` time is on
 ///   the morning after `date`, still on `date`'s trains -- "arrive by 00:30
@@ -494,8 +499,10 @@ fn default_results() -> String {
 ///   `cappedByMaxChanges: true` when a strictly faster itinerary needing more
 ///   changes exists.
 /// - `maxChanges`: integer `0..=`[`trip_planning_itinerary::MAX_CHANGES_LIMIT`]
-///   (6 since 2026-10-06, 4 before); absent/empty =>
-///   [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (2). Anything else (out
+///   (12 since 2026-10-24, 6 from 2026-10-06, 4 before); absent/empty =>
+///   [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (4 since 2026-10-24,
+///   2 before), or less where `options`' search-size guard needs it (see
+///   [`default_max_changes`]). Anything else (out
 ///   of range, negative, non-integer) is a 400 naming the allowed range,
 ///   rejected before any database read. The effective value is echoed back
 ///   as the response's top-level `maxChanges`. With `results=options`, the
@@ -518,12 +525,14 @@ fn default_results() -> String {
 ///    [`OPTIONS_SEARCH_SIZE_LIMIT`], also checked before any database read --
 ///    bound how deep and how wide each `options`-mode search can go. RAPTOR
 ///    does one full sweep of the day's connections per round, and runs
-///    `maxChanges + 2` rounds at most (fewer if a round improves nothing): 8
-///    sweeps at `maxChanges=6`, 6 at 4, 4 at the default of 2. Each sweep
-///    carries one label set per (waypoint stage, via progress) state,
-///    `(waypoints + 1) * (vias + 1)` of them, so the work is about states *
-///    rounds (a via state weighing about two waypoint states); the guard
-///    keeps that at or below what 20 waypoints at
+///    `maxChanges + 2` rounds at most (fewer if a round improves nothing): 14
+///    sweeps at `maxChanges=12`, 6 at the default of 4. On prod's timetable
+///    every search measured had stopped improving by its 8th round (DS-85,
+///    2026-10-24), so a cap above 6 costs only searches that don't converge.
+///    Each sweep carries one label set per (waypoint stage, via progress)
+///    state, `(waypoints + 1) * (vias + 1)` of them, so the work is about
+///    states * rounds (a via state weighing about two waypoint states); the
+///    guard keeps that at or below twice what 20 waypoints at
 ///    `maxChanges=4` (the most allowed before 2026-10-06) already cost.
 ///    (The whole-day read and graph build, which dominate memory, are
 ///    unchanged, and `fastest` mode's single CSA scan doesn't depend on
@@ -570,7 +579,7 @@ async fn get_trip_plan(
     }
 
     let waypoints = parse_waypoints(params.waypoints.as_deref())?;
-    let max_changes = parse_max_changes(params.max_changes.as_deref())?;
+    let requested_max_changes = parse_max_changes(params.max_changes.as_deref())?;
     let live_requested = parse_live(params.live.as_deref())?;
     let day_offset = parse_day_offset(
         params.day_offset.as_deref(),
@@ -624,6 +633,14 @@ async fn get_trip_plan(
     }
     // A group via is ONE via to the search (one progress step), measured to
     // cost about what a single-station via does (`bench_group_vias_against_single`).
+    let max_changes = requested_max_changes.unwrap_or_else(|| {
+        default_max_changes(
+            &params.results,
+            waypoints.len(),
+            via_choices.len(),
+            *OPTIONS_SEARCH_SIZE_LIMIT,
+        )
+    });
     check_options_search_size(
         &params.results,
         waypoints.len(),
@@ -2258,24 +2275,45 @@ fn parse_time_bound(
     }
 }
 
-/// Validates `?maxChanges=`: absent, empty or whitespace-only means the
-/// default ([`trip_planning_itinerary::DEFAULT_MAX_CHANGES`], matching how an
-/// empty `?waypoints=` means "none"); otherwise it must be an integer in
+/// The cap for a request that left `?maxChanges=` out:
+/// [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (4), or, for an
+/// `options` search too large for the guard at 4 (`limit`, see
+/// [`check_options_search_size`]), the most that fits down to
+/// [`LEGACY_DEFAULT_MAX_CHANGES`]. Every request that omitted `maxChanges`
+/// and fitted before the default rose from 2 (2026-10-24) still fits, and
+/// still gets at least what it got then; one too large even at 2 gets 2 and
+/// its 400, as before. Echoed as the response's `maxChanges`.
+fn default_max_changes(results: &str, waypoints: usize, vias: usize, limit: usize) -> u32 {
+    (LEGACY_DEFAULT_MAX_CHANGES..=trip_planning_itinerary::DEFAULT_MAX_CHANGES)
+        .rev()
+        .find(|&max_changes| {
+            check_options_search_size(results, waypoints, vias, max_changes, limit).is_ok()
+        })
+        .unwrap_or(LEGACY_DEFAULT_MAX_CHANGES)
+}
+
+/// The default `maxChanges` before 2026-10-24: the floor
+/// [`default_max_changes`] steps down to.
+const LEGACY_DEFAULT_MAX_CHANGES: u32 = 2;
+
+/// Validates `?maxChanges=`: absent, empty or whitespace-only is `None`, the
+/// default ([`default_max_changes`], matching how an empty `?waypoints=`
+/// means "none"); otherwise it must be an integer in
 /// `0..=`[`trip_planning_itinerary::MAX_CHANGES_LIMIT`]. Like
 /// [`parse_waypoints`], this is a pure function checked before the permit and
 /// any database read, so a rejected request costs a string parse, not a
 /// query -- and it's a 400 naming the allowed range, never a silent clamp: a
 /// plan computed under a different cap than the one asked for answers a
 /// different question.
-fn parse_max_changes(raw: Option<&str>) -> Result<u32, (StatusCode, String)> {
+fn parse_max_changes(raw: Option<&str>) -> Result<Option<u32>, (StatusCode, String)> {
     use trip_planning_itinerary::{DEFAULT_MAX_CHANGES, MAX_CHANGES_LIMIT};
 
     let raw = raw.unwrap_or("").trim();
     if raw.is_empty() {
-        return Ok(DEFAULT_MAX_CHANGES);
+        return Ok(None);
     }
     match raw.parse::<u32>() {
-        Ok(value) if value <= MAX_CHANGES_LIMIT => Ok(value),
+        Ok(value) if value <= MAX_CHANGES_LIMIT => Ok(Some(value)),
         _ => Err((
             StatusCode::BAD_REQUEST,
             format!(
@@ -2424,29 +2462,74 @@ mod tests {
         );
     }
 
-    /// Omitted (or empty) `?maxChanges=` must mean exactly the pre-parameter
-    /// cap of 2, so existing callers see no behaviour change.
+    /// Omitted (or empty) `?maxChanges=` is the default, resolved once the
+    /// waypoints and vias are known ([`default_max_changes`]).
     #[test]
-    fn max_changes_defaults_to_two_when_omitted_or_empty() {
-        assert_eq!(trip_planning_itinerary::DEFAULT_MAX_CHANGES, 2);
-        assert_eq!(parse_max_changes(None), Ok(2));
-        assert_eq!(parse_max_changes(Some("")), Ok(2));
-        assert_eq!(parse_max_changes(Some("  ")), Ok(2));
+    fn max_changes_is_none_when_omitted_or_empty() {
+        assert_eq!(parse_max_changes(None), Ok(None));
+        assert_eq!(parse_max_changes(Some("")), Ok(None));
+        assert_eq!(parse_max_changes(Some("  ")), Ok(None));
+    }
+
+    /// The default is 4 (DS-85, 2026-10-24), stepping down towards the old
+    /// default of 2 only where `options`' search-size guard needs it, so
+    /// every request that left `maxChanges` out and fitted before still fits.
+    #[test]
+    fn the_default_max_changes_is_four_where_the_search_size_guard_allows() {
+        assert_eq!(trip_planning_itinerary::DEFAULT_MAX_CHANGES, 4);
+        let limit = DEFAULT_OPTIONS_SEARCH_SIZE;
+        for results in ["fastest", "options"] {
+            assert_eq!(default_max_changes(results, 0, 0, limit), 4, "{results}");
+            assert_eq!(default_max_changes(results, MAX_WAYPOINTS, 0, limit), 4);
+            assert_eq!(default_max_changes(results, 13, 1, limit), 4);
+        }
+        // fastest has no rounds, so its default never steps down.
+        assert_eq!(default_max_changes("fastest", 20, 3, limit), 4);
+        // options: 4 where it fits, else the most that does, never below 2.
+        for (waypoints, vias, expected) in [
+            (14, 1, 3), // 15 * 3 * 6 = 270 > 252; 15 * 3 * 5 = 225
+            (20, 1, 2), // 21 * 3 * 5 = 315; 21 * 3 * 4 = 252
+            (5, 3, 4),  // 6 * 7 * 6 = 252
+            (6, 3, 3),  // 7 * 7 * 6 = 294; 7 * 7 * 5 = 245
+            (8, 3, 2),  // 9 * 7 * 5 = 315; 9 * 7 * 4 = 252
+            (9, 3, 2),  // over even at 2: 2, and its 400 as before
+        ] {
+            assert_eq!(
+                default_max_changes("options", waypoints, vias, limit),
+                expected,
+                "{waypoints} waypoints, {vias} vias"
+            );
+        }
+        // Every combination that fitted at the old default of 2 still fits.
+        for waypoints in 0..=MAX_WAYPOINTS {
+            for vias in 0..=MAX_VIAS {
+                let old_fits = check_options_search_size("options", waypoints, vias, 2, limit);
+                let new = default_max_changes("options", waypoints, vias, limit);
+                assert!(new >= 2);
+                if old_fits.is_ok() {
+                    assert!(
+                        check_options_search_size("options", waypoints, vias, new, limit).is_ok(),
+                        "{waypoints} waypoints, {vias} vias"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
     fn max_changes_accepts_every_value_from_zero_to_the_limit() {
-        assert_eq!(trip_planning_itinerary::MAX_CHANGES_LIMIT, 6);
+        assert_eq!(trip_planning_itinerary::MAX_CHANGES_LIMIT, 12);
         for value in 0..=trip_planning_itinerary::MAX_CHANGES_LIMIT {
-            assert_eq!(parse_max_changes(Some(&value.to_string())), Ok(value));
+            assert_eq!(parse_max_changes(Some(&value.to_string())), Ok(Some(value)));
         }
-        assert_eq!(parse_max_changes(Some(" 3 ")), Ok(3));
+        assert_eq!(parse_max_changes(Some(" 3 ")), Ok(Some(3)));
     }
 
     #[test]
     fn max_changes_out_of_range_or_non_integer_is_a_400_naming_the_range() {
         for bad in [
-            "7",
+            "13",
+            "16",
             "99",
             "-1",
             "abc",
@@ -2459,7 +2542,9 @@ mod tests {
                 parse_max_changes(Some(bad)).expect_err(&format!("'{bad}' must be rejected"));
             assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
             assert!(
-                message.contains("maxChanges") && message.contains("0 to 6"),
+                message.contains("maxChanges")
+                    && message.contains("0 to 12")
+                    && message.contains("default 4"),
                 "the error must name the parameter and its range: {message}"
             );
         }
@@ -2877,20 +2962,27 @@ mod tests {
         let fits = |waypoints, vias, max_changes| {
             check_options_search_size("options", waypoints, vias, max_changes, limit).is_ok()
         };
-        // No vias: every waypoint count allowed, at any maxChanges.
-        for max_changes in 0..=trip_planning_itinerary::MAX_CHANGES_LIMIT {
+        // No vias: every waypoint count allowed up to maxChanges=10.
+        for max_changes in 0..=10 {
             assert!(fits(MAX_WAYPOINTS, 0, max_changes), "{max_changes}");
         }
         // At the bound exactly, and one waypoint over it.
         for (waypoints, vias, max_changes) in [
-            (20, 1, 2), // 21 * 3 * 4 = 252
-            (13, 1, 4), // 14 * 3 * 6 = 252
-            (11, 1, 5), // 12 * 3 * 7 = 252
-            (9, 1, 6),  // 10 * 3 * 8 = 240
-            (8, 3, 2),  // 9 * 7 * 4 = 252
-            (5, 3, 4),  // 6 * 7 * 6 = 252
-            (4, 3, 5),  // 5 * 7 * 7 = 245
-            (3, 3, 6),  // 4 * 7 * 8 = 224
+            (18, 0, 11), // 19 * 1 * 13 = 247
+            (17, 0, 12), // 18 * 1 * 14 = 252
+            (20, 1, 2),  // 21 * 3 * 4 = 252
+            (13, 1, 4),  // 14 * 3 * 6 = 252
+            (11, 1, 5),  // 12 * 3 * 7 = 252
+            (9, 1, 6),   // 10 * 3 * 8 = 240
+            (7, 1, 8),   // 8 * 3 * 10 = 240
+            (6, 1, 10),  // 7 * 3 * 12 = 252
+            (5, 1, 12),  // 6 * 3 * 14 = 252
+            (8, 3, 2),   // 9 * 7 * 4 = 252
+            (5, 3, 4),   // 6 * 7 * 6 = 252
+            (4, 3, 5),   // 5 * 7 * 7 = 245
+            (3, 3, 6),   // 4 * 7 * 8 = 224
+            (2, 3, 10),  // 3 * 7 * 12 = 252
+            (1, 3, 12),  // 2 * 7 * 14 = 196
         ] {
             assert!(
                 fits(waypoints, vias, max_changes),
@@ -2911,8 +3003,14 @@ mod tests {
         assert!(check_options_search_size("fastest", 20, 3, 6, limit).is_ok());
         // The configurable bound is honoured, and its floor still admits a
         // direct plan at the highest maxChanges.
-        assert!(check_options_search_size("options", 0, 0, 6, MIN_OPTIONS_SEARCH_SIZE).is_ok());
-        assert!(check_options_search_size("options", 1, 0, 6, MIN_OPTIONS_SEARCH_SIZE).is_err());
+        assert_eq!(MIN_OPTIONS_SEARCH_SIZE, 14);
+        let highest = trip_planning_itinerary::MAX_CHANGES_LIMIT;
+        assert!(
+            check_options_search_size("options", 0, 0, highest, MIN_OPTIONS_SEARCH_SIZE).is_ok()
+        );
+        assert!(
+            check_options_search_size("options", 1, 0, highest, MIN_OPTIONS_SEARCH_SIZE).is_err()
+        );
         assert!(check_options_search_size("options", 20, 3, 6, MAX_OPTIONS_SEARCH_SIZE).is_err());
         assert!(check_options_search_size("options", 8, 3, 6, MAX_OPTIONS_SEARCH_SIZE).is_ok());
     }
@@ -3764,7 +3862,9 @@ mod db_tests {
         let router = test_router(test_app(pool.clone()));
         let (status, body) = get(
             router,
-            format!("/Trips/plan?origin=ZZC&destination=ZZD&date={date}&results=options"),
+            format!(
+                "/Trips/plan?origin=ZZC&destination=ZZD&date={date}&results=options&maxChanges=2"
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body:?}");
@@ -3775,8 +3875,7 @@ mod db_tests {
             .expect("itineraries array");
         for itinerary in itineraries {
             assert!(
-                itinerary["changeCount"].as_u64().unwrap()
-                    <= u64::from(trip_planning_itinerary::DEFAULT_MAX_CHANGES),
+                itinerary["changeCount"].as_u64().unwrap() <= 2,
                 "{itinerary:?}"
             );
         }
@@ -3827,7 +3926,7 @@ mod db_tests {
                 routes::trips -- --ignored --test-threads=1`"]
     async fn an_invalid_max_changes_is_a_clear_400_before_the_date_is_looked_up() {
         let pool = connect().await;
-        for bad in ["7", "-1", "abc", "2.5", "4294967296"] {
+        for bad in ["13", "-1", "abc", "2.5", "4294967296"] {
             let router = test_router(test_app(pool.clone()));
             let (status, body) = get(
                 router,
@@ -3841,18 +3940,44 @@ mod db_tests {
             );
             let message = body.as_str().expect("plain-text error body");
             assert!(
-                message.contains("maxChanges") && message.contains("0 to 6"),
+                message.contains("maxChanges")
+                    && message.contains("0 to 12")
+                    && message.contains("default 4"),
                 "the error must name the parameter and its range: {message}"
             );
         }
     }
 
+    /// `max_changes_lifts_the_cap_only_when_asked`'s one route: 3 changes,
+    /// its four seeded trains, not capped.
+    fn assert_three_change_route(body: &Value) {
+        let segment = &body["segments"][0];
+        let itineraries = segment["itineraries"]
+            .as_array()
+            .expect("itineraries array");
+        assert_eq!(itineraries.len(), 1, "{body:?}");
+        assert_eq!(itineraries[0]["changeCount"], 3, "{body:?}");
+        let uids: Vec<&str> = itineraries[0]["legs"]
+            .as_array()
+            .expect("legs array")
+            .iter()
+            .filter_map(|leg| leg["trainUid"].as_str())
+            .collect();
+        assert_eq!(
+            uids,
+            ["TESTPLANMXA", "TESTPLANMXB", "TESTPLANMXC", "TESTPLANMXD"],
+            "{body:?}"
+        );
+        assert_eq!(segment["cappedByMaxChanges"], false, "{body:?}");
+    }
+
     /// The end-to-end proof for `?maxChanges=`: a synthetic network whose
     /// ONLY route needs exactly 3 changes (4 legs,
-    /// ORIGIN -> P -> Q -> R -> DEST). At the default cap `options` mode
-    /// returns nothing but flags `cappedByMaxChanges`, and an explicit
-    /// `maxChanges=2` is byte-for-byte the same response as omitting it; at
-    /// `maxChanges=3` the real 3-change itinerary comes back, uncapped.
+    /// ORIGIN -> P -> Q -> R -> DEST). At the default cap of 4 (2 before
+    /// 2026-10-24, DS-85) `options` mode returns it, and an explicit
+    /// `maxChanges=4` is byte-for-byte the same response as omitting it; at
+    /// `maxChanges=2` it returns nothing but flags `cappedByMaxChanges`; the
+    /// new ceiling of 12 is accepted and changes nothing here.
     /// `fastest` mode ignores the cap as a limit (the over-cap route is still
     /// returned) and only uses it as the `exceedsRecommendedChanges` threshold.
     /// Synthetic CRS codes/TIPLOCs for the same isolation reason as
@@ -3903,62 +4028,52 @@ mod db_tests {
             }
         };
 
-        // options, omitted => the pre-parameter default of 2.
+        // options, omitted => the default of 4: the real 3-change itinerary.
         let (status, omitted) = plan("&results=options").await;
         assert_eq!(status, StatusCode::OK, "{omitted:?}");
-        assert_eq!(omitted["maxChanges"], 2, "{omitted:?}");
-        let segment = &omitted["segments"][0];
+        assert_eq!(omitted["maxChanges"], 4, "{omitted:?}");
+        assert_three_change_route(&omitted);
+
+        // options, explicit 4 => identical to omitted.
+        let (status, explicit_four) = plan("&results=options&maxChanges=4").await;
+        assert_eq!(status, StatusCode::OK, "{explicit_four:?}");
+        assert_eq!(explicit_four, omitted);
+
+        // options, the new ceiling of 12 => the same route, echoed as 12.
+        let (status, twelve) = plan("&results=options&maxChanges=12").await;
+        assert_eq!(status, StatusCode::OK, "{twelve:?}");
+        assert_eq!(twelve["maxChanges"], 12, "{twelve:?}");
+        assert_three_change_route(&twelve);
+
+        // options, 2 (the old default) => nothing, flagged as capped.
+        let (status, two) = plan("&results=options&maxChanges=2").await;
+        assert_eq!(status, StatusCode::OK, "{two:?}");
+        assert_eq!(two["maxChanges"], 2, "{two:?}");
+        let segment = &two["segments"][0];
         assert_eq!(
             segment["itineraries"]
                 .as_array()
                 .expect("itineraries array")
                 .len(),
             0,
-            "the only route needs 3 changes, over the default cap: {omitted:?}"
+            "the only route needs 3 changes, over a cap of 2: {two:?}"
         );
-        assert_eq!(segment["cappedByMaxChanges"], true, "{omitted:?}");
-
-        // options, explicit 2 => identical to omitted.
-        let (status, explicit_two) = plan("&results=options&maxChanges=2").await;
-        assert_eq!(status, StatusCode::OK, "{explicit_two:?}");
-        assert_eq!(explicit_two, omitted);
-
-        // options, 3 => the real 3-change itinerary, not capped.
-        let (status, three) = plan("&results=options&maxChanges=3").await;
-        assert_eq!(status, StatusCode::OK, "{three:?}");
-        assert_eq!(three["maxChanges"], 3, "{three:?}");
-        let segment = &three["segments"][0];
-        let itineraries = segment["itineraries"]
-            .as_array()
-            .expect("itineraries array");
-        assert_eq!(itineraries.len(), 1, "{three:?}");
-        assert_eq!(itineraries[0]["changeCount"], 3, "{three:?}");
-        let uids: Vec<&str> = itineraries[0]["legs"]
-            .as_array()
-            .expect("legs array")
-            .iter()
-            .filter_map(|leg| leg["trainUid"].as_str())
-            .collect();
-        assert_eq!(
-            uids,
-            ["TESTPLANMXA", "TESTPLANMXB", "TESTPLANMXC", "TESTPLANMXD"],
-            "{three:?}"
-        );
-        assert_eq!(segment["cappedByMaxChanges"], false, "{three:?}");
+        assert_eq!(segment["cappedByMaxChanges"], true, "{two:?}");
 
         // fastest: the same route either way, flagged against the cap in effect.
         let (status, fastest_default) = plan("").await;
         assert_eq!(status, StatusCode::OK, "{fastest_default:?}");
+        assert_eq!(fastest_default["maxChanges"], 4, "{fastest_default:?}");
         let itinerary = &fastest_default["segments"][0]["itineraries"][0];
         assert_eq!(itinerary["changeCount"], 3, "{fastest_default:?}");
-        assert_eq!(itinerary["exceedsRecommendedChanges"], true);
+        assert_eq!(itinerary["exceedsRecommendedChanges"], false);
         assert_eq!(fastest_default["segments"][0]["cappedByMaxChanges"], false);
 
-        let (status, fastest_three) = plan("&maxChanges=3").await;
-        assert_eq!(status, StatusCode::OK, "{fastest_three:?}");
-        let itinerary = &fastest_three["segments"][0]["itineraries"][0];
-        assert_eq!(itinerary["changeCount"], 3, "{fastest_three:?}");
-        assert_eq!(itinerary["exceedsRecommendedChanges"], false);
+        let (status, fastest_two) = plan("&maxChanges=2").await;
+        assert_eq!(status, StatusCode::OK, "{fastest_two:?}");
+        let itinerary = &fastest_two["segments"][0]["itineraries"][0];
+        assert_eq!(itinerary["changeCount"], 3, "{fastest_two:?}");
+        assert_eq!(itinerary["exceedsRecommendedChanges"], true);
 
         for uid in ["TESTPLANMXA", "TESTPLANMXB", "TESTPLANMXC", "TESTPLANMXD"] {
             sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = $1")

@@ -40,7 +40,7 @@ import { pageMetadata } from '@/lib/pageMetadata';
 const METADATA_TITLE = 'Track a train';
 const METADATA_DESCRIPTION = 'Track a train to see its live position, delay and next stop.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, { path: '/track' });
 
 export default async function TrackPage({
   searchParams,

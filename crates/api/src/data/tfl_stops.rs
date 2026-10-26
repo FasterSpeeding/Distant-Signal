@@ -130,6 +130,15 @@ pub async fn search(
     Ok(rows.into_iter().map(TflStopSummary::from).collect())
 }
 
+/// Every stop's id, sorted: the `/tfl/stops/{id}` pages a sitemap lists
+/// (`GET /public/tfl/stops/ids`). A few hundred rows, from the primary key.
+pub async fn all_stop_ids(pool: &PgPool) -> Result<Vec<String>> {
+    let ids: Vec<String> = sqlx::query_scalar("SELECT stop_id FROM tfl_stops ORDER BY stop_id")
+        .fetch_all(pool)
+        .await?;
+    Ok(ids)
+}
+
 /// The stops among `ids` that exist, by id.
 pub async fn stops_by_id(pool: &PgPool, ids: &[String]) -> Result<HashMap<String, TflStopSummary>> {
     if ids.is_empty() {
