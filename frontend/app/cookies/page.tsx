@@ -21,7 +21,11 @@ export const dynamic = 'force-dynamic';
 
 export function generateMetadata(): Metadata {
   return withAbsoluteTitle(
-    legalPageMetadata('Cookies and browser storage', 'The cookies and browser storage Distant Signal uses, and why.'),
+    legalPageMetadata(
+      'Cookies and browser storage',
+      'The cookies and browser storage Distant Signal uses, and why.',
+      '/cookies',
+    ),
   );
 }
 

@@ -9,7 +9,7 @@ import { TextLink } from '@/components/TextLink';
 import { TflArrivalsBoard } from '@/components/TflArrivalsBoard';
 import { ApiNotFoundError, getLineStatus, getTflStop, getTflStopArrivals } from '@/lib/api';
 import { createLogger } from '@/lib/logger';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { stationLabel } from '@/lib/stationLabel';
 import { journeyFromTflStopHref, TFL_LINE_ID, TFL_STOP_ID, tflLineHref, tflModeBadge } from '@/lib/tflStops';
 import type { LineStatusReport, TflStopArrivals, TflStopDetail } from '@/lib/types';
@@ -71,7 +71,10 @@ function modesPhrase(stop: TflStopDetail): string {
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { id } = await params;
   const stop = await loadStop(id);
-  return pageMetadata(stop.name, `Live arrivals and line status at ${stop.name} (${modesPhrase(stop)}).`);
+  return pageMetadata(stop.name, `Live arrivals and line status at ${stop.name} (${modesPhrase(stop)}).`, {
+    path: `/tfl/stops/${encodeURIComponent(stop.id)}`,
+    imageAlt: previewImageAlt(stop.name),
+  });
 }
 
 /** `/tfl/stops/[id]` (DS-136): a TfL Tube, DLR or tram stop. Its live

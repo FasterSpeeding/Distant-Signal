@@ -34,7 +34,10 @@ import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 const METADATA_TITLE = 'Find a train';
 const METADATA_DESCRIPTION = 'Search UK trains by station and date, then open one for its live status or track it.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, {
+  ...OWN_PREVIEW_IMAGE,
+  path: '/trains',
+});
 
 /** `/trains` -- the primary train-discovery surface. Generalized from a
  * destination-first search into a calling-point-first one -- see

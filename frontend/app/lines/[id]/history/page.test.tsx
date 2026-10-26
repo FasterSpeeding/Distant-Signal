@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import LineHistoryPage, { HistoryResults } from './page';
+import LineHistoryPage, { generateMetadata, HistoryResults } from './page';
 import * as api from '@/lib/api';
 import type { LineStatusReport, LineDailyStats } from '@/lib/types';
 import { formatDate } from '@/lib/dateFormat';
@@ -372,5 +372,13 @@ describe('LineHistoryPage', () => {
 
     expect(screen.getByText('No history entries in that range.')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '30 days' })).not.toBeInTheDocument();
+  });
+});
+
+describe('generateMetadata', () => {
+  it('is crawlable but never indexed: a date-range view', async () => {
+    vi.mocked(api.getLineStatus).mockRejectedValue(new Error('down'));
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: 'wcml' }) });
+    expect(metadata.robots).toEqual({ index: false, follow: true });
   });
 });

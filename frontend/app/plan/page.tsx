@@ -43,7 +43,10 @@ import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 const METADATA_TITLE = 'Plan a journey';
 const METADATA_DESCRIPTION = 'Find train routes between two UK stations, with changes, and track the one you pick.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, {
+  ...OWN_PREVIEW_IMAGE,
+  path: '/plan',
+});
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 
