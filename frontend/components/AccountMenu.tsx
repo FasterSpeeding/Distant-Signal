@@ -32,6 +32,31 @@ import type { NavDestination } from '@/lib/navLinks';
  * here though: `label` arrives already resolved from the server, the same
  * split `AuthStatus` (its only caller) uses for `session`, so this adds
  * no client-side session round trip. */
+/** The initials the account button shows (Mantine `Avatar`'s own rule:
+ * the first letter of the first two words, or a one-word name's first two
+ * letters), computed here rather than left to `Avatar`'s `name` so the
+ * button's text and its accessible name come from one value.
+ * `accountMenuName` puts them first in that name: axe 4.14's
+ * `label-content-name-mismatch` (WCAG 2.5.3, Label in Name) requires an
+ * aria-label to contain the control's visible text, and a voice-control
+ * user saying "click AF" has to land on this button. */
+export function accountInitials(label: string): string {
+  const words = label.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= 1) return label.trim().slice(0, 2).toUpperCase();
+  return words
+    .slice(0, 2)
+    .map((word) => word.charAt(0))
+    .join('')
+    .toUpperCase();
+}
+
+/** The account button's accessible name: its visible initials, then the
+ * full display name (see the `Menu.Target` comment below for why the name
+ * lives here). */
+export function accountMenuName(label: string): string {
+  return `${accountInitials(label)}, account menu for ${label}`;
+}
+
 export function AccountMenu({
   label,
   destinations,
@@ -79,16 +104,21 @@ export function AccountMenu({
             in the bar as visible text: dropping it from the bar is where
             most of the width saving comes from, but it must not vanish
             from the accessibility tree with it. The visible initials
-            (Avatar's `name`) are the sighted equivalent, and the full
-            name is repeated as the dropdown's own `Menu.Label`. */}
-        <UnstyledButton aria-label={`Account menu for ${label}`}>
+            are the sighted equivalent and lead the name (Label in Name,
+            see `accountMenuName`), and the full name is repeated as the
+            dropdown's own `Menu.Label`. */}
+        <UnstyledButton aria-label={accountMenuName(label)}>
           {/* 28px, the height the nav's `ActionIcon`s render at, because
               the bar's height is the tallest control in it: at Mantine's
               default 30px this one control made the authenticated bar
               63px against the anonymous bar's 61px — the very "same
               height for everyone" property the account menu exists to
               establish, lost by two pixels. */}
-          <Avatar name={label} color="initials" size={28} radius="xl" />
+          {/* `name` still picks the colour; the text is passed explicitly
+              so it is the same initials the aria-label starts with. */}
+          <Avatar name={label} color="initials" size={28} radius="xl">
+            {accountInitials(label)}
+          </Avatar>
         </UnstyledButton>
       </Menu.Target>
       <Menu.Dropdown>

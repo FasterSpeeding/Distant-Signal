@@ -59,12 +59,14 @@ filled grape in the light scheme only.
 | Card / surface | Card bg | `#ffffff` | dark 6 `#2e2e2e` | Border gray 3 `#dee2e6` / dark 4 `#424242` |
 | Link | `--mantine-color-anchor` | grape 7 | grape 4 | Light overridden from grape 6 |
 | Filled grape | `--mantine-color-grape-filled` | grape 7, hover 8 | grape 8, hover 9 | Text pinned white by `variantColorResolver` |
+| Filled red (destructive confirm) | `--ds-filled-red-fill`, `-fill-hover`, `-text` | red 9 `#c92a2a`, hover `#ad2424`, white text | same | `variantColorResolver` sends filled red here: 5.46:1 (Lc -81), hover 6.87:1 (Lc -87). `--mantine-color-red-filled` is untouched |
+| Destructive menu item | `--ds-menu-danger-text` (as `Menu.Item color=`) | `#ad2424` | red 3 | `color="red"` is red 6 in both schemes (3.28:1 on white); ≥5.6:1 on the hover tint too |
 | Error text | `--ds-color-error-text` | red 9 | red 4 | App-owned token |
 | Good / bad icon | `--ds-color-good-icon`, `--ds-color-bad-icon` | green 7 / red 7 | green 4 / red 4 | Non-text glyphs |
-| Severity text | `--ds-severity-<group>-text` (`severityGroupTextColor`) | green `#267b37`, gray 7, blue 9, yellow `#a85700`, red 9 | shade 4 of each | Same hue as the group's `StatusBadge`; each ≥5.2:1 on a card |
+| Severity text | `--ds-severity-<group>-text` (`severityGroupTextColor`) | green `#226c30`, gray 7, blue 9, yellow `#964d00`, red 9 | shade 4 of each | Same hue as the group's `StatusBadge`; each ≥5.4:1 on a card |
 | Dimmed text in a tooltip | `--ds-tooltip-dimmed-text` (as `--mantine-color-dimmed` inside `.mantine-Tooltip-tooltip`) | gray 4 on the gray 9 tooltip | gray 7 on the gray 2 tooltip | The page's dimmed shade was under 2:1 there (`DataFreshnessInfo`) |
 | Severity pill | `--ds-status-badge-<group>-fill`, `-text` (`statusBadgeColors`) | green `#287f39`, gray 7, blue 9, red 9, each with white; yellow 5 with black | green `#287f39`, gray 8, blue 8, red 9 with white; yellow 5 with black | `StatusBadge` only; each ≥5:1 and APCA Lc 75 |
-| Light-variant text | `--mantine-color-*-light-color` | yellow `#a85700`, orange `#bb3e0d`, green `#267b37`, teal `#087a57` | shade 0 | Off-palette hexes, each ≥4.6:1 on its shade-1 background |
+| Light-variant text | `--mantine-color-*-light-color` | yellow `#964d00`, orange `#a5370b`, green `#226c30`, teal `#076b4c`, blue `#165b9c`, red `#ad2424` | shade 0 | Off-palette hexes (shade 9 scaled toward black), each ≥5.6:1 on its shade-1 background; gray and grape keep shade 9 |
 
 App-owned tokens are prefixed `--ds-`. The overrides use
 `html:root[data-mantine-color-scheme=…]` so they beat MantineProvider's
@@ -319,7 +321,9 @@ used, rather than as a literal in a component.
   unknown.
 - **Buttons**: Mantine Button sm, 36px, 14px/600, radius 8. Filled grape
   for the primary action, light for secondary, default for neutral, red
-  filled for destructive (text via `autoContrast`). Icon buttons are
+  filled for destructive (white on red 9, `--ds-filled-red-*`). A
+  destructive `Menu.Item` takes `color="var(--ds-menu-danger-text)"`,
+  never `color="red"`. Icon buttons are
   `ActionIcon` subtle or outline with 16px SVGs.
 - **StatusBadge**: filled, sentence case ("Part suspended"), 12px/700, in its
   severity group's hue. Fill and label come from `--ds-status-badge-<group>-*`
@@ -681,7 +685,10 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
   `closeButtonProps` replaces it, so repeat the label.
 - Motion only under `prefers-reduced-motion: no-preference`.
 - Small icons get a 24px hit area (`.iconHitArea24`). Tooltips open on
-  hover, focus and touch.
+  hover and keyboard focus (the theme's `Tooltip` default), and the open
+  tooltip is the trigger's `aria-describedby`. One whose text is the only
+  place a fact lives also turns on touch. A tooltip only reaches keyboard
+  and screen-reader users if its trigger is focusable.
 - A toggle has a fixed accessible name and states its value separately.
   A choice of several is a labelled radio group (the colour theme: a
   `SegmentedControl` named "Colour theme").
@@ -988,3 +995,10 @@ but read poorly at badge size; every pair now also clears APCA Lc 75, and
 the label is 12px. Dimmed text inside a tooltip (the nav's data freshness
 panel) gets its own shade, `--ds-tooltip-dimmed-text`: the page's was
 under 2:1 on the tooltip's inverted surface.
+
+Contrast follow-ups (24 Oct 2026): tooltips open on keyboard focus
+app-wide, so they are announced. The destructive confirm button is white
+on red 9 in both schemes (was black on red 6 / red 8, Lc 45 / 34), and the
+"Stop tracking" menu item moved off red 6 (3.28:1). The light-variant
+pills (`StateBadge`, `DelayBadge`) clear 5.5:1 rather than 4.5:1: six
+status hues take a darker hex, red and blue included.

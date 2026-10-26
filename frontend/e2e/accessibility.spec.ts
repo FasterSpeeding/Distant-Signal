@@ -333,7 +333,16 @@ test.describe('accessibility: data freshness panel open', () => {
           await page.keyboard.press('Tab');
         }
         await expect(trigger).toBeFocused();
-        await expect(page.locator('.mantine-Tooltip-tooltip').filter({ hasText: 'Stations' })).toBeVisible();
+        const panel = page.locator('.mantine-Tooltip-tooltip').filter({ hasText: 'Stations' });
+        await expect(panel).toBeVisible();
+        // Announced, not just shown: the panel is a `role="tooltip"` and the
+        // focused trigger names it in `aria-describedby`, so a screen reader
+        // reads the freshness rows after the button's name.
+        await expect(panel).toHaveRole('tooltip');
+        const panelId = await panel.getAttribute('id');
+        expect(panelId).toBeTruthy();
+        await expect(trigger).toHaveAttribute('aria-describedby', panelId!);
+        await expect(trigger).toHaveAccessibleDescription(/Stations/);
         // `region` only, as for the account menu: Mantine portals the open
         // tooltip under <body>, outside every landmark. `color-contrast`
         // stays live, and is the rule this test is for.
@@ -711,7 +720,7 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
     await page.goto('/lines');
     await page
       .locator('nav[aria-label="Main"]')
-      .getByRole('button', { name: /^Account menu for/ })
+      .getByRole('button', { name: /, account menu for / })
       .click();
     await expect(page.getByRole('menu')).toBeVisible();
     await expectNoViolations(page, MENU_PORTAL_WAIVERS);

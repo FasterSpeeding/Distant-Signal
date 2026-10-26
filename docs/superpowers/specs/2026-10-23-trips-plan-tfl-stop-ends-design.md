@@ -29,18 +29,33 @@ timetable is dropped; a stop left with none is the second error.
 ## 2. Access candidates
 
 `data::tfl_access::access_candidates`, over every `tfl_stops` row (about
-350) and the `stations` within 3 km. The first rule that finds any wins:
+350) and the `stations` within 3 km. Each station once, quickest first
+(until DS-167 the first rule that found any won, so a hub stop had only
+its hub walk):
 
 1. **Hub.** The stop's own National Rail station: its `tfl_stop_crs`
    rows, or a `tfl_stops::CRS_OVERRIDES` entry naming it (Euston's Tube
-   stop is EUS). A walk of 5 minutes. Such a stop gets no other candidate.
-2. **Line and walk.** For each of the stop's lines, the nearest 5 stops
+   stop is EUS). A walk of 5 minutes; a hub station is never offered
+   another way.
+2. **Line and walk**, for a hub stop too (DS-167: Old Street's station,
+   `OLD`, has a few trains to Moorgate; its Northern line ride to Euston
+   is the journey). For each of the stop's lines, the nearest 5 stops
    along the line that have a hub station (rule 1 there), every station
    of each hub (King's Cross St. Pancras gives KGX, STP and SPL), by a
    ride of at most 90 minutes; plus every station within 1 km in a
-   straight line, on foot. At most 16 stations, quickest first, each once
+   straight line, on foot. At most 16 stations with the hub's, each once
    (the quicker way when two lines reach it).
-3. **Nearest.** The 3 nearest stations within 3 km, on foot.
+3. **Nearest**, only when rules 1 and 2 find none. The 3 nearest stations
+   within 3 km, on foot.
+4. **Station ride** (DS-167). When the other end of the plan is a
+   station whose own stop (rule 1 there: `CRS_OVERRIDES` or
+   `tfl_stop_crs`) shares a line with this stop, that station is a
+   candidate by the ride between the two stops at the direct ride's
+   minutes (below: no walk at the station end, where the journey starts or
+   ends), whatever rule 2's cuts, in place of a slower candidate for it.
+   So Euston to Old Street (`940GZZLUODS`) is the Northern line ride
+   (about 3.4 km, 12 minutes), not the Tube link to Moorgate, a train
+   to Old Street and the hub walk (38 minutes).
 
 ## 3. Estimates
 
