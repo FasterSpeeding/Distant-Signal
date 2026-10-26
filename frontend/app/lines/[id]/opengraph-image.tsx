@@ -13,6 +13,10 @@ import { generateMetadata } from './page';
 // 404s here exactly as the page does.
 export const size = PREVIEW_IMAGE_SIZE;
 export const contentType = PREVIEW_IMAGE_CONTENT_TYPE;
+// Rendered per request, as before this route had `generateImageMetadata`:
+// with it, Next prerenders the image route, and the page's metadata reads
+// the session cookie (`lib/api.ts`), which a static render can't.
+export const dynamic = 'force-dynamic';
 
 /** One image whose alt text names the line ("Northern on Distant
  * Signal"), served at `/lines/{id}/opengraph-image/card`. An unknown or
