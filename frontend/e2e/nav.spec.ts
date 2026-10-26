@@ -151,7 +151,7 @@ test.describe('desktop nav bar (1440x900)', () => {
     test('renders on a single row, at the same height as the logged-out bar', async ({ page }) => {
       await page.goto('/lines');
       await expect(
-        page.locator('nav[aria-label="Main"]').getByRole('button', { name: /^Account menu for/ }),
+        page.locator('nav[aria-label="Main"]').getByRole('button', { name: /, account menu for / }),
       ).toBeVisible();
       expect(await barRowCount(page)).toBe(1);
       expect(await navHeight(page)).toBe(61);
@@ -162,7 +162,7 @@ test.describe('desktop nav bar (1440x900)', () => {
       await page.goto('/lines');
       await page
         .locator('nav[aria-label="Main"]')
-        .getByRole('button', { name: /^Account menu for/ })
+        .getByRole('button', { name: /, account menu for / })
         .click();
 
       const menu = page.getByRole('menu');

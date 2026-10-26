@@ -711,7 +711,7 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
     await page.goto('/lines');
     await page
       .locator('nav[aria-label="Main"]')
-      .getByRole('button', { name: /^Account menu for/ })
+      .getByRole('button', { name: /, account menu for / })
       .click();
     await expect(page.getByRole('menu')).toBeVisible();
     await expectNoViolations(page, MENU_PORTAL_WAIVERS);
