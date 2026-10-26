@@ -158,6 +158,23 @@ describe('PlanTripForm advanced options', () => {
     );
   });
 
+  it('offers the default of 4 and every cap from 0 to 12', async () => {
+    const onSubmit = vi.fn();
+    renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
+    fillEnds();
+    await openAdvanced();
+    const control = screen.getByLabelText(/Most changes/);
+    const options = within(control).getAllByRole('option');
+    expect(options.map((option) => option.textContent)).toEqual([
+      'Default (4)',
+      '0 (direct trains only)',
+      ...Array.from({ length: 12 }, (_, n) => String(n + 1)),
+    ]);
+    fireEvent.change(control, { target: { value: '12' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ maxChanges: 12 }));
+  });
+
   it('sends no advanced options by default', () => {
     const onSubmit = vi.fn();
     renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
