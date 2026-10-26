@@ -3801,6 +3801,7 @@ mod tests {
             actual_timestamp: None,
             variation_status: None,
             gbtt_timestamp: None,
+            platform: None,
         };
         let events = vec![event("RDG", "ARRIVAL", "2026-09-14T09:15:00Z"), untimed];
 
@@ -3956,6 +3957,7 @@ mod tests {
             actual_timestamp: None,
             variation_status: None,
             gbtt_timestamp: None,
+            platform: None,
         };
         let events = vec![
             untimed_clj,
@@ -4078,6 +4080,7 @@ mod tests {
                 actual_timestamp: None,
                 variation_status: None,
                 gbtt_timestamp: None,
+                platform: None,
             },
         ];
 
@@ -4404,6 +4407,7 @@ mod db_tests {
                 next_calling_point: None,
                 eta_next: None,
                 eta_source: None,
+                platform: None,
             },
         )
         .await

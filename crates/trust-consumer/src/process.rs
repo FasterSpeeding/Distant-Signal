@@ -1636,6 +1636,7 @@ fn process_message(
                     next_calling_point: derived.next_calling_point.clone(),
                     eta_next: None,
                     eta_source: None,
+                    platform: None,
                 })
                 .collect()
         }
@@ -1724,6 +1725,7 @@ fn process_message(
                     next_calling_point: derived.next_calling_point.clone(),
                     eta_next: None,
                     eta_source: None,
+                    platform: None,
                 })
                 .collect()
         }
@@ -1807,6 +1809,7 @@ fn passthrough_event(
             next_calling_point: derived.next_calling_point.clone(),
             eta_next: None,
             eta_source: None,
+            platform: None,
         })
         .collect()
 }
@@ -4125,6 +4128,7 @@ mod tests {
                 next_calling_point: None,
                 eta_next: None,
                 eta_source: None,
+                platform: None,
             },
             common::TrainMovementEventMessage {
                 tracked_train_id: 2, // no trains_id known for this one
@@ -4148,6 +4152,7 @@ mod tests {
                 next_calling_point: None,
                 eta_next: None,
                 eta_source: None,
+                platform: None,
             },
         ];
 
@@ -4533,6 +4538,7 @@ mod tests {
                 next_calling_point: None,
                 eta_next: None,
                 eta_source: None,
+                platform: None,
             }
         }
 

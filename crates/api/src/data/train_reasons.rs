@@ -203,6 +203,7 @@ mod tests {
                 working_minute_departure: at,
                 ..StopTimetable::default()
             },
+            platform_evidence: None,
         }
     }
 
