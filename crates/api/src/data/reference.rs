@@ -275,6 +275,16 @@ pub async fn get_all_tocs(pool: &PgPool) -> Result<Vec<Suggestion>> {
     Ok(rows)
 }
 
+/// Every station's CRS code, sorted: the `/stations/{crs}` pages a
+/// sitemap lists (`GET /public/stations/codes`). About 2,600 rows, read
+/// from the primary key alone.
+pub async fn all_station_codes(pool: &PgPool) -> Result<Vec<String>> {
+    let codes: Vec<String> = sqlx::query_scalar("SELECT crs::text FROM stations ORDER BY crs")
+        .fetch_all(pool)
+        .await?;
+    Ok(codes)
+}
+
 /// Which of `codes` are a known operator for a train search over
 /// `service_dates`: a `tocs` row's ATOC code, or the `BX` operator of a
 /// schedule running on one of those dates (2026-10-22: the timetable

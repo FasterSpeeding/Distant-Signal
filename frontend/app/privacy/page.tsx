@@ -32,7 +32,11 @@ export const dynamic = 'force-dynamic';
 
 export function generateMetadata(): Metadata {
   return withAbsoluteTitle(
-    legalPageMetadata('Privacy notice', 'What personal data Distant Signal holds, why, for how long, and your rights.'),
+    legalPageMetadata(
+      'Privacy notice',
+      'What personal data Distant Signal holds, why, for how long, and your rights.',
+      '/privacy',
+    ),
   );
 }
 

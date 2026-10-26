@@ -8,7 +8,7 @@ import { TransitAttributionNote } from '@/components/TransitAttributionNote';
 import { TransitDisruptions } from '@/components/TransitDisruptions';
 import { TransitLineList } from '@/components/TransitLineList';
 import { getTransitNetwork, getTransitSituations, getTransitStops } from '@/lib/api';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { orNotFound, TRANSIT_ID } from '@/lib/transit';
 
 interface Params {
@@ -21,7 +21,10 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { network } = await params;
   if (!TRANSIT_ID.test(network)) notFound();
   const detail = await orNotFound(getTransitNetwork(network));
-  return pageMetadata(detail.name, `${detail.name}: lines, stops and scheduled tram times.`);
+  return pageMetadata(detail.name, `${detail.name}: lines, stops and scheduled tram times.`, {
+    path: `/transit/${encodeURIComponent(network)}`,
+    imageAlt: previewImageAlt(detail.name),
+  });
 }
 
 /** `/transit/[network]`: a tram network's lines (with their status, when
