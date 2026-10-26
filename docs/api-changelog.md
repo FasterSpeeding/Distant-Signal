@@ -3,6 +3,24 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-24: a TfL stop with its own station gets rides too
+
+Changed candidates and plans, no new fields. DS-MCP needs no change. See
+docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md §2.
+
+- A stop with a National Rail station of its own (a hub: Old Street,
+  Euston, Harrow-on-the-Hill) used to have that station's walk (`basis:
+  "hub"`) as its only candidate. It now also has `line` and `walk`
+  candidates, as a stop with no station does: `access.*.candidates` for
+  such a stop is longer (at most 16, the hub walk always kept, and its
+  station never offered another way), and plans from or to it can ride
+  the Tube to another station instead.
+- When the other end is a station whose own Tube stop shares a line with
+  the stop, that station is always a candidate, `basis: "line"`, at the
+  ride's own minutes (no walk out at the station end). So `EUS` to
+  `940GZZLUODS` is one Northern line transfer leg (`access.end:
+  "destination"`), not a train via Moorgate and a walk.
+
 ## 2026-10-24: `/Trips/plan` `maxChanges` cap raised to 12, default 4
 
 No new fields. Every request that was valid before is still valid. See

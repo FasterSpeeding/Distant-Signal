@@ -84,10 +84,10 @@ html:root[data-mantine-color-scheme='light'] {
        moved to, so outline-gray badges and dimmed prose now agree.
      - red 9 rather than red 8 (#e03131, 4.51:1): red 8 clears AA by
        0.01, which is inside the rounding of any future palette tweak.
-       Red 9 is also exactly what Mantine itself already resolves
-       `--mantine-color-red-light-color` to in this scheme, so the
-       `subtle`/`light` red buttons this app also renders (e.g.
-       RemoveGroupTrainButton) and the `outline` ones now match.
+       Red 9 is also Mantine's own shade for `--mantine-color-red-light-color`
+       (since darkened one step further, to #ad2424, in the `light` block
+       below), so the `subtle`/`light` red buttons this app also renders
+       (e.g. RemoveGroupTrainButton) and the `outline` ones stay close.
      - grape 7 is the same substitution the anchor and filled rules above
        already make, for the same measured reason.
      The dark scheme is untouched: `-outline` resolves to shade 4 there
@@ -100,14 +100,14 @@ html:root[data-mantine-color-scheme='light'] {
   /* ---- `variant="light"`, the other half `autoContrast` cannot reach ---
      Mantine's light variant pairs `--mantine-color-<name>-light` (shade 1)
      as the surface with `--mantine-color-<name>-light-color` (shade 9) as
-     the text. Four of the eight colours this app renders that way do not
-     clear AA, measured shade 9 on shade 1:
+     the text. Four of the eight colours this app renders that way did not
+     clear AA, and two more only just did, measured shade 9 on shade 1:
 
        yellow  #e67700 on #fff3bf  2.69:1   <- worst pairing in the app
        orange  #d9480f on #ffe8cc  3.62:1
        green   #2b8a3e on #d3f9d8  3.81:1
        teal    #087f5b on #c3fae8  4.33:1
-       red     #c92a2a on #ffe3e3  4.51:1   (passes -- left alone, below)
+       red     #c92a2a on #ffe3e3  4.51:1   (passes, by 0.01)
        blue    #1864ab on #d0ebff  4.93:1
        grape   #862e9c on #f3d9fa  5.59:1
        gray    #212529 on #f1f3f5 13.87:1
@@ -125,39 +125,54 @@ html:root[data-mantine-color-scheme='light'] {
      lightening the surface all the way to pure white still fails (4.30:1
      and 3.00:1). The text has to go darker than any token Mantine ships.
 
-     So each failing colour gets ONE hand-mixed value, derived by a single
+     So each status colour gets ONE hand-mixed value, derived by a single
      rule rather than picked by eye: scale shade 9's RGB toward black by
-     the smallest whole percentage that clears 4.6:1 against that colour's
-     own shade-1 surface. (4.6 rather than 4.5 so a future palette re-cut
-     of the SURFACE has a little room before this silently drops under AA
-     -- the same "don't ship on the 0.01" reasoning the red-9-over-red-8
-     choice above uses.) The results, with the percentage that produced
-     them and both ratios -- on the tint, and on plain white, since a
-     `light` surface can be painted over a white card:
+     the smallest whole percentage that clears 5.6:1 against that colour's
+     own shade-1 surface. The first cut of this rule aimed at 4.6:1, which
+     passed AA by a hair; the `StateBadge`/`DelayBadge` pills (`late`,
+     `On time`, `Nm early`, `Planned`, `Cancelled`...) are the most-read
+     text in the app at 11px bold, so they now get the same kind of margin
+     the filled severity pill has (5:1 and up). The results, with the
+     percentage that produced them and both ratios -- on the tint, and on
+     plain white, since a `light` surface can be painted over a white card
+     (was = the 4.6:1 cut, or Mantine's shade 9 for blue and red):
 
-       yellow  73%  #a85700   4.67:1 on tint,  5.21:1 on white
-       orange  86%  #bb3e0d   4.64:1 on tint,  5.51:1 on white
-       green   89%  #267b37   4.61:1 on tint,  5.29:1 on white
-       teal    96%  #087a57   4.62:1 on tint,  5.34:1 on white
+       tone            hue     rule  value     tint    white   was (tint)
+       good / onTime   green   78%   #226c30   5.62:1  6.45:1  #267b37 4.61
+       caution         yellow  65%   #964d00   5.61:1  6.25:1  #a85700 4.67
+       late            orange  76%   #a5370b   5.61:1  6.66:1  #bb3e0d 4.64
+       early           teal    84%   #076b4c   5.65:1  6.53:1  #087a57 4.62
+       planned         blue    91%   #165b9c   5.65:1  6.98:1  blue 9  4.93
+       critical        red     86%   #ad2424   5.68:1  6.87:1  red 9   4.51
 
-     Red is deliberately NOT in that list: 4.51:1 already clears AA, and
-     hand-mixing a fifth colour to buy 0.15 would put a bespoke hex where a
-     real palette token does the job. `app/globals.test.ts` pins every
-     number above, including red's, so if a re-cut ever pushes red under
-     4.5 it fails there rather than going unnoticed.
+     `PlatformBadge` reads the same blue and red for a changed (light,
+     unconfirmed) and a cancelled platform. Its confirmed fills are the
+     `--ds-status-badge-*` tokens below, which this does not touch.
 
-     These four hexes are the only hand-mixed colours in this file, and
-     they are confined to ONE CSS variable each rather than added to
+     Neutral (gray 9, 13.87:1) and action (grape 9, 5.59:1) keep Mantine's
+     shade 9: both already clear the 5.5:1 floor the test holds these
+     pills to.
+
+     These hexes are confined to ONE CSS variable each rather than added to
      `theme.colors` as tuples -- the grape spec's "no custom colour tuples"
-     Non-goal still holds for the palette itself.
+     Non-goal still holds for the palette itself. Red's hex doubles as the
+     filled-red hover below (`--ds-filled-red-fill-hover`), which is the
+     same red 9 at 86%.
+
+     The yellow and green values are also read by `--ds-chart-skip` and
+     `--ds-severity-mild-text`/`--ds-severity-good-text` below, which get
+     darker with them (on white: yellow 5.21 -> 6.25:1, green 5.29 ->
+     6.45:1). Only ever a contrast gain; `app/globals.test.ts` checks it.
 
      Dark is untouched: there the pairing inverts (e.g. orange becomes
-     #fff4e6 on #6d2408), and the sweep in e2e/accessibility.spec.ts runs
-     the whole app in dark too. */
-  --mantine-color-yellow-light-color: #a85700;
-  --mantine-color-orange-light-color: #bb3e0d;
-  --mantine-color-green-light-color: #267b37;
-  --mantine-color-teal-light-color: #087a57;
+     #fff4e6 on #6d2408, 8.35:1 or better for every tone), and the sweep in
+     e2e/accessibility.spec.ts runs the whole app in dark too. */
+  --mantine-color-yellow-light-color: #964d00;
+  --mantine-color-orange-light-color: #a5370b;
+  --mantine-color-green-light-color: #226c30;
+  --mantine-color-teal-light-color: #076b4c;
+  --mantine-color-blue-light-color: #165b9c;
+  --mantine-color-red-light-color: #ad2424;
 
   /* ---- inline error text ------------------------------------------------
      16 components render a failed action as `<Text c="red">{error}</Text>`.
@@ -225,8 +240,8 @@ html:root[data-mantine-color-scheme='light'] {
      semantic hues (orange late, red cancelled, yellow skipped stops, grape
      for a plain count). Lines and bars are graphics, so each clears 3:1
      on white rather than text's 4.5:1: orange 8 3.58:1, red 8 4.51:1,
-     the yellow light-variant text colour 5.21:1, grape 7 4.85:1. The
-     yellow is the off-palette #a85700 above, since yellow 9 only reaches
+     the yellow light-variant text colour 6.25:1, grape 7 4.85:1. The
+     yellow is the off-palette #964d00 above, since yellow 9 only reaches
      3.00:1 and sits too close to orange 8 in hue. */
   --ds-chart-count: var(--mantine-color-grape-7);
   --ds-chart-delay: var(--mantine-color-orange-8);
@@ -238,8 +253,8 @@ html:root[data-mantine-color-scheme='light'] {
      as `SEVERITY_GROUP_COLORS` (so `StatusBadge`), but not its filled
      shade 6, which is a background (green 6 is 2.36:1 on white). Each is
      the light-variant text colour, or the shade it would be, on a white
-     card: green #267b37 5.29:1, gray 7 8.18:1, blue 9 6.09:1, yellow
-     #a85700 5.21:1, red 9 5.46:1. */
+     card: green #226c30 6.45:1, gray 7 8.18:1, blue 9 6.09:1, yellow
+     #964d00 6.25:1, red 9 5.46:1. */
   --ds-severity-good-text: var(--mantine-color-green-light-color);
   --ds-severity-informational-text: var(--mantine-color-gray-7);
   --ds-severity-planned-text: var(--mantine-color-blue-9);
@@ -284,6 +299,28 @@ html:root[data-mantine-color-scheme='light'] {
   /* Dimmed text inside a tooltip (gray 9 here): see the
      `.mantine-Tooltip-tooltip` rule below. */
   --ds-tooltip-dimmed-text: var(--mantine-color-gray-4);
+
+  /* ---- filled red, the destructive confirm button ----------------------
+     `lib/theme.ts`'s `variantColorResolver` sends every filled red surface
+     here (in practice `ConfirmActionButton`'s confirm, behind every
+     delete, remove and leave flow). It was Mantine's filled shade with an
+     `autoContrast` label: black on red 6 in light (6.39:1, APCA Lc 45) and
+     black on red 8 in dark (4.65:1, Lc 34), the same "passes WCAG 2, reads
+     badly" pairing the severity pill had. Now white on red 9 in both
+     schemes, 5.46:1 Lc -81, and on hover the red light-variant hex above
+     (red 9 scaled to 86%), 6.87:1 Lc -87. Same values in the dark block. */
+  --ds-filled-red-fill: var(--mantine-color-red-9);
+  --ds-filled-red-fill-hover: #ad2424;
+  --ds-filled-red-text: var(--mantine-color-white);
+
+  /* A destructive `Menu.Item` (`TrackedTrainRowMenu`'s "Stop tracking").
+     `Menu.Item color="red"` paints red 6 in BOTH schemes (MenuItem.mjs
+     hardcodes `--mantine-color-<c>-6` for a bare theme colour): 3.28:1 on
+     the white dropdown, 4.13:1 on the dark one. Passing this token as the
+     item's `color` gives the text this colour and the hover/focus
+     background a 12% tint of it, so both states are measured here:
+     #ad2424 6.87:1 at rest, 5.64:1 on its hover tint. */
+  --ds-menu-danger-text: #ad2424;
 }
 
 /* The dark scheme is NOT the "already fine" case the light-scheme comments
@@ -359,6 +396,13 @@ html:root[data-mantine-color-scheme='dark'] {
   /* Dimmed text inside a tooltip (gray 2 here): see the
      `.mantine-Tooltip-tooltip` rule below. */
   --ds-tooltip-dimmed-text: var(--mantine-color-gray-7);
+  /* Filled red: the same white on red 9 as the light block (see there). */
+  --ds-filled-red-fill: var(--mantine-color-red-9);
+  --ds-filled-red-fill-hover: #ad2424;
+  --ds-filled-red-text: var(--mantine-color-white);
+  /* The destructive menu item on the #2e2e2e dark dropdown: red 3, 7.38:1
+     at rest and 5.70:1 on its hover tint (red 4 would be 4.74:1 there). */
+  --ds-menu-danger-text: var(--mantine-color-red-3);
 }
 
 /* Exactly the same defect as `--mantine-color-dimmed` above, in a place

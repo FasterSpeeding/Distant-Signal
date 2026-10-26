@@ -190,7 +190,7 @@ test.describe('Preferences, logged in', () => {
       await expect(page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Preferences' })).toHaveCount(0);
       await page
         .locator('nav[aria-label="Main"]')
-        .getByRole('button', { name: /^Account menu for/ })
+        .getByRole('button', { name: /, account menu for / })
         .click();
       await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Preferences' })).toHaveAttribute(
         'href',
