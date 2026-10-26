@@ -85,14 +85,31 @@ x-direct-database-url: &direct-database-url postgres://${POSTGRES_USER}:${POSTGR
 
 services:
   postgres:
-    image: postgres:16@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97
+    image: postgres:18@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    # Postgres 18 (2026-10): the image's PGDATA is
+    # /var/lib/postgresql/18/docker and its VOLUME is /var/lib/postgresql,
+    # so the volume is mounted there, and the 18 entrypoint refuses to start
+    # with a volume at /var/lib/postgresql/data and PGDATA left at its
+    # default. The volume has a new name: the old `postgres_data` holds a
+    # Postgres 16 data directory, which an 18 server can't open.
+    #
+    # DEVELOPERS: after pulling this, recreate your local database. The
+    # stack starts on an empty `postgres18_data`; the api's migrations run
+    # on start, and anything you had in the 16 database is not carried
+    # over (there is no pg_upgrade for the local stack). When you no longer
+    # need it, remove the old volume:
+    #   docker compose --env-file local.env down
+    #   docker volume ls --filter name=postgres_data   # <project>_postgres_data
+    #   docker volume rm <project>_postgres_data
+    # Production is upgraded with pg_upgrade instead
+    # (docs/postgres-18-upgrade.md).
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres18_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
@@ -983,5 +1000,5 @@ services:
       - "${FRONTEND_HOST_PORT:-3000}:3000"
 
 volumes:
-  postgres_data:
+  postgres18_data:
   schedule_feed_data:
