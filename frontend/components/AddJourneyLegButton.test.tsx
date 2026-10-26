@@ -190,7 +190,7 @@ describe('AddJourneyLegButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
     const origin = await screen.findByRole('combobox', { name: 'From station' });
-    expect(origin).toHaveValue('WAT');
+    expect(origin).toHaveValue('London Waterloo (WAT)');
   });
 
   it('re-seeds the origin field from priorDestinationCrs on every open, not just the first', async () => {
@@ -206,7 +206,7 @@ describe('AddJourneyLegButton', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
     const reopenedOrigin = await screen.findByRole('combobox', { name: 'From station' });
-    expect(reopenedOrigin).toHaveValue('WAT');
+    expect(reopenedOrigin).toHaveValue('London Waterloo (WAT)');
   });
 
   it("after a Tube leg, starts the next train leg at the Tube stop's station, and the time at its arrival", async () => {
@@ -238,7 +238,7 @@ describe('AddJourneyLegButton', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
     const origin = await screen.findByRole('combobox', { name: 'From station' });
-    await waitFor(() => expect(origin).toHaveValue('CLJ'));
+    await waitFor(() => expect(origin).toHaveValue('Clapham Junction (CLJ)'));
   });
 
   it('after a walk to a place that is no station, opens on "Tube, bus or walk" from that place', async () => {
@@ -509,6 +509,8 @@ describe('AddJourneyLegButton', () => {
     fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-09-22' } });
     fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
 
+    // Picked once the search for what was typed comes back.
+    await waitFor(() => expect(destination).toHaveValue('Clapham Junction (CLJ)'), { timeout: 5000 });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Add leg' })).not.toBeDisabled());
     expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
     expect(screen.getByText('Only trains reaching CLJ at or after this time.')).toBeInTheDocument();
@@ -531,7 +533,7 @@ describe('AddJourneyLegButton', () => {
     fireEvent.change(destination, { target: { value: 'Clapham' } });
     fireEvent.click(await screen.findByRole('option', { name: 'CLJ · Clapham Junction', hidden: true }));
 
-    expect(destination).toHaveValue('CLJ');
+    expect(destination).toHaveValue('Clapham Junction (CLJ)');
   });
 
   it('shows no CRS error while the Origin field is still empty', async () => {

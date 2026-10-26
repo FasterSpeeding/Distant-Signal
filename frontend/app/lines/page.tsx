@@ -77,7 +77,10 @@ export const revalidate = 0;
 const METADATA_TITLE = 'Lines';
 const METADATA_DESCRIPTION = 'Every National Rail and TfL line, with its current status, delays and cancellations.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, {
+  ...OWN_PREVIEW_IMAGE,
+  path: '/lines',
+});
 
 // The exact shape getPreferences() already returns for a 401, named so the
 // fallback below is typed as `Preferences` rather than inferred with

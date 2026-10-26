@@ -224,7 +224,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // and then there is no document for the script to run in.
   const nonce = (await headers()).get(NONCE_HEADER) ?? undefined;
   return (
-    <html lang="en" {...mantineHtmlProps}>
+    <html lang="en-GB" {...mantineHtmlProps}>
       <head>
         {/* The nonce proxy.ts minted for this request: the page CSP
             (lib/csp.ts) blocks any inline script without it. */}

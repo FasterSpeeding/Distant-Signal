@@ -2,16 +2,15 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Autocomplete, Button, Group, Skeleton, Stack, Text } from '@mantine/core';
+import { Alert, Button, Group, Skeleton, Stack, Text } from '@mantine/core';
 import { useMounted } from '@mantine/hooks';
 import { searchNearbyStations } from '@/lib/suggestions';
 import { searchStationsAndStops } from '@/lib/stationSearch';
-import { useSuggestions } from '@/lib/useSuggestions';
-import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { tflStopHref } from '@/lib/tflStops';
 import type { NearbyStation, Suggestion } from '@/lib/types';
 import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
 import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
+import { StationField } from '@/components/StationField';
 import { NearbyStationList } from './NearbyStationList';
 
 /** The "near me" lookup's own state machine -- mirrors the shape
@@ -41,12 +40,14 @@ const GEOLOCATION_PERMISSION_DENIED = 1;
 
 export function StationSearchForm() {
   const router = useRouter();
+  // The picked code, or the text typed so far (`StationField`).
   const [crs, setCrs] = useState('');
-  const { suggestions, loading } = useSuggestions(crs, searchStationsAndStops);
-  // The dropdown row last picked, while the field still shows what picking
-  // it wrote: "Euston" the Tube stop and "Euston" the station share a
-  // name, so the text alone can't say which was meant.
+  // The dropdown row last picked, while the field still holds it: "Euston"
+  // the Tube stop and "Euston" the station share a name, so the name alone
+  // can't say which was meant.
   const [picked, setPicked] = useState<Suggestion | null>(null);
+  // The field's live suggestions, for "Look up" on text nothing was picked for.
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [isPending, startTransition] = useTransition();
   const [nearby, setNearby] = useState<NearbyState>({ status: 'idle' });
   // `navigator.geolocation` doesn't exist during SSR (no `navigator` at
@@ -96,9 +97,8 @@ export function StationSearchForm() {
 
   function handleChange(value: string) {
     setCrs(value);
-    // Picking writes the row's code (a station) or name (a stop) into the
-    // field; any other text is a new search.
-    setPicked((current) => (current && (current.place ? current.name : current.code) === value ? current : null));
+    // Any other text than the picked row's code is a new search.
+    setPicked((current) => (current?.code === value ? current : null));
   }
 
   function handleSearch() {
@@ -108,16 +108,10 @@ export function StationSearchForm() {
       open(picked);
       return;
     }
-    // Clicking "Look up" (rather than picking a dropdown option) used to
-    // navigate using the raw typed text uppercased, as if it were always
-    // already a CRS code -- so a typed station name only ever worked by
-    // accident. Resolve against the live suggestions the same way
-    // selecting from the dropdown would: an exact code or name match
-    // first, then the best (first) substring match, and only fall back to
+    // A typed exact code or name is picked by the field itself (on blur or
+    // Enter), so this is other text: the best (first) live match, and only
     // the raw text if nothing matched at all (e.g. a network hiccup).
-    const exactCode = suggestions.find((s) => s.code.toLowerCase() === trimmed.toLowerCase());
-    const exactName = suggestions.find((s) => s.name.toLowerCase() === trimmed.toLowerCase());
-    const target = exactCode ?? exactName ?? suggestions[0];
+    const target = suggestions[0];
     if (target) open(target);
     else goToStation(trimmed.toUpperCase());
   }
@@ -144,17 +138,15 @@ export function StationSearchForm() {
   return (
     <Stack gap="md">
       <Group align="end">
-        <Autocomplete
+        <StationField
           label="Station name or code"
+          fieldName="Station"
           placeholder="e.g. Woking or WOK"
           value={crs}
           onChange={handleChange}
-          onOptionSubmit={(code) => setPicked(suggestions.find((s) => s.code === code) ?? null)}
-          {...suggestionAutocompleteProps(suggestions, {
-            query: crs,
-            loading,
-            noMatchMessage: 'No matching stations',
-          })}
+          onSuggestionPick={setPicked}
+          onSuggestionsChange={setSuggestions}
+          search={searchStationsAndStops}
         />
         <Button
           onClick={handleSearch}

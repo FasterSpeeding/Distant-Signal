@@ -18,7 +18,7 @@ export const dynamic = 'force-dynamic';
 const METADATA_TITLE = 'Connect Claude';
 const METADATA_DESCRIPTION =
   'Connect your Claude account to Distant Signal to ask about UK trains, departures and journeys.';
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, { path: '/connect-claude' });
 
 /** The connector URL: the MCP endpoint, `{railMcp.publicUrl}/mcp`, built
  * by the same `mcpEndpointUrl` as /chat and ChatPanel. Not the bare

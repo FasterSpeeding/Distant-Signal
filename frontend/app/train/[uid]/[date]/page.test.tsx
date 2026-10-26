@@ -488,6 +488,8 @@ describe('generateMetadata', () => {
     );
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
     expect(metadata.title).toBe('19:32 London Waterloo to Woking');
+    // One train on one day: crawlable, never indexed.
+    expect(metadata.robots).toEqual({ index: false, follow: true });
     expect(metadata.openGraph?.title).toBe('19:32 London Waterloo to Woking · Distant Signal');
     expect(metadata.twitter).toMatchObject({
       card: 'summary_large_image',

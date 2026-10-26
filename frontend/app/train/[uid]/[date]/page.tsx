@@ -227,7 +227,8 @@ export async function generateMetadata({
   const title = publicTrainName(train) ?? `${serviceHeading(train)} ${uid}`;
   const description = trainStatusSummary(toJourneyState(train));
 
-  return pageMetadata(title, description);
+  // One train on one day: worth following, not worth indexing.
+  return pageMetadata(title, description, { noindex: true });
 }
 
 /** `/train/[uid]/[date]` -- the PUBLIC page for a real-world train,

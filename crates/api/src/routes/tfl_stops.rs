@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use serde::Deserialize;
 
 use common::tfl_stops::is_stop_id;
@@ -28,6 +28,32 @@ pub fn router() -> Router {
         .route("/tfl/stops", axum::routing::get(search_stops))
         .route("/tfl/stops/by-crs", axum::routing::get(stops_by_crs))
         .route("/tfl/stops/rail-crs", axum::routing::get(rail_crs_by_stop))
+        .route("/tfl/stops/ids", axum::routing::get(list_stop_ids))
+}
+
+/// `GET /public/tfl/stops/ids`: `{"ids": ["940GZZLUEUS", ...]}`, every
+/// stop's id, sorted, for the frontend's sitemap. Unauthenticated and not
+/// rate limited (one primary-key scan, cacheable). `ids` is lowercase, so it
+/// can never be a stop id (`is_stop_id`) and `/tfl/stops/{id}` never sees it.
+async fn list_stop_ids(
+    State(app): State<App>,
+) -> Result<
+    (
+        [(header::HeaderName, &'static str); 1],
+        Json<serde_json::Value>,
+    ),
+    (StatusCode, String),
+> {
+    let ids = tfl_stops::all_stop_ids(&app.database)
+        .await
+        .map_err(|err| internal_error(&err))?;
+    Ok((
+        [(
+            header::CACHE_CONTROL,
+            crate::routes::reference::ID_LIST_CACHE,
+        )],
+        Json(serde_json::json!({ "ids": ids })),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,5 +219,91 @@ mod tests {
     #[test]
     fn router_builds_without_a_route_conflict() {
         let _router: Router = crate::routes::public_router();
+    }
+
+    #[test]
+    fn the_id_list_path_is_never_a_stop_id() {
+        assert!(!is_stop_id("ids"));
+    }
+}
+
+#[cfg(test)]
+mod db_tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use sqlx::PgPool;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::test_support::FixtureCleanup;
+
+    const STOPS: &str = "'940GZZIDLSB', '940GZZIDLSA'";
+
+    async fn connect() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    /// Served by the whole public router, so the static `/tfl/stops/ids`
+    /// is shown to win over `tfl_stop_page`'s `/tfl/stops/{id}`.
+    #[tokio::test]
+    #[ignore = "requires a live database (DATABASE_URL)"]
+    async fn stop_ids_route_lists_every_stop_sorted_and_cacheable() {
+        let pool = connect().await;
+        let _cleanup = FixtureCleanup::new(
+            &pool,
+            [format!("DELETE FROM tfl_stops WHERE stop_id IN ({STOPS})")],
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO tfl_stops (stop_id, name, search_name, modes, lines, latitude, longitude, fetched_at) \
+             VALUES ('940GZZIDLSB', 'Idlist B', 'idlist b', '{tube}', '[]', 52.9, 1.9, NOW()), \
+             ('940GZZIDLSA', 'Idlist A', 'idlist a', '{dlr}', '[]', 52.8, 1.8, NOW())",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture stops");
+
+        let router: axum::Router =
+            crate::routes::public_router().with_state(crate::test_support::inert_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/tfl/stops/ids")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            crate::routes::reference::ID_LIST_CACHE
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1 << 22)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ids: Vec<String> =
+            serde_json::from_value(json["ids"].clone()).expect("an `ids` array of strings");
+        assert!(
+            ids.windows(2).all(|pair| pair[0] < pair[1]),
+            "sorted, unique"
+        );
+        let a = ids
+            .iter()
+            .position(|id| id == "940GZZIDLSA")
+            .expect("A listed");
+        let b = ids
+            .iter()
+            .position(|id| id == "940GZZIDLSB")
+            .expect("B listed");
+        assert!(a < b);
     }
 }

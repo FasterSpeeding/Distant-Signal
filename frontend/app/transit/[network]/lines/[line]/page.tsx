@@ -9,7 +9,7 @@ import { TransitAttributionNote } from '@/components/TransitAttributionNote';
 import { TransitDisruptions } from '@/components/TransitDisruptions';
 import { TransitStatusBadge } from '@/components/TransitStatusBadge';
 import { getPreferences, getTransitLine, getTransitNetwork } from '@/lib/api';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { lineColour, orNotFound, TRANSIT_ID } from '@/lib/transit';
 import type { Preferences } from '@/lib/types';
 
@@ -29,7 +29,11 @@ async function load(network: string, line: string) {
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { network, line } = await params;
   const [detail, lineDetail] = await load(network, line);
-  return pageMetadata(`${lineDetail.name}, ${detail.name}`, `${lineDetail.name} stops and scheduled tram times.`);
+  const title = `${lineDetail.name}, ${detail.name}`;
+  return pageMetadata(title, `${lineDetail.name} stops and scheduled tram times.`, {
+    path: `/transit/${encodeURIComponent(network)}/lines/${encodeURIComponent(line)}`,
+    imageAlt: previewImageAlt(title),
+  });
 }
 
 /** `/transit/[network]/lines/[line]`: a tram line's status and disruptions
