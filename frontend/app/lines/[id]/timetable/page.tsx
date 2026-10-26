@@ -83,7 +83,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   const { id } = await params;
   if (!/^[a-z0-9-]+$/.test(id)) notFound();
   const title = `Timetable: ${await resolveLineName(id)}`;
-  return pageMetadata(title, 'The booked timetable for this line, by day.');
+  return pageMetadata(title, 'The booked timetable for this line, by day.', { path: `/lines/${id}/timetable` });
 }
 
 function Empty({ children }: { children: React.ReactNode }) {

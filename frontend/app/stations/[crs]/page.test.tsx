@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import StationDisruptionPage, { generateMetadata } from './page';
@@ -41,11 +41,15 @@ vi.mock('next/headers', () => ({
 const notFoundMock = vi.fn(() => {
   throw new Error('NEXT_NOT_FOUND');
 });
+const permanentRedirectMock = vi.fn((url: string) => {
+  throw new Error(`NEXT_REDIRECT ${url}`);
+});
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
   usePathname: () => '/stations/KGX',
   useSearchParams: () => new URLSearchParams(''),
   notFound: () => notFoundMock(),
+  permanentRedirect: (url: string) => permanentRedirectMock(url),
 }));
 
 function report(id: string, name: string): LineStatusReport {
@@ -424,25 +428,32 @@ describe('generateMetadata', () => {
     vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
   });
 
-  it('titles the page with the station name and describes its worst current status', async () => {
+  it('titles the page with the station name and gives an evergreen description and canonical', async () => {
     vi.mocked(api.getStopPointDisruption).mockResolvedValue([report('ecml', 'East Coast Main Line')]);
     const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
     expect(metadata.title).toBe('London Kings Cross (KGX)');
-    expect(metadata.description).toBe('London Kings Cross (KGX): Severe Delays reported.');
-    expect(metadata.openGraph?.title).toBe('London Kings Cross (KGX) · Distant Signal');
+    expect(metadata.description).toBe('Live departures, disruption and accessibility at London Kings Cross (KGX).');
+    expect(metadata.alternates).toEqual({ canonical: '/stations/KGX' });
+    expect(metadata.openGraph).toMatchObject({
+      title: 'London Kings Cross (KGX) · Distant Signal',
+      url: '/stations/KGX',
+    });
     expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });
 
-  it('describes a covered, currently-fine station', async () => {
-    vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
-    const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
-    expect(metadata.description).toBe('London Kings Cross (KGX): no disruptions currently affecting this station.');
-  });
-
-  it('describes a station with zero line coverage', async () => {
+  it('never quotes the live status, which would go stale in a search snippet', async () => {
     vi.mocked(api.getStopPointDisruption).mockRejectedValue(new ApiNotFoundError('no line coverage'));
     const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
-    expect(metadata.description).toBe('London Kings Cross (KGX): not currently covered by our line-status tracking.');
+    expect(metadata.description).toBe('Live departures, disruption and accessibility at London Kings Cross (KGX).');
+  });
+
+  it('redirects a lower- or mixed-case code to the upper-case page', async () => {
+    for (const crs of ['kgx', 'Kgx']) {
+      permanentRedirectMock.mockClear();
+      await expect(generateMetadata({ params: Promise.resolve({ crs }) })).rejects.toThrow('NEXT_REDIRECT');
+      expect(permanentRedirectMock).toHaveBeenCalledWith('/stations/KGX');
+      await expect(StationDisruptionPage({ params: Promise.resolve({ crs }) })).rejects.toThrow('NEXT_REDIRECT');
+    }
   });
 
   it('calls notFound() for an unknown station, matching the page component', async () => {
@@ -450,5 +461,36 @@ describe('generateMetadata', () => {
     notFoundMock.mockClear();
     await expect(generateMetadata({ params: Promise.resolve({ crs: 'ZZZ' }) })).rejects.toThrow('NEXT_NOT_FOUND');
     expect(notFoundMock).toHaveBeenCalled();
+  });
+});
+
+describe('structured data', () => {
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
+    vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
+    vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
+    vi.mocked(api.getStationAccessibility).mockResolvedValue({});
+    vi.mocked(api.getAllTocs).mockResolvedValue([]);
+    vi.mocked(api.getTransitRailLinks).mockResolvedValue([]);
+    process.env.NEXT_PUBLIC_SITE_URL = 'https://ds.example';
+  });
+
+  afterEach(() => {
+    delete process.env.NEXT_PUBLIC_SITE_URL;
+  });
+
+  it('renders a TrainStation and its breadcrumbs as JSON-LD', async () => {
+    const { container } = await renderPage();
+    const scripts = container.querySelectorAll('script[type="application/ld+json"]');
+    expect(scripts).toHaveLength(1);
+    const data = JSON.parse(scripts[0]?.textContent ?? '') as { '@type': string }[];
+    expect(data.map((item) => item['@type'])).toEqual(['TrainStation', 'BreadcrumbList']);
+    expect(data[0]).toMatchObject({
+      name: 'London Kings Cross',
+      identifier: 'KGX',
+      url: 'https://ds.example/stations/KGX',
+    });
   });
 });

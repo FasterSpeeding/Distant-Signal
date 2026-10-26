@@ -76,7 +76,7 @@ import { pageMetadata } from '@/lib/pageMetadata';
 const METADATA_TITLE = NEW_JOURNEY_LABEL;
 const METADATA_DESCRIPTION = 'Track a journey of one or more trains, from start to finish.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, { path: '/journeys/new' });
 
 /** The TfL stop `?fromTflStop=` names (a stop page's "Add as a journey
  * leg"), as the untracked form's starting point: its first mode and its

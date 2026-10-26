@@ -1036,8 +1036,9 @@ fn bench_staged_fixed_links_both_ways() {
     }
 }
 
-/// DS-85: `/Trips/plan`'s options-mode `maxChanges` cap at 6, 8 and 10
-/// (RAPTOR rounds `max_changes + 2`: 8, 10, 12), with the fixed links both
+/// DS-85: `/Trips/plan`'s options-mode `maxChanges` at the old and new
+/// defaults (2 and 4) and the old and new ceilings (6 and 12), with 8 and
+/// 10 between (RAPTOR rounds `max_changes + 2`), with the fixed links both
 /// ways ([`link_indexes`]; `DS_BENCH_ALF` as there). Per cap: RAPTOR
 /// depart-after and the arrive-by rounds (`latest_departures_by_trips`),
 /// median and max over 10 pairs, and for how many pairs what a caller gets
@@ -1058,7 +1059,8 @@ fn bench_max_changes_cap() {
         })
         .collect();
     let mut baseline: Vec<(usize, usize)> = Vec::new();
-    for max_changes in [6u32, 8, 10] {
+    // 6 first: the baseline the others are compared with.
+    for max_changes in [6u32, 2, 4, 8, 10, 12] {
         let rounds = max_changes + 2;
         let mut depart = Vec::new();
         let mut arrive = Vec::new();

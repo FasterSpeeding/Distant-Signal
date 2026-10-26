@@ -52,7 +52,20 @@ async function waitForHydration(page: Page) {
   });
 }
 
-const ROUTES = ['/', '/lines', '/stations', '/incidents', '/trains', '/track', '/chat', '/chat/callback', '/lines/new'];
+// `/stations/KGX` carries server-rendered JSON-LD, a data block that needs no nonce.
+const STATION = `/stations/${process.env.E2E_REAL_STATION_CRS ?? 'KGX'}`;
+const ROUTES = [
+  '/',
+  '/lines',
+  '/stations',
+  STATION,
+  '/incidents',
+  '/trains',
+  '/track',
+  '/chat',
+  '/chat/callback',
+  '/lines/new',
+];
 
 test.describe('Content-Security-Policy', () => {
   for (const path of ROUTES) {

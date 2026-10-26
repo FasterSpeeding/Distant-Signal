@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Alert,
-  Autocomplete,
   TextInput,
   TagsInput,
   Button,
@@ -18,7 +17,9 @@ import {
 } from '@mantine/core';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
-import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { operatorLabels, stationLabels, useCodeLabels } from '@/lib/codeLabels';
+import type { Suggestion } from '@/lib/types';
+import { StationField } from '@/components/StationField';
 import { useNeedsLogin } from '@/components/useNeedsLogin';
 import { LoginPromptModal } from '@/components/LoginPromptModal';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
@@ -59,32 +60,24 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
   const [operatorsQuery, setOperatorsQuery] = useState('');
   const { suggestions: operatorSuggestions } = useSuggestions(operatorsQuery, searchTocs);
 
-  const { suggestions: stationSuggestions, loading: stationSuggestionsLoading } = useSuggestions(
-    stationInput,
-    searchStations,
-  );
+  // "Add station"'s live suggestions, for Add on text nothing was picked for.
+  const [stationSuggestions, setStationSuggestions] = useState<Suggestion[]>([]);
 
   const [destinationQuery, setDestinationQuery] = useState('');
   const { suggestions: destinationSuggestions } = useSuggestions(destinationQuery, searchStations);
 
-  // Committed tags only carry a code (`operators`/`destinationCrsFilter`
-  // are `string[]`), so once a suggestion "scrolls out" of the current
-  // search results there's nowhere left to look up its name from — this
-  // cache remembers every code/name pair ever seen across all three
-  // suggestion sources (CRS and ATOC codes don't collide) so a pill's
-  // title tooltip keeps working long after the dropdown that produced it
-  // is gone.
-  const [nameByCode, setNameByCode] = useState<Record<string, string>>({});
+  // Committed tags and stations only carry a code, so each is shown by its
+  // label from the page-wide caches the fields share (`lib/codeLabels.ts`):
+  // "London Euston (EUS)", "Avanti West Coast (VT)". Filled from every
+  // suggestion list here, and looked up once for a saved line's codes.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- accumulates names from each new suggestion list, a cache no render can derive
-    setNameByCode((prev) => {
-      const next = { ...prev };
-      for (const s of [...operatorSuggestions, ...stationSuggestions, ...destinationSuggestions]) {
-        next[s.code] = s.name;
-      }
-      return next;
-    });
-  }, [operatorSuggestions, stationSuggestions, destinationSuggestions]);
+    operatorLabels.remember(operatorSuggestions);
+  }, [operatorSuggestions]);
+  useEffect(() => {
+    stationLabels.remember(destinationSuggestions);
+  }, [destinationSuggestions]);
+  const operatorLabel = useCodeLabels(operatorLabels, operators);
+  const stationLabel = useCodeLabels(stationLabels, [...stations, ...destinationCrsFilter]);
 
   function addStation() {
     const trimmed = stationInput.trim();
@@ -195,22 +188,19 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         onSearchChange={setOperatorsQuery}
         data={operatorSuggestions.map((s) => ({ value: s.code, label: `${s.code} · ${s.name}` }))}
         renderPill={({ option, onRemove }) => (
-          <Pill withRemoveButton {...(onRemove && { onRemove })} title={nameByCode[String(option.value)]}>
-            {option.value}
+          <Pill withRemoveButton {...(onRemove && { onRemove })}>
+            {operatorLabel(String(option.value))}
           </Pill>
         )}
       />
       <Group align="end">
-        <Autocomplete
+        <StationField
           label="Add station"
+          fieldName="Station to add"
           placeholder="e.g. Woking or WOK"
           value={stationInput}
           onChange={setStationInput}
-          {...suggestionAutocompleteProps(stationSuggestions, {
-            query: stationInput,
-            loading: stationSuggestionsLoading,
-            noMatchMessage: 'No matching stations',
-          })}
+          onSuggestionsChange={setStationSuggestions}
         />
         {/* Not gated on `.length === 3` any more -- a typed station name
          * (e.g. "Woking") is longer than 3 characters but still resolves
@@ -239,7 +229,6 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
             <Badge
               tt="none"
               key={crs}
-              title={nameByCode[crs]}
               rightSection={
                 /* `aria-label` is not optional here: Mantine's `CloseButton`
                  renders a bare `<button>` around an SVG with no text and no
@@ -248,19 +237,17 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
                  `/lines/[id]/edit` is every chip on the page. Naming the
                  station it removes (rather than a generic "Remove") is what
                  makes a list of these distinguishable when tabbed through
-                 or listed by a screen reader; `nameByCode` is preferred
-                 over the bare CRS for the same reason the `title` above
-                 uses it, and falls back to the code before the station
-                 lookup resolves. */
+                 or listed by a screen reader; its label falls back to the
+                 code before the station lookup resolves. */
                 <CloseButton
                   size="xs"
                   c="white"
-                  aria-label={`Remove ${nameByCode[crs] ?? crs}`}
+                  aria-label={`Remove ${stationLabel(crs)}`}
                   onClick={() => removeStation(crs)}
                 />
               }
             >
-              {index + 1} {crs}
+              {index + 1} {stationLabel(crs)}
             </Badge>
           ))}
         </Group>
@@ -314,8 +301,8 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
             onSearchChange={setDestinationQuery}
             data={destinationSuggestions.map((s) => ({ value: s.code, label: `${s.code} · ${s.name}` }))}
             renderPill={({ option, onRemove }) => (
-              <Pill withRemoveButton {...(onRemove && { onRemove })} title={nameByCode[String(option.value)]}>
-                {option.value}
+              <Pill withRemoveButton {...(onRemove && { onRemove })}>
+                {stationLabel(String(option.value))}
               </Pill>
             )}
           />

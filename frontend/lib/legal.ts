@@ -20,7 +20,7 @@
 
 import type { Metadata } from 'next';
 import { createLogger } from './logger';
-import { fullTitle } from './pageMetadata';
+import { canonicalPath, fullTitle } from './pageMetadata';
 
 const log = createLogger('lib/legal');
 
@@ -138,17 +138,21 @@ export const LEGAL_LINKS: readonly { href: string; label: string }[] = [
 
 /** Metadata for a legal page. Unless the pages are really published
  * (e.g. in preview), it adds `noindex` so a draft never lands in a search
- * index. Call from `generateMetadata` so it is evaluated per request. */
+ * index. Call from `generateMetadata` so it is evaluated per request.
+ * `path` (`/terms`) is the canonical URL and `og:url`. */
 export function legalPageMetadata(
   title: string,
   description: string,
+  path: string,
   published: boolean = legalPagesPublished(),
 ): Metadata {
   const fullPageTitle = fullTitle(title);
+  const canonical = canonicalPath(path);
   return {
     title: fullPageTitle,
     description,
-    openGraph: { title: fullPageTitle, description, type: 'website' },
+    alternates: { canonical },
+    openGraph: { title: fullPageTitle, description, type: 'website', url: canonical },
     twitter: { card: 'summary', title: fullPageTitle, description },
     ...(published ? {} : { robots: { index: false, follow: false } }),
   };

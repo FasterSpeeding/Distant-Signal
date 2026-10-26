@@ -80,10 +80,9 @@ export const AI_TRAINING_CRAWLERS: readonly string[] = [
 /** Owner toggle. See `AI_TRAINING_CRAWLERS`. */
 export const BLOCK_AI_TRAINING_CRAWLERS = true;
 
-/** Path of the app's sitemap, relative to the site origin. `null` because
- * the app doesn't have one yet. If an `app/sitemap.ts` is added, set this
- * to `'/sitemap.xml'` and robots.txt will advertise it. */
-export const SITEMAP_PATH: string | null = null;
+/** Path of the app's sitemap (`app/sitemap.ts`), relative to the site
+ * origin; robots.txt advertises it when an origin is configured. */
+export const SITEMAP_PATH: string | null = '/sitemap.xml';
 
 export interface RobotsOptions {
   /** Configured public origin (`https://host`, no trailing slash), or
