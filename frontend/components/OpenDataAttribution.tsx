@@ -88,6 +88,12 @@ export { NationalRailCredit } from './NationalRailCredit';
  * sources named. DS uses no TfGM logo and says it is not affiliated with
  * TfGM. If TfGM's own GTFS (ODbL) is ever used instead, its required ODbL
  * notice replaces the BODS line, in TfGM's wording at that time.
+ * Nottingham Express Transit (docs/superpowers/specs/2026-10-24-nottingham-
+ * net-design.md §10) is in no BODS feed: its timetables come from the
+ * Traveline National Dataset, also under the Open Government Licence v3.0
+ * (the same default statement, naming Traveline), and its stop names from
+ * NaPTAN. It has no disruptions source. DS uses no NET logo and says it is
+ * not affiliated with NET.
  *
  * Irish and Northern Irish sources (LEG-20, LEG-21): Irish Rail GTFS is the
  * NTA's, under CC BY 4.0, which requires the NTA's name, a link and an
@@ -343,6 +349,7 @@ export const DATA_SOURCES: readonly DataSource[] = [
 
 export const BODS_URL = 'https://www.bus-data.dft.gov.uk/';
 export const NAPTAN_URL = 'https://www.gov.uk/government/publications/national-public-transport-access-node-schema';
+export const TNDS_URL = 'https://www.travelinedata.org.uk/traveline-open-data/traveline-national-dataset/';
 
 /** The sources of each transit network, by network id, credited only while
  * the network is shown. */
@@ -356,6 +363,20 @@ export const TRANSIT_DATA_SOURCES: Readonly<Record<string, DataSource>> = {
         Contains public sector information licensed under the{' '}
         <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>. Timetables and disruptions:{' '}
         <ExternalLink href={BODS_URL}>Bus Open Data Service</ExternalLink> (Department for Transport). Stops:{' '}
+        <ExternalLink href={NAPTAN_URL}>NaPTAN</ExternalLink> (Department for Transport).
+      </>
+    ),
+    licence: <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>,
+  },
+  net: {
+    id: 'net',
+    title: 'Nottingham Express Transit (Traveline National Dataset and NaPTAN)',
+    use: 'Nottingham Express Transit timetables and stop names. Distant Signal is not affiliated with Nottingham Express Transit.',
+    statement: (
+      <>
+        Contains public sector information licensed under the{' '}
+        <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>. Timetables:{' '}
+        <ExternalLink href={TNDS_URL}>Traveline National Dataset</ExternalLink> (Traveline Information Ltd). Stops:{' '}
         <ExternalLink href={NAPTAN_URL}>NaPTAN</ExternalLink> (Department for Transport).
       </>
     ),
