@@ -132,7 +132,8 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
   await expect(card.getByText('Scheduled times, not live')).toBeVisible();
   await expect(card).not.toContainText(/on time|expected|late/i);
 
-  await card.getByRole('radio').check();
+  // The card's stretched label covers its radio (a clickable card).
+  await card.getByRole('radio').check({ force: true });
   await page.getByRole('button', { name: 'Track this journey' }).click();
   await expect(page.getByText('First leg tracked')).toBeVisible();
 

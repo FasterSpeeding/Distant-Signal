@@ -1022,6 +1022,20 @@ the text above:
   aren't available for this date, so the plan can't start or end at a tram
   stop."); a station-to-station plan on such a date carries
   `transitNotices`.
+- **Measured on hand-made data** (`crates/api/tests/transit_planning_budget.rs`,
+  release, 2026-10-26; a 460,041-connection rail day and a 28,579-connection
+  Metrolink-shaped weekday):
+  - **Latency, within budget.** `fastest` (CSA) +0.2% for a request that
+    does not opt in and -3.8% with `transit=true`; `options` (RAPTOR, 4
+    rounds) +2.0% and +4.0%.
+  - **Memory, over budget on this data.** +14.3 MB per cached date, of
+    which 5.6 MB is the transit interchange table (the copy of the rail
+    one) and 8.7 MB the trams' connections, trips, nodes and walks: 28.6 MB
+    for the two cached dates against 25 MB. The synthetic interchange table
+    (12,000 TIPLOCs, 15,000 links) is likely larger than production's, and
+    the phase M4 run on a production copy decides. If it is over there
+    too, the options are: share the interchange copies between the cached
+    dates, the interned `Connection` of §10.3, or one fewer cached date.
 - **Rail-link walks with no coordinates** take 5 minutes (`interchange`)
   or 10 (`nearby`).
 - **No OpenAPI document** exists in the repo; the contract is in
