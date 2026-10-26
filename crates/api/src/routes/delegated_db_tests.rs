@@ -490,6 +490,67 @@ async fn delegated_reads_need_an_active_grant_and_the_scope() {
     .await
     .unwrap();
     assert!(last_used.is_some(), "a use is recorded");
+    // Journeys shared with the user (DS-178) stay a session feature: a
+    // delegated caller asking for them gets its own journeys only.
+    let group_owner = format!("{prefix}sharer");
+    seed_user(&pool, &group_owner, &format!("{prefix}s2")).await;
+    let group = format!("{prefix}g");
+    sqlx::query("INSERT INTO groups (id, name, created_by) VALUES ($1, 'Shared', $2)")
+        .bind(&group)
+        .bind(&group_owner)
+        .execute(&pool)
+        .await
+        .expect("seed group");
+    sqlx::query(
+        "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner'), ($1, $3, 'member')",
+    )
+    .bind(&group)
+    .bind(&group_owner)
+    .bind(&user)
+    .execute(&pool)
+    .await
+    .expect("seed members");
+    let shared: i64 = sqlx::query_scalar(
+        "WITH j AS (INSERT INTO journeys (user_id) VALUES ($1) RETURNING id), \
+              l AS (INSERT INTO journey_legs (journey_id, leg_order, service_date, match_mode, \
+                                              kind, transit_mode, planned_departure, planned_arrival) \
+                    SELECT id, 1, CURRENT_DATE, 'manual', 'untracked', 'bus', now(), \
+                           now() + INTERVAL '1 hour' FROM j) \
+         SELECT id FROM j",
+    )
+    .bind(&group_owner)
+    .fetch_one(&pool)
+    .await
+    .expect("seed shared journey");
+    sqlx::query("INSERT INTO group_journeys (group_id, journey_id, added_by) VALUES ($1, $2, $3)")
+        .bind(&group)
+        .bind(shared)
+        .bind(&group_owner)
+        .execute(&pool)
+        .await
+        .expect("share the journey");
+    let reply = send(
+        &h,
+        "GET",
+        "/Journeys/mine?include=followed,shared",
+        &Auth::Bearer(&read),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+    assert_eq!(reply.json(), json!([]));
+    let reply = send(
+        &h,
+        "GET",
+        "/Journeys/mine?include=followed,shared",
+        &Auth::Cookie(&cookie),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+    assert_eq!(reply.json()[0]["id"], shared);
 
     // The token's scope: empty, or another one.
     for scope in ["", "journeys:write"] {

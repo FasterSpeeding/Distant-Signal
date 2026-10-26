@@ -1278,38 +1278,59 @@ fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusC
 /// client may rely on.
 #[derive(Debug, Default, Deserialize)]
 struct MyJourneysParams {
-    /// `followed`: also list the journeys the caller follows (DS-146).
+    /// A comma-separated list: `followed` also lists the journeys the
+    /// caller follows (DS-146), `shared` the journeys other members shared
+    /// into the caller's groups (DS-178).
     #[serde(default)]
     include: Option<String>,
+}
+
+/// Parses `include` (`followed`, `shared`, or both comma-separated, in
+/// any order). `None` for anything else.
+fn parse_my_journeys_include(include: Option<&str>) -> Option<journeys::ListInclude> {
+    let mut parsed = journeys::ListInclude::OWN;
+    let Some(include) = include.filter(|value| !value.is_empty()) else {
+        return Some(parsed);
+    };
+    for part in include.split(',') {
+        match part.trim() {
+            "followed" => parsed.followed = true,
+            "shared" => parsed.shared = true,
+            _ => return None,
+        }
+    }
+    Some(parsed)
 }
 
 /// `GET /Journeys/mine`. Also a delegated route (`journeys:read`, spec
 /// 2026-10-14 §5.8), with the same response; errors then follow the
 /// delegated JSON contract.
 ///
-/// `?include=followed` (DS-146) adds the journeys the caller follows, in
-/// the same travel order and under the same cap, each with `followedFrom`.
-/// Without it the list is the caller's own journeys, as before. A delegated
-/// caller always gets its own journeys only: following is a session
-/// feature, as reading a group-shared journey is (`get_journey`).
+/// `?include=followed` (DS-146) adds the journeys the caller follows, and
+/// `?include=shared` (DS-178) the ones other members shared into the
+/// caller's groups (`include=followed,shared` both): in ONE list with the
+/// caller's own, in the same travel order and under the same cap, each
+/// with `followedFrom` or `sharedVia`. Without it the list is the caller's
+/// own journeys, as before. A delegated caller always gets its own
+/// journeys only: following and reading a group-shared journey are
+/// session features (`get_journey`).
 async fn get_my_journeys(
     State(app): State<App>,
     user: DelegatedOrSessionUser<ReadScope>,
     Query(params): Query<MyJourneysParams>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let include_followed = match params.include.as_deref() {
-        None | Some("") => false,
-        Some("followed") => !user.is_delegated(),
-        Some(_) => {
-            return RouteError::from((
-                StatusCode::BAD_REQUEST,
-                "include must be `followed`".to_string(),
-            ))
-            .render(user.is_delegated(), "bad_request");
-        }
+    let Some(mut include) = parse_my_journeys_include(params.include.as_deref()) else {
+        return RouteError::from((
+            StatusCode::BAD_REQUEST,
+            "include must be `followed`, `shared` or `followed,shared`".to_string(),
+        ))
+        .render(user.is_delegated(), "bad_request");
     };
-    match journeys::list_journeys_for_user(&app.database, &user.user_id, include_followed).await {
+    if user.is_delegated() {
+        include = journeys::ListInclude::OWN;
+    }
+    match journeys::list_journeys_for_user(&app.database, &user.user_id, include).await {
         Ok(rows) => Json(rows).into_response(),
         Err(err) => RouteError::from(internal_error("list journeys")(err))
             .render(user.is_delegated(), "bad_request"),
