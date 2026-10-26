@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { AccountMenu } from './AccountMenu';
+import { AccountMenu, accountInitials } from './AccountMenu';
 import type { NavDestination } from '@/lib/navLinks';
 
 // `useLogout` calls useRouter() from next/navigation, which throws
@@ -21,7 +21,7 @@ const destinations: NavDestination[] = [
 ];
 
 function openMenu() {
-  fireEvent.click(screen.getByRole('button', { name: 'Account menu for Ada' }));
+  fireEvent.click(screen.getByRole('button', { name: 'AD, account menu for Ada' }));
 }
 
 /** `hidden: true` on every dropdown query, and it is a jsdom artefact
@@ -55,7 +55,7 @@ describe('AccountMenu', () => {
 
   it('names its target button after the visitor, so the display name survives leaving the bar', () => {
     renderWithMantine(<AccountMenu label="Ada" destinations={destinations} />);
-    expect(screen.getByRole('button', { name: 'Account menu for Ada' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'AD, account menu for Ada' })).toBeInTheDocument();
   });
 
   it('shows the visitor initials in the bar', () => {
@@ -63,6 +63,24 @@ describe('AccountMenu', () => {
     // renders initials from `name` when it has no `src`.
     renderWithMantine(<AccountMenu label="Ada Lovelace" destinations={destinations} />);
     expect(screen.getByText('AL')).toBeInTheDocument();
+  });
+
+  it('starts its accessible name with the initials it shows (WCAG 2.5.3, Label in Name)', () => {
+    // axe's label-content-name-mismatch: a voice-control user saying the
+    // visible text ("click AL") must reach this button.
+    renderWithMantine(<AccountMenu label="Ada Lovelace" destinations={destinations} />);
+    const button = screen.getByRole('button', { name: 'AL, account menu for Ada Lovelace' });
+    expect(button).toHaveTextContent('AL');
+  });
+
+  it.each([
+    ['Ada Lovelace', 'AL'],
+    ['Ada King Lovelace', 'AK'],
+    ['  Ada   Lovelace ', 'AL'],
+    ['ada', 'AD'],
+    ['ada@example.com', 'AD'],
+  ])('abbreviates %j to %j', (label, initials) => {
+    expect(accountInitials(label)).toBe(initials);
   });
 
   it('keeps its destinations out of the bar until it is opened', () => {
@@ -88,7 +106,7 @@ describe('AccountMenu', () => {
     // The initials in the bar are an abbreviation; opening the menu is
     // where a visitor confirms WHICH account they are signed in as.
     renderWithMantine(<AccountMenu label="ada@example.com" destinations={destinations} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Account menu for ada@example.com' }));
+    fireEvent.click(screen.getByRole('button', { name: 'AD, account menu for ada@example.com' }));
     expect(await screen.findByText('ada@example.com')).toBeInTheDocument();
   });
 

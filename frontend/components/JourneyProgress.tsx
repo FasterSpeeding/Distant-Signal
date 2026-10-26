@@ -618,7 +618,7 @@ function JourneyProgressNode({
       // some platforms paint as a full-colour emoji that ignores the theme
       // entirely. Yellow's light-variant text token -- the colour of the
       // "May have arrived" `Alert` it echoes -- clears the 3:1 non-text
-      // floor in both schemes (#a85700: 5.2:1 on white; Mantine's dark
+      // floor in both schemes (#964d00: 6.25:1 on white; Mantine's dark
       // yellow light-color on the dark body well above that). Still
       // `aria-hidden`: the progress group's own `aria-label` already says
       // "may have arrived" in words.
