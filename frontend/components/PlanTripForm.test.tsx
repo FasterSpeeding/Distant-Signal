@@ -109,11 +109,9 @@ describe('PlanTripForm', () => {
       fireEvent.focus(from);
       fireEvent.change(from, { target: { value: 'uxbridge' } });
       fireEvent.click(await screen.findByRole('option', { name: 'Uxbridge (Tube) · Tube: Metropolitan, Piccadilly' }));
-      expect(from).toHaveValue('940GZZLUUXB');
+      expect(from).toHaveValue('Uxbridge (Tube)');
       expect(
-        await screen.findByText(
-          'Uxbridge (Tube). The route starts with the Tube or a walk to a National Rail station nearby.',
-        ),
+        await screen.findByText('The route starts with the Tube or a walk to a National Rail station nearby.'),
       ).toBeInTheDocument();
       fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MYB' } });
       fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));

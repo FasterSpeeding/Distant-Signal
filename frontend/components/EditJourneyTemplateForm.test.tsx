@@ -26,6 +26,8 @@ const STATIONS = [
   { code: 'YRK', name: 'York' },
   { code: 'NCL', name: 'Newcastle' },
   { code: 'WOK', name: 'Woking' },
+  { code: 'KGX', name: 'London Kings Cross' },
+  { code: 'EDB', name: 'Edinburgh' },
 ];
 
 /** Routes the mocked `fetch` by URL: the station fields' own type-ahead
@@ -91,12 +93,16 @@ describe('EditJourneyTemplateForm', () => {
     vi.unstubAllGlobals();
   });
 
-  it('pre-fills the template name and every leg field from the template', () => {
+  it('pre-fills the template name and every leg field from the template', async () => {
+    mockFetch();
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
 
     expect(screen.getByLabelText('Template name')).toHaveValue('My commute');
-    expect(screen.getByRole('combobox', { name: 'From station' })).toHaveValue('KGX');
-    expect(screen.getByRole('combobox', { name: 'To station' })).toHaveValue('EDB');
+    // The saved codes, then their stations by name once looked up.
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'From station' })).toHaveValue('London Kings Cross (KGX)'),
+    );
+    expect(screen.getByRole('combobox', { name: 'To station' })).toHaveValue('Edinburgh (EDB)');
     expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('09:00');
     expect(screen.getByLabelText('Latest departure (optional)')).toHaveValue('10:00');
   });
@@ -166,10 +172,11 @@ describe('EditJourneyTemplateForm', () => {
     fireEvent.change(destination, { target: { value: 'ncl' } });
     fireEvent.blur(destination);
 
-    // Save waits for "York" to resolve through the station search.
+    // Save waits for "York" to resolve through the station search, which
+    // then shows the station by name and code.
+    // Picked once the search for what was typed comes back.
+    await waitFor(() => expect(origin).toHaveValue('York (YRK)'), { timeout: 5000 });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled());
-    // The field keeps the name the user typed.
-    expect(origin).toHaveValue('York');
     expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -185,7 +192,7 @@ describe('EditJourneyTemplateForm', () => {
     fireEvent.change(origin, { target: { value: 'wok' } });
     fireEvent.click(await screen.findByRole('option', { name: 'WOK · Woking', hidden: true }));
 
-    expect(origin).toHaveValue('WOK');
+    expect(origin).toHaveValue('Woking (WOK)');
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(putCalls()).toHaveLength(1));
     const body = JSON.parse(putCalls()[0]![1]?.body as string);

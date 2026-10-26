@@ -123,4 +123,17 @@ describe('/attribution', () => {
     expect(screen.getByText(/Distant Signal is not affiliated with TfGM/)).toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: /Bus Open Data Service/ }).length).toBeGreaterThan(0);
   });
+
+  it('credits Nottingham Express Transit to the Traveline National Dataset, only while it is shown', async () => {
+    vi.mocked(api.getTransitNetworks).mockResolvedValue([{ id: 'net' } as TransitNetwork]);
+    renderWithMantine(await AttributionPage());
+    expect(
+      screen.getByRole('heading', { name: 'Nottingham Express Transit (Traveline National Dataset and NaPTAN)' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Distant Signal is not affiliated with Nottingham Express Transit/)).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: /Traveline National Dataset/ }).length).toBeGreaterThan(0);
+    // Metrolink's credit is not shown with only NET on, nor BODS.
+    expect(screen.queryByRole('heading', { name: /Manchester Metrolink/ })).toBeNull();
+    expect(screen.queryByRole('link', { name: /Bus Open Data Service/ })).toBeNull();
+  });
 });
