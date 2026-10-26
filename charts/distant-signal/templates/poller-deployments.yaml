@@ -216,7 +216,7 @@ with $poller.extraEnv, which replaces an entry of the same name.
             - name: TRACKED_STOP_ARRIVALS_ENABLED
               value: "true"
             - name: TRACKED_STOP_ARRIVALS_MAX_REQUESTS_PER_CYCLE
-              value: {{ .maxRequestsPerCycle | default 10 | int | quote }}
+              value: {{ .maxRequestsPerCycle | default 6 | int | quote }}
             - name: LDBWS_ARRIVALS_URL
               valueFrom:
                 secretKeyRef:

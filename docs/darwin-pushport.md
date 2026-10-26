@@ -136,8 +136,10 @@ or set-down-only stop, which departure boards never list. The boards ride
 `tracked_stop_arrival_boards` (targets: the `ingest_tracked_stop_arrival_targets`
 view, which only `ldbws_ro` reads). The api sets `platform` (basis
 `board`) on such a stop when it has no live platform yet; a Push Port
-platform still wins. It has its own budget (`maxRequestsPerCycle`, 10 a
-cycle, and a 5 s time share) and is independent of the departure lane
+platform still wins. It has its own budget (`maxRequestsPerCycle`, 6 a
+cycle, and 3 s of the cycle, taken from the departure lane's 10 s so the
+45 s station rotation and both lanes stay under the 60 s interval) and is
+switched on independently of the departure lane
 (`pollers.ldbws.trackedStops`).
 
 The connection is the Secret `distant-signal-ldbws-arrivals`: `url`,
@@ -155,7 +157,8 @@ last path segment starts with `Get` gets `/<CRS>` appended; any other gets
 2. `ingestWriter.streams.station-samples` is `apply` (the default), and
    the writer runs this release (it has the new handler).
 3. Set `pollers.ldbws.trackedStopArrivals.enabled: true` (and
-   `maxRequestsPerCycle` if 10 a cycle is not right).
+   `maxRequestsPerCycle` if 6 a cycle is not right; it only has 3 s of
+   the cycle).
 4. If `url` is not on port 443 and `networkPolicy.egress.internetPorts`
    is set, add the port to `networkPolicy.components.poller-ldbws.internetPorts`.
 5. Check: `distant_signal_ldbws_tracked_stop_arrival_polls_total{outcome="ok"}`

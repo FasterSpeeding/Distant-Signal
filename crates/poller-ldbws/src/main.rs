@@ -885,7 +885,7 @@ async fn sample_tracked_stops(
         };
         tokio::select! {
             biased;
-            () = tokio::time::sleep(tracked_stops::LANE_TIME_BUDGET) => {
+            () = tokio::time::sleep(tracked_stops::departures_time_budget(config.tracked_stop_arrivals_enabled)) => {
                 tracing::debug!("tracked-stop lane time budget reached");
             }
             () = work => {}

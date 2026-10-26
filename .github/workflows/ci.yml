@@ -3025,7 +3025,7 @@ jobs:
             --set pollers.ldbws.trackedStopArrivals.enabled=true \
             --show-only templates/poller-deployments.yaml)
           grep -A1 'name: TRACKED_STOP_ARRIVALS_ENABLED$' <<<"${arrivals}" | grep -q 'value: "true"'
-          grep -A1 'name: TRACKED_STOP_ARRIVALS_MAX_REQUESTS_PER_CYCLE$' <<<"${arrivals}" | grep -q 'value: "10"'
+          grep -A1 'name: TRACKED_STOP_ARRIVALS_MAX_REQUESTS_PER_CYCLE$' <<<"${arrivals}" | grep -q 'value: "6"'
           for pair in LDBWS_ARRIVALS_URL:url LDBWS_ARRIVALS_CONSUMER_KEY:consumer-key \
             LDBWS_ARRIVALS_CONSUMER_SECRET:consumer-secret; do
             env="${pair%%:*}" key="${pair#*:}"

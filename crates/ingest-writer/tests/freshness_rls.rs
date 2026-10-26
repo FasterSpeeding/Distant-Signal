@@ -146,6 +146,7 @@ async fn each_producer_writes_only_its_own_freshness_rows() {
         "tocs",
         common::tfl_stops::FRESHNESS_SOURCE,
         common::tfl_routes::FRESHNESS_SOURCE,
+        common::darwin::FRESHNESS_SOURCE,
         ds_store::samples::sources::STATION_SAMPLES,
         ds_store::samples::sources::FULL_COVERAGE_STATS,
         ds_store::samples::sources::FULL_COVERAGE_WINDOW_STATS,

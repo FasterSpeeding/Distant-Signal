@@ -63,10 +63,24 @@ const WINDOW_MINUTES: i64 = 15;
 /// LDBWS's `timeOffset` range, in minutes.
 const MAX_OFFSET: i64 = 119;
 const MIN_OFFSET: i64 = -120;
-/// The lane's own share of the cycle's time.
+/// The tracked-stop lanes' share of the cycle's time, both together: the
+/// station rotation has 45 s of the 60 s interval, so the two lanes get 10
+/// s and the cycle ends with 5 s to spare.
 pub(crate) const LANE_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
-/// The arrivals sub-lane's own share of the cycle's time (DS-152).
-pub(crate) const ARRIVALS_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+/// The arrivals sub-lane's part of [`LANE_TIME_BUDGET`] (DS-152), taken
+/// from the departure lane only while the sub-lane is on.
+pub(crate) const ARRIVALS_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The departure lane's time budget: all of [`LANE_TIME_BUDGET`], less
+/// [`ARRIVALS_TIME_BUDGET`] while the arrivals sub-lane is on, so the two
+/// lanes and the 45 s rotation never take the whole 60 s interval.
+pub(crate) fn departures_time_budget(arrivals_enabled: bool) -> std::time::Duration {
+    if arrivals_enabled {
+        LANE_TIME_BUDGET.saturating_sub(ARRIVALS_TIME_BUDGET)
+    } else {
+        LANE_TIME_BUDGET
+    }
+}
 
 /// An arrival target as a [`TrackedStopTarget`] whose `departs_at` is the
 /// booked arrival, so the arrivals sub-lane can reuse [`Cadence`] and
@@ -278,5 +292,17 @@ mod tests {
         // Clamped to LDBWS's range.
         assert_eq!(window(at(200), at(0)), (119, 15));
         assert_eq!(window(at(-200), at(0)), (-120, 15));
+    }
+
+    #[test]
+    fn the_two_lanes_share_one_ten_second_budget() {
+        assert_eq!(
+            departures_time_budget(false),
+            std::time::Duration::from_secs(10)
+        );
+        assert_eq!(
+            departures_time_budget(true) + ARRIVALS_TIME_BUDGET,
+            LANE_TIME_BUDGET
+        );
     }
 }

@@ -117,7 +117,9 @@ pub(crate) struct Config {
     /// cycle, soonest arrival first. Separate from the departure lane's
     /// `TRACKED_STOP_MAX_REQUESTS_PER_CYCLE`: the arrivals product is its
     /// own RDM subscription.
-    #[arg(long, env, default_value_t = 10)]
+    /// Six: about what fits its 3 s share of the cycle
+    /// (`tracked_stops::ARRIVALS_TIME_BUDGET`).
+    #[arg(long, env, default_value_t = 6)]
     pub tracked_stop_arrivals_max_requests_per_cycle: u32,
 
     /// The RDM arrivals product's URL (the `url` key of the chart's
@@ -314,7 +316,7 @@ mod config_debug_tests {
         assert!(!config.tracked_stop_poll_enabled);
         assert_eq!(config.tracked_stop_max_requests_per_cycle, 20);
         assert!(!config.tracked_stop_arrivals_enabled);
-        assert_eq!(config.tracked_stop_arrivals_max_requests_per_cycle, 10);
+        assert_eq!(config.tracked_stop_arrivals_max_requests_per_cycle, 6);
         assert!(config.ldbws_arrivals_url.is_none());
         assert!(config.ldbws_arrivals_consumer_key.is_none());
     }

@@ -1379,7 +1379,10 @@ pollers:
       enabled: false
       # -- The sub-lane's own budget: at most this many requests a cycle,
       # soonest arrival first (TRACKED_STOP_ARRIVALS_MAX_REQUESTS_PER_CYCLE).
-      maxRequestsPerCycle: 10
+      # It also has 3 s of the cycle, taken from the departure lane's 10 s,
+      # so the 45 s station rotation and both lanes stay under the 60 s
+      # interval: raise this only with that in mind.
+      maxRequestsPerCycle: 6
       # -- The existing Secret holding the arrivals product's credentials
       # (created out of band; the chart never renders it).
       secretName: distant-signal-ldbws-arrivals
