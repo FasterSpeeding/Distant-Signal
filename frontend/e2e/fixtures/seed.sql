@@ -615,7 +615,11 @@ ON CONFLICT (journey_id, leg_order) DO NOTHING;
 -- ---------------------------------------------------------------------
 -- Three trains TOMORROW for the mid-journey changes flow
 -- (journey-mid-change.spec.ts: "I missed this train", take another, Undo),
--- which needs trains still to run. Made-up codes (ZMA, ZMB) and TIPLOCs in
+-- which needs trains still to run. "Tomorrow" is London's, as the spec
+-- computes it: the database's CURRENT_DATE is UTC, a day behind London
+-- from 23:00 to midnight UTC while BST is in force. The day after is
+-- seeded too, so a run that crosses London midnight after seeding still
+-- finds its trains. Made-up codes (ZMA, ZMB) and TIPLOCs in
 -- `stanox_crs` only, as the /plan fixture above, so no other page changes.
 --   E2EMJ1  ZMA 09:00 -> ZMB 09:40
 --   E2EMJ2  ZMA 09:30 -> ZMB 10:10
@@ -630,9 +634,11 @@ ON CONFLICT (stanox) DO NOTHING;
 INSERT INTO schedule_calling_points_full
   (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure,
    public_arrival, public_departure, day_offset, can_board, can_alight)
-SELECT CURRENT_DATE + 1, uid, seq, tiploc, kind, arr::time, dep::time, arr::time, dep::time, 0,
+SELECT d.service_date, uid, seq, tiploc, kind, arr::time, dep::time, arr::time, dep::time, 0,
        TRUE, TRUE
-FROM (VALUES
+FROM (SELECT (NOW() AT TIME ZONE 'Europe/London')::date + n AS service_date
+      FROM (VALUES (1), (2)) AS o (n)) AS d
+CROSS JOIN (VALUES
   ('E2EMJ1', 0, 'E2EMJA', 'origin', NULL, '09:00'),
   ('E2EMJ1', 1, 'E2EMJB', 'terminate', '09:40', NULL),
   ('E2EMJ2', 0, 'E2EMJA', 'origin', NULL, '09:30'),

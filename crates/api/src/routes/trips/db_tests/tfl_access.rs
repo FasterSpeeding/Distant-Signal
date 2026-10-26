@@ -91,13 +91,33 @@ async fn cleanup(pool: &PgPool) {
         .execute(pool)
         .await
         .ok();
-    for crs in STATIONS.iter().map(|(crs, _, _)| *crs).chain([BRANCH_CRS]) {
-        sqlx::query("DELETE FROM stations WHERE crs = $1")
+    for crs in STATIONS
+        .iter()
+        .map(|(crs, _, _)| *crs)
+        .chain([BRANCH_CRS])
+        .chain(OLD_STREET_STATIONS.iter().map(|(crs, _, _)| *crs))
+    {
+        // Only this file's rows: `EUS` is a real code.
+        sqlx::query("DELETE FROM stations WHERE crs = $1 AND name LIKE 'Test station %'")
             .bind(crs)
             .execute(pool)
             .await
             .ok();
     }
+    sqlx::query("DELETE FROM tfl_stops WHERE stop_id = ANY($1) AND name LIKE 'Test %'")
+        .bind(OLD_STREET_REAL_IDS)
+        .execute(pool)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM tfl_line_routes WHERE line_id = $1")
+        .bind(OLD_STREET_LINE)
+        .execute(pool)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid LIKE 'TTOS%'")
+        .execute(pool)
+        .await
+        .ok();
     sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTTFLACC-%'")
         .execute(pool)
         .await
@@ -498,5 +518,207 @@ async fn branch_change_costs_a_change_at_the_junction() {
         itinerary["legs"][0]["access"]["changeAt"]["name"],
         "Test Harrow"
     );
+    cleanup(&pool).await;
+}
+
+/// DS-167: a hand-written stretch of a Northern-like line, moved to the
+/// North Sea (Euston's position plus 4 degrees north, 2.5 east, and so on):
+/// Euston's own stop (`940GZZLUEUS`, Euston's by `CRS_OVERRIDES`), `Test
+/// King's Cross`, `Test Angel`, Old Street (`940GZZLUODS`, a hub `ZTO`) and
+/// `Test Moorgate` (a hub `ZTG`), with its routes. The two real stop ids
+/// and `EUS` are needed: the request names Old Street's, and Euston's stop
+/// is Euston's by code.
+const OLD_STREET: &str = "940GZZLUODS";
+const OLD_STREET_LINE: &str = "testnorthern167";
+const OLD_STREET_REAL_IDS: &[&str] = &["940GZZLUEUS", OLD_STREET];
+
+/// `(stop id, name, (latitude, longitude), hub CRS)`.
+type OldStreetStop<'a> = (&'a str, &'a str, (f64, f64), Option<&'a str>);
+
+const OLD_STREET_STOPS: [OldStreetStop<'static>; 5] = [
+    ("940GZZLUEUS", "Test Euston", (55.5282, 2.3663), None),
+    ("940GZZTSKSX", "Test King's Cross", (55.5308, 2.3762), None),
+    ("940GZZTSAGL", "Test Angel", (55.5322, 2.3942), None),
+    (
+        OLD_STREET,
+        "Test Old Street",
+        (55.5263, 2.4127),
+        Some("ZTO"),
+    ),
+    (
+        "940GZZTSMGT",
+        "Test Moorgate",
+        (55.5186, 2.4114),
+        Some("ZTG"),
+    ),
+];
+
+/// `(crs, tiploc, (latitude, longitude))`.
+const OLD_STREET_STATIONS: [(&str, &str, (f64, f64)); 3] = [
+    ("EUS", "TTEUSTN", (55.5282, 2.3663)),
+    ("ZTO", "TTOLDST", (55.5263, 2.4127)),
+    ("ZTG", "TTMRGT", (55.5186, 2.4114)),
+];
+
+async fn seed_old_street(pool: &PgPool) {
+    let line = serde_json::json!([{ "id": OLD_STREET_LINE, "name": "Northern" }]);
+    for (id, name, (lat, lon), hub) in OLD_STREET_STOPS {
+        sqlx::query(
+            "INSERT INTO tfl_stops (stop_id, name, search_name, modes, lines, latitude, longitude, fetched_at) \
+             VALUES ($1, $2, lower($2), ARRAY['tube'], $3, $4, $5, now())",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(&line)
+        .bind(lat)
+        .bind(lon)
+        .execute(pool)
+        .await
+        .expect("seed tfl_stops");
+        if let Some(crs) = hub {
+            sqlx::query("INSERT INTO tfl_stop_crs (stop_id, crs, source) VALUES ($1, $2, 'hub')")
+                .bind(id)
+                .bind(crs)
+                .execute(pool)
+                .await
+                .expect("seed tfl_stop_crs");
+        }
+    }
+    let ids: Vec<&str> = OLD_STREET_STOPS.iter().map(|(id, _, _, _)| *id).collect();
+    let back: Vec<&str> = ids.iter().rev().copied().collect();
+    for (index, (direction, stops)) in (0_i16..).zip([("outbound", ids), ("inbound", back)]) {
+        sqlx::query(
+            "INSERT INTO tfl_line_routes (line_id, direction, route_index, name, stop_ids, fetched_at) \
+             VALUES ($1, $2, $3, 'Test', $4, now())",
+        )
+        .bind(OLD_STREET_LINE)
+        .bind(direction)
+        .bind(index)
+        .bind(stops)
+        .execute(pool)
+        .await
+        .expect("seed a route");
+    }
+    for (crs, tiploc, (lat, lon)) in OLD_STREET_STATIONS {
+        sqlx::query(
+            "INSERT INTO stations (crs, name, latitude, longitude) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(crs)
+        .bind(format!("Test station {crs}"))
+        .bind(lat)
+        .bind(lon)
+        .execute(pool)
+        .await
+        .expect("seed stations");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ($1, $2, $3, $2, 1) ON CONFLICT (stanox) DO NOTHING",
+        )
+        .bind(format!("TESTTFLACC-{crs}"))
+        .bind(crs)
+        .bind(tiploc)
+        .execute(pool)
+        .await
+        .expect("seed stanox_crs");
+    }
+    // A train from Euston to Moorgate, and one on to Old Street: the
+    // trains a plan to Old Street's station alone would take.
+    for (uid, from, departs, to, arrives) in [
+        ("TTOS1", "TTEUSTN", "08:02:00", "TTMRGT", "08:10:00"),
+        ("TTOS2", "TTMRGT", "08:31:00", "TTOLDST", "08:33:00"),
+    ] {
+        for (seq, tiploc, kind, arrival, departure) in [
+            (0, from, "origin", None, Some(departs)),
+            (1, to, "terminate", Some(arrives), None),
+        ] {
+            sqlx::query(
+                "INSERT INTO schedule_calling_points_full \
+                 (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+                 VALUES ($1, $2, $3, $4, $5, $6::time, $7::time, 0) ON CONFLICT DO NOTHING",
+            )
+            .bind(date())
+            .bind(uid)
+            .bind(seq)
+            .bind(tiploc)
+            .bind(kind)
+            .bind(arrival)
+            .bind(departure)
+            .execute(pool)
+            .await
+            .expect("seed calling point");
+        }
+    }
+}
+
+/// Euston to Old Street's Tube stop is one Northern line ride from
+/// Euston's own stop, depart-after and arrive-by, and back again; Old
+/// Street keeps its hub walk beside its line candidates.
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api \
+            routes::trips -- --ignored --test-threads=1`"]
+async fn euston_to_old_street_is_one_northern_line_ride() {
+    let pool = connect().await;
+    seed(&pool).await;
+    seed_old_street(&pool).await;
+    let router = test_router(test_app(pool.clone()));
+
+    let (status, body) = get(
+        router.clone(),
+        plan_uri("EUS", OLD_STREET, "departAfter=08:00"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let itinerary = &body["segments"][0]["itineraries"][0];
+    assert_eq!(
+        describe(itinerary),
+        [format!("TUBE EUS-{OLD_STREET} destination")]
+    );
+    let leg = &itinerary["legs"][0];
+    assert_eq!(leg["kind"], "transfer");
+    assert_eq!(leg["line"], "Northern");
+    assert_eq!(leg["access"]["basis"], "line");
+    assert_eq!(leg["originStop"]["id"], "940GZZLUEUS");
+    assert_eq!(leg["destinationStop"]["id"], OLD_STREET);
+    // About 3 km: 5 in and 7 riding, no walk out at Euston.
+    assert_eq!(leg["minutes"], 12, "{leg:?}");
+    assert_eq!(body["journeys"][0]["arrival"]["time"], "08:12:00");
+    // Old Street's own candidates: the hub walk first, then rides.
+    let candidates = body["access"]["destination"]["candidates"]
+        .as_array()
+        .expect("candidates");
+    assert_eq!(candidates[0]["crs"], "ZTO");
+    assert_eq!(candidates[0]["basis"], "hub");
+    assert!(
+        candidates
+            .iter()
+            .any(|c| c["crs"] == "ZTG" && c["basis"] == "line"),
+        "{candidates:?}"
+    );
+
+    // Arrive by 09:00: the same ride, left at 08:48.
+    let (status, body) = get(
+        router.clone(),
+        plan_uri("EUS", OLD_STREET, "arriveBy=09:00"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(
+        describe(&body["segments"][0]["itineraries"][0]),
+        [format!("TUBE EUS-{OLD_STREET} destination")]
+    );
+    assert_eq!(
+        body["segments"][0]["itineraries"][0]["legs"][0]["line"],
+        "Northern"
+    );
+
+    // And back: Old Street to Euston, one ride out of the stop.
+    let (status, body) = get(router, plan_uri(OLD_STREET, "EUS", "departAfter=08:00")).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let itinerary = &body["segments"][0]["itineraries"][0];
+    assert_eq!(
+        describe(itinerary),
+        [format!("TUBE {OLD_STREET}-EUS origin")]
+    );
+    assert_eq!(itinerary["legs"][0]["line"], "Northern");
     cleanup(&pool).await;
 }
