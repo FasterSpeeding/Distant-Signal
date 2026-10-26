@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { fireEvent, screen, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { byVisibleText } from '@/test/routeText';
 import type { TripPlanResponse } from '@/lib/types';
@@ -27,11 +27,18 @@ vi.mock('@/lib/api', async () => {
 
 // Same reasoning as `PlanTripFlow.test.tsx`: the station autocompletes'
 // debounced lookups must not eat this file's `fetch` mocks.
+// `getStationNames` knows the stations a test lists here, so the From and
+// To fields can show a restored station by name (`withNames`).
+const KNOWN_NAMES = new Map<string, string>();
+function withNames(names: Record<string, string>) {
+  for (const [code, name] of Object.entries(names)) KNOWN_NAMES.set(code, name);
+}
 vi.mock('@/lib/suggestions', () => ({
   searchStations: async () => [],
   searchTocs: async () => [],
   searchPlannerLocations: async () => [],
-  getStationNames: async () => new Map<string, string>(),
+  getStationNames: async (codes: string[]) =>
+    new Map(codes.flatMap((code) => (KNOWN_NAMES.has(code) ? [[code, KNOWN_NAMES.get(code)!] as const] : []))),
 }));
 // From and To also look up tram stations (`GET /api/transit/networks`).
 vi.mock('@/lib/plannerEnds', () => ({ searchPlannerEnds: async () => [] }));
@@ -72,6 +79,7 @@ async function renderPage(searchParams: Record<string, string | string[]> = {}) 
 describe('PlanPage (/plan)', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    KNOWN_NAMES.clear();
   });
 
   it('opens straight on the planner, with no "I know my route" toggle', async () => {
@@ -92,8 +100,9 @@ describe('PlanPage (/plan)', () => {
   });
 
   it('pre-fills From from ?origin=, the same parameter /track takes', async () => {
+    withNames({ EUS: 'London Euston' });
     await renderPage({ origin: 'eus' });
-    expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('EUS');
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('London Euston (EUS)'));
   });
 
   it('ignores an ?origin= that is not a station code', async () => {
@@ -102,6 +111,7 @@ describe('PlanPage (/plan)', () => {
   });
 
   it('restores a shared search, advanced options included, from the query string', async () => {
+    withNames({ PRE: 'Preston' });
     await renderPage({
       origin: 'EUS',
       destination: 'pre',
@@ -110,7 +120,7 @@ describe('PlanPage (/plan)', () => {
       avoidChange: 'WVH',
       maxChanges: '1',
     });
-    expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('PRE');
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('Preston (PRE)'));
     expect(screen.getByRole('radio', { name: 'Compare options' })).toBeChecked();
     const advanced = screen.getByRole('button', { name: 'Advanced options (3 set)' });
     expect(advanced).toHaveAttribute('aria-expanded', 'false');
@@ -118,8 +128,11 @@ describe('PlanPage (/plan)', () => {
   });
 
   it('takes the first of a repeated ?origin=', async () => {
+    withNames({ MKC: 'Milton Keynes Central' });
     await renderPage({ origin: ['MKC', 'EUS'] });
-    expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('MKC');
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('Milton Keynes Central (MKC)'),
+    );
   });
 
   it('lets a signed-out visitor plan and see results, asking them to log in only on "Track this journey"', async () => {

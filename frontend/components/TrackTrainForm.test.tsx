@@ -803,11 +803,12 @@ describe('TrackTrainForm', () => {
     // forward to discover it.
     it('announces the mode switch via a visually-hidden status region', () => {
       renderWithMantine(<TrackTrainForm />);
-      expect(screen.getByRole('status')).toHaveTextContent('Showing pick-a-departure search.');
+      // By its text: each station field has a status region of its own.
+      expect(screen.getByText('Showing pick-a-departure search.')).toHaveAttribute('role', 'status');
 
       switchToWindowMode();
 
-      expect(screen.getByRole('status')).toHaveTextContent('Showing time-window search.');
+      expect(screen.getByText('Showing time-window search.')).toHaveAttribute('role', 'status');
     });
 
     // Review §2.1/I21: `?mode=window` (wired through `track/page.tsx`) is
@@ -892,10 +893,9 @@ describe('TrackTrainForm', () => {
       expect(option).toBeInTheDocument();
 
       fireEvent.click(option);
-      // Selecting the option still writes just the bare code into the
-      // field -- `Autocomplete` writes `data`'s `label`, not the
-      // dropdown-only `renderOption` text, into the input.
-      expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toHaveValue('RDG');
+      // Selecting the option shows the station by name and code
+      // (`StationField`), never the dropdown-only `CODE · Name` text.
+      expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toHaveValue('Reading (RDG)');
     });
 
     // 2026-09-23 state-persistence-across-mode-toggle fix: Destination used
@@ -1877,7 +1877,7 @@ describe('TrackTrainForm', () => {
       const option = await screen.findByRole('option', { name: /South Western Railway/, hidden: true });
       fireEvent.click(option);
 
-      expect(operatorField).toHaveValue('SW');
+      expect(operatorField).toHaveValue('South Western Railway (SW)');
       // svc-cancelled's operator is 'ZA' -- filtered out by the now-resolved
       // Operator selection; svc-on-time's is 'SW' -- still shown.
       expect(screen.queryByText(/10:15/)).not.toBeInTheDocument();

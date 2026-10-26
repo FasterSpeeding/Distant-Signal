@@ -1,15 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Alert, Autocomplete, Button, Stack, Text } from '@mantine/core';
+import { Alert, Button, Stack, Text } from '@mantine/core';
 import { LoadMoreControl } from './LoadMoreControl';
 import { ServiceRow, ServiceRowList } from './ServiceRow';
 import { TextLink } from './TextLink';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
-import { searchTocs } from '@/lib/suggestions';
-import { useSuggestions } from '@/lib/useSuggestions';
-import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { OperatorField } from './OperatorField';
 import { NO_TIME } from '@/lib/dateFormat';
 import { searchRowDetails, searchRowSummary, searchRowTime } from '@/lib/searchRow';
 import { serviceNoun } from '@/lib/serviceMode';
@@ -144,22 +142,17 @@ export function JourneyLegCandidates({
   const needsLoginState = useNeedsLogin();
 
   // Operator/TOC filter -- design doc's journey-leg-operator-filter plan,
-  // Task 6. `operator` is the raw typed text (drives the Autocomplete's own
-  // value AND its `useSuggestions` suggestion dropdown below);
+  // Task 6. `operator` is the field's value: the picked code, or the raw
+  // typed text (`OperatorField`);
   // `committedOperator` is the DEBOUNCED, trimmed-and-uppercased value that
   // actually drives the candidates fetch, so a fast typist doesn't fire one
   // request per keystroke. Reuses `TrackTrainForm.tsx`'s window-mode
-  // Operator field pattern verbatim for the input/suggestions wiring
-  // (`useSuggestions` + `searchTocs` + `suggestionAutocompleteProps`) --
+  // Operator field verbatim (`OperatorField`) --
   // that field has no debounced-refetch of its own to mirror (it only
   // filters an already-fetched in-memory picker), so the debounce here is
   // new, specific to this component's server-side filtering.
   const [operator, setOperator] = useState('');
   const [committedOperator, setCommittedOperator] = useState('');
-  const { suggestions: operatorSuggestions, loading: operatorSuggestionsLoading } = useSuggestions(
-    operator,
-    searchTocs,
-  );
 
   // Debounces `operator` -> `committedOperator`, mirroring
   // `lib/useSuggestions.ts`'s own 250ms debounce (`FILTER_DEBOUNCE_MS`,
@@ -390,17 +383,7 @@ export function JourneyLegCandidates({
           (including 'loading' and 'error'), which is also what lets the
           debounced `committedOperator` effect above keep working even while
           `body()` is showing something other than the rows list. */}
-      <Autocomplete
-        label="Operator (optional)"
-        placeholder="e.g. SW"
-        value={operator}
-        onChange={setOperator}
-        {...suggestionAutocompleteProps(operatorSuggestions, {
-          query: operator,
-          loading: operatorSuggestionsLoading,
-          noMatchMessage: 'No matching operators',
-        })}
-      />
+      <OperatorField label="Operator (optional)" placeholder="e.g. SW" value={operator} onChange={setOperator} />
       {body()}
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to see candidate trains for this leg.

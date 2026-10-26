@@ -32,7 +32,7 @@ const TRANSIT_STOP_PREFIXES: readonly { prefix: string; network: string; name: s
   { prefix: '9400ZZMA', network: 'metrolink', name: 'Metrolink' },
 ];
 
-function transitNetworkOf(id: string): { network: string; name: string } | undefined {
+export function transitNetworkOf(id: string): { network: string; name: string } | undefined {
   const upper = id.trim().toUpperCase();
   return TRANSIT_STOP_PREFIXES.find((entry) => upper.startsWith(entry.prefix));
 }
