@@ -28,7 +28,7 @@ permissions: {}
 jobs:
   prune:
     name: delete untagged buildcache versions
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       # Deleting a package version needs write. GITHUB_TOKEN can only
       # delete versions of a container package that grants this

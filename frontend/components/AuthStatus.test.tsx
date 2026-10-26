@@ -24,8 +24,10 @@ const loggedOut: SessionInfo = { authenticated: false, id: null, username: null,
  * button's name rather than on `getByText`. */
 function accountMenuName() {
   const buttons = screen.getAllByRole('button');
-  const target = buttons.find((button) => button.getAttribute('aria-label')?.startsWith('Account menu for '));
-  return target?.getAttribute('aria-label')?.replace('Account menu for ', '');
+  const marker = ', account menu for ';
+  const target = buttons.find((button) => button.getAttribute('aria-label')?.includes(marker));
+  const name = target?.getAttribute('aria-label');
+  return name?.slice(name.indexOf(marker) + marker.length);
 }
 
 describe('AuthStatus', () => {
@@ -105,7 +107,7 @@ describe('AuthStatus', () => {
   // half of the fix (the drawer's own is in AppNavBar.test.tsx).
   it('lists Chat in the account menu for every logged-in user', async () => {
     renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: 'a', name: 'Ada' }} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Account menu for Ada' }));
+    fireEvent.click(screen.getByRole('button', { name: 'AD, account menu for Ada' }));
     // `hidden: true` -- same as AccountMenu.test.tsx's own `menuItem`
     // helper: Mantine's dropdown content can be aria-hidden mid-transition.
     expect(await screen.findByRole('menuitem', { name: 'Ask about trains', hidden: true })).toHaveAttribute(

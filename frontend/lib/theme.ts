@@ -69,7 +69,27 @@ import { createTheme, defaultVariantColorsResolver, type VariantColorsResolver }
  * blindness entirely. Confirmed live in both schemes against the Task 6
  * preview route before this fix (dark gray/blue both black, 1.83:1/4.18:1)
  * and after (white, 11.51:1/5.02:1) -- see the plan's Task 6 report. */
-const SCHEME_BLIND_FILLED_COLORS = new Set(['gray', 'blue']);
+const SCHEME_BLIND_FILLED_COLORS = new Set(['gray', 'blue', 'pink', 'indigo']);
+// Pink and indigo were added later, for the same reason measured the same
+// way: shade 6 takes black (pink 5.63:1, indigo 4.86:1), but black on
+// shade 8, the dark scheme's fill, is 3.71:1 for both, a fail. White on
+// shade 8 is 5.66:1 (pink) and 5.67:1 (indigo). Nothing renders them
+// filled today; listing them means the first thing that does is right.
+
+/** Filled red, the confirm button of every delete, remove and leave flow
+ * (`ConfirmActionButton`), paints app-owned tokens rather than Mantine's
+ * `--mantine-color-red-filled` with an `autoContrast` label. That pairing
+ * was black on red 6 in light (6.39:1 but APCA Lc 45) and black on red 8
+ * in dark (4.65:1, Lc 34): passing WCAG 2, read poorly, the same defect the
+ * severity `StatusBadge` had. The tokens (`app/globals.css`, both scheme
+ * blocks) put white on red 9 #c92a2a in both schemes (5.46:1, Lc -81),
+ * hover #ad2424 (6.87:1, Lc -87). `--mantine-color-red-filled` itself is
+ * left alone: other things read it as a colour, not a button fill. */
+const FILLED_RED = {
+  background: 'var(--ds-filled-red-fill)',
+  hover: 'var(--ds-filled-red-fill-hover)',
+  color: 'var(--ds-filled-red-text)',
+} as const;
 
 /** Pins filled grape surfaces to white text, overriding `autoContrast`
  * for this one colour.
@@ -86,10 +106,10 @@ const SCHEME_BLIND_FILLED_COLORS = new Set(['gray', 'blue']);
  * (the dark scheme's filled shade, not overridden) is 5.82:1, so pinning
  * white is correct in both schemes.
  *
- * Also pins gray/blue filled surfaces via `light-dark()` -- see
- * `SCHEME_BLIND_FILLED_COLORS` above for why. Every other colour keeps
- * going through plain `autoContrast`, which is what fixes the red delete
- * buttons.
+ * Also pins gray/blue/pink/indigo filled surfaces via `light-dark()` --
+ * see `SCHEME_BLIND_FILLED_COLORS` above for why -- and sends filled red to
+ * its own tokens (`FILLED_RED` above). Every other colour keeps going
+ * through plain `autoContrast`.
  *
  * The severity `StatusBadge` no longer goes through any of this: it paints
  * its own `--ds-status-badge-*` fill and label tokens (`app/globals.css`).
@@ -100,6 +120,9 @@ const variantColorResolver: VariantColorsResolver = (input) => {
   const resolved = defaultVariantColorsResolver(input);
   if (input.color === 'grape' && input.variant === 'filled') {
     return { ...resolved, color: 'var(--mantine-color-white)' };
+  }
+  if (input.color === 'red' && input.variant === 'filled') {
+    return { ...resolved, ...FILLED_RED };
   }
   if (SCHEME_BLIND_FILLED_COLORS.has(input.color ?? '') && input.variant === 'filled') {
     return { ...resolved, color: 'light-dark(var(--mantine-color-black), var(--mantine-color-white))' };
@@ -197,6 +220,21 @@ export const theme = createTheme({
   // site and a new badge's author chooses it rather than inheriting
   // whatever the theme happens to say.
   components: {
+    // Tooltips open on keyboard focus as well as hover, app-wide. Mantine's
+    // default is `{ hover: true, focus: false, touch: false }`, so a
+    // keyboard user tabbing onto a tooltipped control never opened it, and
+    // the trigger only gets `aria-describedby` (floating-ui's
+    // `useRole({ role: 'tooltip' })`, in Mantine's `use-tooltip`) while the
+    // tooltip is open: the label was neither seen nor announced. Focus
+    // opening is `visibleOnly`, so a click's focus doesn't pop it. Touch
+    // stays off by default; the tooltips whose text is the only place a
+    // fact lives (`LastUpdated`, `DataFreshnessInfo`, `AiGeneratedBadge`)
+    // still turn it on themselves. `components/Tooltip.test.tsx` pins it.
+    Tooltip: {
+      defaultProps: {
+        events: { hover: true, focus: true, touch: false },
+      },
+    },
     Modal: {
       defaultProps: {
         closeButtonProps: { 'aria-label': 'Close' },
