@@ -51,6 +51,28 @@ docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md §2.
   `940GZZLUODS` is one Northern line transfer leg (`access.end:
   "destination"`), not a train via Moorgate and a walk.
 
+## 2026-10-24: a second transit network, `net` (dark)
+
+Additive, and nothing changes until it is switched on: `net`, Nottingham
+Express Transit, is a network id the `/public/transit/{network}/...` routes
+can serve once `API_TRANSIT_NETWORKS` lists it (empty in production; see
+docs/superpowers/specs/2026-10-24-nottingham-net-design.md). The routes and
+bodies are Metrolink's, with these differences a client may see:
+
+- Line ids are `net:1` and `net:2` (local ids `1` and `2`), stops NET's
+  NaPTAN codes (`9400ZZNONOT`, Nottingham Station).
+- Its lines' `status.state` is always `none`: no source publishes NET's
+  disruptions, so `/transit/net/situations` is empty and stops carry no
+  notices. Boards are scheduled only (`"realtime": false`), as Metrolink's.
+- `/transit/networks` and `/transit/net` carry its `attribution`:
+  "Contains public sector information licensed under the Open Government
+  Licence v3.0. Timetables: Traveline National Dataset (Traveline
+  Information Ltd). Stops: NaPTAN (Department for Transport)." Show it
+  with the data.
+- `/transit/rail-links?crs=NOT` (and `BLW`, `HKN`) gains NET's stop.
+
+**For ds-mcp:** nothing to change; a transit tool that lists
+`/transit/networks` will see `net` once it is on.
 ## 2026-10-24: Tube access legs charge a change between branches
 
 Additive fields, changed estimates. DS-MCP needs no change. See

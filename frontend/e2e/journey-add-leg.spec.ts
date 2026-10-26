@@ -155,8 +155,8 @@ async function openPrefilledAddLeg(page: Page) {
 
   await page.getByRole('button', { name: 'Add a leg' }).click();
   const dialog = page.getByRole('dialog', { name: 'Add a leg to this journey' });
-  // Pre-filled from leg 1's destination.
-  await expect(dialog.getByRole('combobox', { name: 'From station' })).toHaveValue('EUS');
+  // Pre-filled from leg 1's destination, shown by name.
+  await expect(dialog.getByRole('combobox', { name: 'From station' })).toHaveValue('London Euston (EUS)');
   return dialog;
 }
 
@@ -221,7 +221,7 @@ test.describe('add a leg', () => {
     await page.getByRole('button', { name: 'Add a leg' }).click();
     const dialog = page.getByRole('dialog', { name: 'Add a leg to this journey' });
     await expect(dialog.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
-    await expect(dialog.getByRole('combobox', { name: 'From station' })).toHaveValue('EUS');
+    await expect(dialog.getByRole('combobox', { name: 'From station' })).toHaveValue('London Euston (EUS)');
     await expect(dialog.getByLabel('Service date')).toHaveValue('22 Sep 2026');
     await expect(dialog.getByLabel('Earliest departure (optional)')).toHaveValue('09:16');
 
@@ -279,9 +279,9 @@ test.describe('add a leg', () => {
     const to = dialog.getByRole('combobox', { name: 'To station' });
     await to.fill('London Kings Cross');
     await expect(page.getByRole('option', { name: 'KGX · London Kings Cross' })).toBeVisible();
-    // Left as the typed name, without picking the suggestion.
+    // Leaving the field picks the station the typed name matches exactly.
     await to.press('Tab');
-    await expect(to).toHaveValue('London Kings Cross');
+    await expect(to).toHaveValue('London Kings Cross (KGX)');
     await expect(dialog.getByText('Must be a 3-letter station code')).toHaveCount(0);
     await expect(dialog.getByText('Only trains reaching KGX at or after this time.')).toBeVisible();
 
@@ -299,7 +299,7 @@ test.describe('add a leg', () => {
     await expect(page.getByRole('option', { name: 'KGX · London Kings Cross' })).toBeVisible();
     await to.press('ArrowDown');
     await to.press('Enter');
-    await expect(to).toHaveValue('KGX');
+    await expect(to).toHaveValue('London Kings Cross (KGX)');
 
     await dialog.getByRole('button', { name: 'Add leg' }).click();
     await expect.poll(() => legBodies.length).toBe(1);
@@ -313,7 +313,10 @@ test.describe('add a leg', () => {
     const to = dialog.getByRole('combobox', { name: 'To station' });
     await to.fill('kgx');
     await to.press('Tab');
+    await expect(to).toHaveValue('London Kings Cross (KGX)');
+    await expect(dialog.getByRole('button', { name: 'Clear To station' })).toBeVisible();
     await expect(dialog.getByText('Must be a 3-letter station code')).toHaveCount(0);
+    // With a station picked: its clear button and live region included.
     const results = await new AxeBuilder({ page }).include('[role="dialog"]').analyze();
     expect(results.violations).toEqual([]);
 
