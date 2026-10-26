@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { afterAll, vi } from 'vitest';
+import { afterAll, afterEach, vi } from 'vitest';
 import { installTimerLeakGuard } from './test/timerLeakGuard';
 
 // The jsdom APIs polyfilled below, typed as possibly missing: lib.dom.d.ts
@@ -163,4 +163,13 @@ const timerLeakGuard = installTimerLeakGuard();
 afterAll(() => {
   if (vi.isFakeTimers()) return;
   timerLeakGuard.cancelPending();
+});
+
+// The code lookup fields' page-wide code -> label caches
+// (`lib/codeLabels.ts`) would otherwise carry one test's picks and lookups
+// into the next. Imported here, not at the top, so a test file's own
+// `vi.mock` of what it imports still applies.
+afterEach(async () => {
+  const { resetCodeLabels } = await import('./lib/codeLabels');
+  resetCodeLabels();
 });

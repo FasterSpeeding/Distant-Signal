@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Autocomplete, Button, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
+import { Alert, Button, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { DateInput } from '@/components/LazyDateFields';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
@@ -20,8 +20,8 @@ import {
 import type { NewJourneyLegRequest, AddJourneyLegResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { railCrsForStop, searchStations } from '@/lib/suggestions';
-import { useSuggestions } from '@/lib/useSuggestions';
-import { resolveStationCode, suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { resolveStationCode } from '@/lib/suggestionAutocomplete';
+import { StationField } from './StationField';
 
 type LegMode = NewJourneyLegRequest['mode'];
 
@@ -47,14 +47,13 @@ type LegMode = NewJourneyLegRequest['mode'];
  * to the backend, which does its own matching
  * (`POST /Journeys/{journeyId}/legs`, `mode: 'window'`).
  *
- * The two station fields are the site's standard station search (the same
- * `Autocomplete` + `useSuggestions(searchStations)` +
- * `suggestionAutocompleteProps` trio as `TrackTrainForm.tsx` and the
- * /stations lookup), so a station can be found by its code or its name.
- * They used to be bare code-only text inputs. The leg API takes CRS codes,
- * so each field's text goes through `resolveStationCode`: a picked
- * suggestion (which writes its code) or a typed code is used as is, and a
- * typed full name resolves to its station's code.
+ * The two station fields are the site's standard `StationField` (as in
+ * `TrackTrainForm.tsx` and the /stations lookup), so a station can be
+ * found by its code or its name, and shows its name once picked. They
+ * used to be bare code-only text inputs. The leg API takes CRS codes, so
+ * each field's value goes through `resolveStationCode`: a picked
+ * suggestion or a typed code (or a typed full name, which the field
+ * matches on blur) is its code.
  *
  * The service date and earliest departure are pre-filled the same way from
  * `priorArrival` (the previous leg's arrival at its destination, live when
@@ -149,14 +148,6 @@ export function AddJourneyLegButton({
   // that component's own doc comment. Tracked the same way
   // `TrackTrainForm.tsx`'s `windowIncompleteTimes` is, so a half-typed
   // bound blocks submission instead of silently vanishing from the request.
-  const { suggestions: originSuggestions, loading: originSuggestionsLoading } = useSuggestions(
-    originCrs,
-    searchStations,
-  );
-  const { suggestions: destinationSuggestions, loading: destinationSuggestionsLoading } = useSuggestions(
-    destinationCrs,
-    searchStations,
-  );
   // The "not a station" error waits for the field to lose focus: while
   // someone is still typing a name, it isn't a code yet, and that's fine.
   const [originTouched, setOriginTouched] = useState(false);
@@ -234,8 +225,8 @@ export function AddJourneyLegButton({
     open();
   }
 
-  const resolvedOrigin = resolveStationCode(originCrs, originSuggestions);
-  const resolvedDestination = resolveStationCode(destinationCrs, destinationSuggestions);
+  const resolvedOrigin = resolveStationCode(originCrs, []);
+  const resolvedDestination = resolveStationCode(destinationCrs, []);
 
   function currentRequest(): NewJourneyLegRequest | null {
     if (mode === 'untracked') return untrackedDraftRequest(untrackedDraft);
@@ -267,11 +258,9 @@ export function AddJourneyLegButton({
   const originCrsValid = resolvedOrigin !== null;
   const destinationCrsValid = resolvedDestination !== null;
   const originError =
-    originTouched && originCrs.trim().length > 0 && !originCrsValid && !originSuggestionsLoading
-      ? 'Must be a 3-letter station code'
-      : null;
+    originTouched && originCrs.trim().length > 0 && !originCrsValid ? 'Must be a 3-letter station code' : null;
   const destinationError =
-    destinationTouched && destinationCrs.trim().length > 0 && !destinationCrsValid && !destinationSuggestionsLoading
+    destinationTouched && destinationCrs.trim().length > 0 && !destinationCrsValid
       ? 'Must be a 3-letter station code'
       : null;
 
@@ -377,30 +366,20 @@ export function AddJourneyLegButton({
           )}
           {mode === 'window' && (
             <>
-              <Autocomplete
+              <StationField
                 label="From station"
                 placeholder="e.g. Woking or WOK"
                 value={originCrs}
                 onChange={setOriginCrs}
                 onBlur={() => setOriginTouched(true)}
-                {...suggestionAutocompleteProps(originSuggestions, {
-                  query: originCrs,
-                  loading: originSuggestionsLoading,
-                  noMatchMessage: 'No matching stations',
-                })}
                 error={originError}
               />
-              <Autocomplete
+              <StationField
                 label="To station"
                 placeholder="e.g. London Waterloo or WAT"
                 value={destinationCrs}
                 onChange={setDestinationCrs}
                 onBlur={() => setDestinationTouched(true)}
-                {...suggestionAutocompleteProps(destinationSuggestions, {
-                  query: destinationCrs,
-                  loading: destinationSuggestionsLoading,
-                  noMatchMessage: 'No matching stations',
-                })}
                 error={destinationError}
               />
               {/* Review §2.2/I17: same fix as `TrackTrainForm`'s own window

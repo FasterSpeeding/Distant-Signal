@@ -104,8 +104,8 @@ export interface TripPlanQuery {
  * them as a disabled control, not a 400. */
 export const MAX_VIAS = 3;
 export const MAX_AVOIDED = 8;
-export const MAX_CHANGES_LIMIT = 6;
-export const DEFAULT_MAX_CHANGES = 2;
+export const MAX_CHANGES_LIMIT = 12;
+export const DEFAULT_MAX_CHANGES = 4;
 
 /** The advanced options the planner form groups behind its "Advanced"
  * disclosure. */

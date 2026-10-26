@@ -28,7 +28,10 @@ export const revalidate = 0;
 const METADATA_TITLE = 'Incidents';
 const METADATA_DESCRIPTION = 'Search National Rail incident messages by operator, line and date.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, {
+  ...OWN_PREVIEW_IMAGE,
+  path: '/incidents',
+});
 
 /** `/incidents` -- the cross-network incident archive/search page. See
  * docs/superpowers/specs/2026-09-12-incident-archive-design.md. Thin

@@ -6,7 +6,7 @@ import { TransitAttributionNote } from '@/components/TransitAttributionNote';
 import { TransitLineTimetable } from '@/components/TransitLineTimetable';
 import { getTransitLine, getTransitLineTimetable, getTransitNetwork } from '@/lib/api';
 import { formatDate } from '@/lib/dateFormat';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { orNotFound, TRANSIT_ID } from '@/lib/transit';
 import type { TransitDirection } from '@/lib/types';
 
@@ -63,7 +63,10 @@ async function load(network: string, line: string) {
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { network, line } = await params;
   const [, lineDetail] = await load(network, line);
-  return pageMetadata(`${lineDetail.name} timetable`, `Scheduled ${lineDetail.name} tram times, stop by stop.`);
+  return pageMetadata(`${lineDetail.name} timetable`, `Scheduled ${lineDetail.name} tram times, stop by stop.`, {
+    path: `/transit/${encodeURIComponent(network)}/lines/${encodeURIComponent(line)}/timetable`,
+    imageAlt: previewImageAlt(`${lineDetail.name} timetable`),
+  });
 }
 
 /** `/transit/[network]/lines/[line]/timetable`: one direction's scheduled

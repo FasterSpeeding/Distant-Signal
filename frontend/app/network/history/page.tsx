@@ -34,6 +34,8 @@ async function resolveRetention(): Promise<{
 export const metadata: Metadata = pageMetadata(
   'Network history',
   'Delays and cancellations across every National Rail line, day by day.',
+  // A date-range view: worth following, not worth indexing.
+  { noindex: true },
 );
 
 export default async function NetworkHistoryPage({

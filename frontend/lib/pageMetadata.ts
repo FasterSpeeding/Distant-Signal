@@ -35,31 +35,91 @@ export const PREVIEW_IMAGE = {
  * Next fills in the route's own. An explicit image would win over it. */
 export const OWN_PREVIEW_IMAGE = { ownPreviewImage: true } as const;
 
+/** `robots` for a public page that is worth following but not worth
+ * indexing (a train on one day, one incident, a history range): crawlers
+ * may fetch it and follow its links, so it must stay out of robots.txt's
+ * `Disallow`, or they would never see this tag. */
+export const NOINDEX_FOLLOW = { index: false, follow: true } as const;
+
+/** `path` reduced to the bare path a search engine should index: no query
+ * string or fragment and no trailing slash (but `/` stays `/`). Every query
+ * variant of a page (`/lines/x?dir=up`, `/incidents?severity=...`) names
+ * the same canonical. Percent-encoding is kept as given. */
+export function canonicalPath(path: string): string {
+  const bare = path.split(/[?#]/, 1)[0] ?? '';
+  const withSlash = bare.startsWith('/') ? bare : `/${bare}`;
+  const trimmed = withSlash.replace(/\/+$/, '');
+  return trimmed === '' ? '/' : trimmed;
+}
+
+export interface PreviewCardOptions {
+  /** See `OWN_PREVIEW_IMAGE`. */
+  ownPreviewImage?: boolean;
+  /** The page's path, as `og:url`; the root layout's `metadataBase` makes
+   * it absolute. */
+  path?: string;
+  /** Alt text for the site-wide preview image naming the page's subject
+   * (`Bank on Distant Signal`); default `PREVIEW_IMAGE.alt`. A route with
+   * its own image sets its alt in its `opengraph-image.tsx`. */
+  imageAlt?: string;
+}
+
 /** The Open Graph and Twitter cards for a preview titled `title` (as
  * shown, site name included) and described by `description`. */
 export function previewCards(
   title: string,
   description: string,
-  { ownPreviewImage = false }: { ownPreviewImage?: boolean } = {},
+  { ownPreviewImage = false, path, imageAlt }: PreviewCardOptions = {},
 ): Pick<Metadata, 'openGraph' | 'twitter'> {
-  const openGraph = { title, description, type: 'website', siteName: SITE_NAME } as const;
+  const openGraph = {
+    title,
+    description,
+    type: 'website',
+    siteName: SITE_NAME,
+    ...(path === undefined ? {} : { url: canonicalPath(path) }),
+  } as const;
   const twitter = { card: 'summary_large_image', title, description } as const;
   if (ownPreviewImage) return { openGraph, twitter };
+  if (imageAlt === undefined) {
+    return {
+      openGraph: { ...openGraph, images: [PREVIEW_IMAGE] },
+      twitter: { ...twitter, images: [PREVIEW_IMAGE.url] },
+    };
+  }
   return {
-    openGraph: { ...openGraph, images: [PREVIEW_IMAGE] },
-    twitter: { ...twitter, images: [PREVIEW_IMAGE.url] },
+    openGraph: { ...openGraph, images: [{ ...PREVIEW_IMAGE, alt: imageAlt }] },
+    twitter: { ...twitter, images: [{ url: PREVIEW_IMAGE.url, alt: imageAlt }] },
   };
+}
+
+/** The alt text of a page's preview image: what the page is about, on
+ * Distant Signal. */
+export function previewImageAlt(subject: string): string {
+  return `${subject} on ${SITE_NAME}`;
+}
+
+export interface PageMetadataOptions extends PreviewCardOptions {
+  /** Mark the page `noindex, follow` (`NOINDEX_FOLLOW`). */
+  noindex?: boolean;
 }
 
 /** A page's title, description and link-preview cards. `title` is the
  * page's own name (its h1); the root template adds the site name. Pass
- * `OWN_PREVIEW_IMAGE` from a route that has its own `opengraph-image.tsx`. */
-export function pageMetadata(
-  title: string,
-  description: string,
-  options: { ownPreviewImage?: boolean } = {},
-): Metadata {
-  return { title, description, ...previewCards(fullTitle(title), description, options) };
+ * `OWN_PREVIEW_IMAGE` from a route that has its own `opengraph-image.tsx`.
+ *
+ * `path` (`/stations/EUS`, no query) becomes the canonical URL
+ * (`alternates.canonical`) and `og:url`, both made absolute by the root
+ * layout's `metadataBase`. Every indexable public page passes it, so each
+ * query-string variant of a page names the bare path as its canonical. */
+export function pageMetadata(title: string, description: string, options: PageMetadataOptions = {}): Metadata {
+  const { noindex = false, ...cardOptions } = options;
+  return {
+    title,
+    description,
+    ...(options.path === undefined ? {} : { alternates: { canonical: canonicalPath(options.path) } }),
+    ...(noindex ? { robots: NOINDEX_FOLLOW } : {}),
+    ...previewCards(fullTitle(title), description, cardOptions),
+  };
 }
 
 /** Keeps a title that already names the site (the legal pages' "Terms of

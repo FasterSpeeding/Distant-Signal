@@ -34,7 +34,10 @@ import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 const METADATA_TITLE = 'Stations';
 const METADATA_DESCRIPTION = 'Look up a UK station for disruptions, departures, delays and accessibility.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, {
+  ...OWN_PREVIEW_IMAGE,
+  path: '/stations',
+});
 
 /** review §3.5.13: the plan's own cheapest option for a page that was
  * otherwise empty below the search form -- a handful of major termini as

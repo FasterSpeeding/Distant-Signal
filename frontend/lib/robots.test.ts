@@ -91,10 +91,22 @@ describe('buildRobots', () => {
     expect(text).not.toContain('undefined');
   });
 
-  it('emits Host from the configured origin, and no Sitemap while the app has none', () => {
-    const text = render({ origin: 'https://ds.example' });
+  it('emits Host and no Sitemap when the sitemap path is cleared', () => {
+    const text = render({ origin: 'https://ds.example', sitemapPath: null });
     expect(text).toMatch(/^Host: https:\/\/ds\.example$/m);
     expect(text).not.toMatch(/^Sitemap:/m);
+  });
+
+  it("advertises the app's own sitemap by default", () => {
+    const text = render({ origin: 'https://ds.example' });
+    expect(text).toMatch(/^Sitemap: https:\/\/ds\.example\/sitemap\.xml$/m);
+  });
+
+  it('never disallows the noindex pages, so crawlers can read their robots tag', () => {
+    const text = render({ origin: 'https://ds.example' });
+    for (const path of ['/train/', '/incidents/', '/network/history', '/lines/']) {
+      expect(text).not.toMatch(new RegExp(`^Disallow: ${path}$`, 'm'));
+    }
   });
 
   it('emits an absolute Sitemap line when a sitemap path and origin are both set', () => {

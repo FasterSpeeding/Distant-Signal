@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { fireEvent, screen } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { stationNamesFetch } from '@/test/stationNames';
 import TrainsPage, { metadata } from './page';
 import * as api from '@/lib/api';
 import { nowInLondon } from '@/lib/londonWallClock';
@@ -75,17 +76,31 @@ describe('TrainsPage', () => {
     expect(screen.getByRole('combobox', { name: 'Station' })).toBeInTheDocument();
   });
 
-  it('pre-fills the station, origin and stops_at from the query string, uppercased', async () => {
+  it('pre-fills the station, origin and stops_at from the query string, shown by name', async () => {
+    vi.mocked(fetch).mockImplementation(
+      stationNamesFetch({ MAN: 'Manchester Piccadilly', EUS: 'London Euston', WAT: 'London Waterloo' }, (url) =>
+        url.startsWith('/api/trains/search')
+          ? new Response(JSON.stringify({ results: [], nextCursor: null }), { status: 200 })
+          : new Response('[]', { status: 200 }),
+      ),
+    );
     renderWithMantine(
       await TrainsPage({
         searchParams: searchParams({ station: 'man', origin: 'eus', stops_at: 'wat' }),
       }),
     );
+    // The uppercased code at once, then the station's name.
     expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('Manchester Piccadilly (MAN)'),
+    );
     // A URL with a station opens on the compact bar: the rest is in Filters.
     fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
-    expect(screen.getByRole('combobox', { name: 'Departing from (optional)' })).toHaveValue('EUS');
-    expect(screen.getByRole('combobox', { name: 'Stops at (optional)' })).toHaveValue('WAT');
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Departing from (optional)' })).toHaveValue('London Euston (EUS)'),
+    );
+    expect(screen.getByRole('combobox', { name: 'Stops at (optional)' })).toHaveValue('London Waterloo (WAT)');
+    vi.mocked(fetch).mockImplementation(async () => new Response('[]', { status: 200 }));
   });
 
   it('uses the first value when stops_at is repeated in the query string', async () => {
