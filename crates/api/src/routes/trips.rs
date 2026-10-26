@@ -924,9 +924,7 @@ async fn load_access_ends(
     origin: &str,
     destination: &str,
 ) -> Result<Option<tfl_access::AccessEnds>, (StatusCode, String)> {
-    let origin_stop = tfl_access::is_tfl_stop_id(origin).then_some(origin);
-    let destination_stop = tfl_access::is_tfl_stop_id(destination).then_some(destination);
-    if origin_stop.is_none() && destination_stop.is_none() {
+    if !tfl_access::is_tfl_stop_id(origin) && !tfl_access::is_tfl_stop_id(destination) {
         return Ok(None);
     }
     if origin == destination {
@@ -935,7 +933,7 @@ async fn load_access_ends(
             "origin and destination must differ".to_string(),
         ));
     }
-    tfl_access::load_access(&app.database, origin_stop, destination_stop)
+    tfl_access::load_access(&app.database, origin, destination)
         .await
         .map_err(internal_error("read the TfL stops"))?
         .map(Some)

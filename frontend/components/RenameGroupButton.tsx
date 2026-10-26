@@ -104,7 +104,6 @@ export function RenameGroupButton({ groupId, currentName }: { groupId: string; c
             <Button
               type="submit"
               disabled={name.trim().length === 0 || submitting}
-              aria-label="Confirm rename group"
               leftSection={submitting ? <ButtonSpinner /> : undefined}
             >
               {submitting ? 'Saving' : 'Save'}
