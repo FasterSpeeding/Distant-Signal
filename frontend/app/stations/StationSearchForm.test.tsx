@@ -31,6 +31,12 @@ function renderWithProvider() {
   return renderWithMantine(<StationSearchForm />);
 }
 
+/** The pending look-up's status region (the field has a status region of
+ * its own, for what was picked). */
+function lookupStatus() {
+  return screen.queryAllByRole('status').find((el) => el.textContent.includes('Looking up'));
+}
+
 describe('StationSearchForm', () => {
   beforeEach(() => {
     pushMock.mockClear();
@@ -46,7 +52,7 @@ describe('StationSearchForm', () => {
     vi.unstubAllGlobals();
   });
 
-  it('selecting a suggestion sets the field to just the CRS code, not "code · name"', async () => {
+  it('selecting a suggestion shows the station by name and code, not "code · name"', async () => {
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Station name or code' });
 
@@ -65,7 +71,7 @@ describe('StationSearchForm', () => {
     const option = await screen.findByRole('option', { name: 'WOK · Woking', hidden: true });
     fireEvent.click(option);
 
-    expect(input).toHaveValue('WOK');
+    expect(input).toHaveValue('Woking (WOK)');
   });
 
   it('shows the matching option in the dropdown when searching by station name, not just by code', async () => {
@@ -172,7 +178,7 @@ describe('StationSearchForm', () => {
     fireEvent.change(input, { target: { value: 'WOK' } });
 
     expect(screen.getByRole('button', { name: 'Look up' })).toBeEnabled();
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(lookupStatus()).toBeUndefined();
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
@@ -190,7 +196,7 @@ describe('StationSearchForm', () => {
     // feedback for where the user is actually looking.
     // ...and says so in words (visible and announced), not just as bare
     // skeleton boxes.
-    const status = screen.getByRole('status');
+    const status = lookupStatus();
     expect(status).toHaveTextContent('Looking up disruptions');
     expect(status).toHaveAttribute('aria-busy', 'true');
 
@@ -199,7 +205,7 @@ describe('StationSearchForm', () => {
     });
 
     expect(screen.getByRole('button', { name: 'Look up' })).toBeEnabled();
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(lookupStatus()).toBeUndefined();
   });
 
   it('does not enter the pending state for a blank CRS code', async () => {
@@ -213,7 +219,7 @@ describe('StationSearchForm', () => {
 
     expect(pushMock).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Look up' })).toBeDisabled();
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(lookupStatus()).toBeUndefined();
   });
 
   // "Near me" -- see StationSearchForm's own doc comments on `NearbyState`/
