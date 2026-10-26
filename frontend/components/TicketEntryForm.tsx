@@ -2,14 +2,13 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Autocomplete, Button, Group, Stack, Tabs, TextInput, Text } from '@mantine/core';
+import { Alert, Button, Group, Stack, Tabs, TextInput, Text } from '@mantine/core';
 import { Dropzone, PDF_MIME_TYPE } from '@mantine/dropzone';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import { TextLink } from './TextLink';
-import { searchStations, searchTocs } from '@/lib/suggestions';
-import { useSuggestions } from '@/lib/useSuggestions';
-import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { StationField } from './StationField';
+import { OperatorField } from './OperatorField';
 import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSource } from '@/lib/types';
 import { failureFromResponse } from '@/lib/failure';
 import { ButtonSpinner } from '@/components/LoadingText';
@@ -128,24 +127,9 @@ export function TicketEntryForm({
   const originValid = originCrs.trim() === '' || CRS_PATTERN.test(originCrs.trim());
   const destinationValid = destinationCrs.trim() === '' || CRS_PATTERN.test(destinationCrs.trim());
 
-  // Same station/operator `Autocomplete` pattern `TrackTrainForm.tsx` uses
-  // (Task 3.6.4) -- one shared suggestion source (`searchStations`/
-  // `searchTocs`) and the same "CODE · Name" `renderOption`, instead of
-  // this form's own bare CRS-code `TextInput`s, which never told a user
-  // typing a station or operator name (rather than its code) that a match
-  // existed.
-  const { suggestions: originSuggestions, loading: originSuggestionsLoading } = useSuggestions(
-    originCrs,
-    searchStations,
-  );
-  const { suggestions: destinationSuggestions, loading: destinationSuggestionsLoading } = useSuggestions(
-    destinationCrs,
-    searchStations,
-  );
-  const { suggestions: operatorSuggestions, loading: operatorSuggestionsLoading } = useSuggestions(
-    operator,
-    searchTocs,
-  );
+  // The same `StationField`/`OperatorField` as `TrackTrainForm.tsx`
+  // (Task 3.6.4): a search by name or code, showing the picked name,
+  // instead of this form's old bare station-code `TextInput`s.
 
   // The flat `Train/tickets...` family when there's no tracked train yet
   // (a STANDALONE ticket), the existing `Train/{trackingId}/tickets...`
@@ -460,7 +444,7 @@ export function TicketEntryForm({
               for its (also optional) Destination/Operator fields (Task
               3.6.4). */}
           <Stack gap="sm">
-            <Autocomplete
+            <OperatorField
               label="Operator (optional)"
               placeholder="e.g. South Western Railway or SW"
               value={operator}
@@ -468,11 +452,6 @@ export function TicketEntryForm({
                 setOperator(value);
                 clearAutoFilled('operator');
               }}
-              {...suggestionAutocompleteProps(operatorSuggestions, {
-                query: operator,
-                loading: operatorSuggestionsLoading,
-                noMatchMessage: 'No matching operators',
-              })}
               description={autoFilled.has('operator') ? 'Auto-filled. Check this value.' : undefined}
             />
             <TextInput
@@ -485,7 +464,7 @@ export function TicketEntryForm({
               }}
               description={autoFilled.has('ticketType') ? 'Auto-filled. Check this value.' : undefined}
             />
-            <Autocomplete
+            <StationField
               label="Origin station (optional)"
               placeholder="e.g. Woking or WOK"
               value={originCrs}
@@ -493,17 +472,12 @@ export function TicketEntryForm({
                 setOriginCrs(value);
                 clearAutoFilled('originCrs');
               }}
-              {...suggestionAutocompleteProps(originSuggestions, {
-                query: originCrs,
-                loading: originSuggestionsLoading,
-                noMatchMessage: 'No matching stations',
-              })}
               error={!originValid ? 'Must be a 3-letter station code' : null}
               description={
                 autoFilled.has('originCrs') ? 'Filled in from your ticket. Check it is a real station code.' : undefined
               }
             />
-            <Autocomplete
+            <StationField
               label="Destination station (optional)"
               placeholder="e.g. Woking or WOK"
               value={destinationCrs}
@@ -511,11 +485,6 @@ export function TicketEntryForm({
                 setDestinationCrs(value);
                 clearAutoFilled('destinationCrs');
               }}
-              {...suggestionAutocompleteProps(destinationSuggestions, {
-                query: destinationCrs,
-                loading: destinationSuggestionsLoading,
-                noMatchMessage: 'No matching stations',
-              })}
               error={!destinationValid ? 'Must be a 3-letter station code' : null}
               description={
                 autoFilled.has('destinationCrs')

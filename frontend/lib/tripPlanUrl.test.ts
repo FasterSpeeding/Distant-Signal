@@ -60,6 +60,22 @@ describe('planPageSearch / parsePlanSearchParams', () => {
     expect(parsePlanSearchParams(toRaw(search)).maxChanges).toBe(0);
   });
 
+  it('keeps a two-digit maxChanges up to the API ceiling of 12', () => {
+    for (const maxChanges of [10, 12]) {
+      const search = planPageSearch({
+        originCrs: 'EUS',
+        destinationCrs: 'MKC',
+        waypointCrs: [],
+        date: '2026-10-08',
+        results: 'options',
+        maxChanges,
+      });
+      expect(parsePlanSearchParams(toRaw(search)).maxChanges).toBe(maxChanges);
+    }
+    expect(parsePlanSearchParams({ maxChanges: '13' }).maxChanges).toBeUndefined();
+    expect(parsePlanSearchParams({ maxChanges: '012' }).maxChanges).toBeUndefined();
+  });
+
   it('drops malformed values instead of passing them to the API', () => {
     expect(
       parsePlanSearchParams({
@@ -68,7 +84,7 @@ describe('planPageSearch / parsePlanSearchParams', () => {
         date: 'tomorrow',
         departAfter: '25:00',
         results: 'all',
-        maxChanges: '7',
+        maxChanges: '13',
         via: 'ZZZZ',
         avoid: '',
       }),

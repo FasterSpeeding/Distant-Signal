@@ -2,26 +2,14 @@
 
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  Alert,
-  Autocomplete,
-  Button,
-  Chip,
-  Group,
-  SegmentedControl,
-  Stack,
-  Switch,
-  Text,
-  TextInput,
-} from '@mantine/core';
+import { Alert, Button, Chip, Group, SegmentedControl, Stack, Switch, Text, TextInput } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginControl } from './LoginControl';
 import { TimeFilterInput } from './TimeFilterInput';
 import type { JourneyTemplateDetail, PutJourneyTemplateRequest, TemplateLegRequest } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
-import { searchStations } from '@/lib/suggestions';
-import { useSuggestions } from '@/lib/useSuggestions';
-import { resolveStationCode, suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { resolveStationCode } from '@/lib/suggestionAutocomplete';
+import { StationField } from './StationField';
 
 interface EditableLeg {
   // A stable, position-independent identity for this leg -- used for React
@@ -41,7 +29,7 @@ interface EditableLeg {
   destinationCrs: string;
   // The CRS each station field's text stands for (`resolveStationCode`),
   // or `null` while it stands for none. Reported by that leg's
-  // `StationField` once its suggestions arrive; this, not the text, is
+  // `LegStationField` as its text changes; this, not the text, is
   // what Save sends.
   originResolved: string | null;
   destinationResolved: string | null;
@@ -86,16 +74,13 @@ const NO_INCOMPLETE_TIMES: LegIncompleteFlags = {
   arriveTo: false,
 };
 
-/** One leg's From or To field: the site's standard station search (the
- * same `Autocomplete` + `useSuggestions(searchStations)` +
- * `suggestionAutocompleteProps` trio as `AddJourneyLegButton.tsx`), so a
- * station can be found by its code or its name. Its own component because
- * each field needs its own `useSuggestions`, and the form has as many legs
- * as the template does. Reports the CRS its text resolves to
- * (`resolveStationCode`) through `onResolvedChange`, since the template
- * API takes codes: a picked suggestion or a typed code as is, a typed full
- * name as its station's code. */
-function StationField({
+/** One leg's From or To field: the site's standard `StationField`, so a
+ * station can be found by its code or its name and shows its name once
+ * picked. Reports the code it holds (`resolveStationCode`) through
+ * `onResolvedChange`, since the template API takes codes: a picked
+ * suggestion, a typed code, or a typed full name the field matched on
+ * blur. */
+function LegStationField({
   label,
   placeholder,
   value,
@@ -108,31 +93,24 @@ function StationField({
   onChange: (value: string) => void;
   onResolvedChange: (code: string | null) => void;
 }) {
-  const { suggestions, loading } = useSuggestions(value, searchStations);
   // The "not a station" error waits for the field to lose focus: while
   // someone is still typing a name, it isn't a code yet, and that's fine.
   const [touched, setTouched] = useState(false);
-  const resolved = resolveStationCode(value, suggestions);
+  const resolved = resolveStationCode(value, []);
   const reportResolved = useEffectEvent((code: string | null) => onResolvedChange(code));
   useEffect(() => {
     reportResolved(resolved);
   }, [resolved]);
 
-  const error =
-    touched && value.trim().length > 0 && resolved === null && !loading ? 'Must be a 3-letter station code' : null;
+  const error = touched && value.trim().length > 0 && resolved === null ? 'Must be a 3-letter station code' : null;
 
   return (
-    <Autocomplete
+    <StationField
       label={label}
       placeholder={placeholder}
       value={value}
       onChange={onChange}
       onBlur={() => setTouched(true)}
-      {...suggestionAutocompleteProps(suggestions, {
-        query: value,
-        loading,
-        noMatchMessage: 'No matching stations',
-      })}
       error={error}
     />
   );
@@ -393,14 +371,14 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
             )}
           </Group>
           <Group grow align="flex-start">
-            <StationField
+            <LegStationField
               label="From station"
               placeholder="e.g. Woking or WOK"
               value={leg.originCrs}
               onChange={(value) => updateLeg(leg.key, { originCrs: value })}
               onResolvedChange={(code) => setLegResolved(leg.key, 'originResolved', code)}
             />
-            <StationField
+            <LegStationField
               label="To station"
               placeholder="e.g. London Waterloo or WAT"
               value={leg.destinationCrs}

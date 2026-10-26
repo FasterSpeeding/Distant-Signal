@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { stationNamesFetch } from '@/test/stationNames';
 import TrackPage, { metadata } from './page';
 // Namespace import alongside the named one purely so the "no
 // generateMetadata export" case below can test the module's shape -- same
@@ -72,6 +73,7 @@ describe('TrackPage', () => {
   });
 
   it('pre-fills destination and window bounds for ?mode=window&destination=&departAfter=...', async () => {
+    vi.mocked(fetch).mockImplementation(stationNamesFetch({ WAT: 'London Waterloo', RDG: 'Reading' }));
     renderWithMantine(
       await TrackPage({
         searchParams: Promise.resolve({
@@ -97,11 +99,16 @@ describe('TrackPage', () => {
     // four time bounds use `getByLabelText` with their exact accessible
     // names, confirmed reliable on these `TimeInput` fields elsewhere in
     // that same suite.
-    expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toHaveValue('RDG');
+    // By name once looked up (`StationField`); the form holds `RDG`.
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toHaveValue('Reading (RDG)'),
+    );
+    expect(screen.getByRole('combobox', { name: /Origin station/ })).toHaveValue('London Waterloo (WAT)');
     expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('08:00');
     expect(screen.getByLabelText('Latest departure (optional)')).toHaveValue('09:00');
     expect(screen.getByLabelText('Earliest arrival (optional)')).toHaveValue('11:00');
     expect(screen.getByLabelText('Latest arrival (optional)')).toHaveValue('10:00');
+    vi.mocked(fetch).mockImplementation(async () => new Response('[]', { status: 200 }));
   });
 
   it('pre-fills the pin-mode destination for a plain ?destination= with no ?mode=', async () => {
