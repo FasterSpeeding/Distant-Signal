@@ -3,6 +3,24 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-26: `results=fastest` takes the fewest changes on a tie
+
+Changed plans, no new fields. DS-MCP needs no change.
+
+- `departAfter`: of the itineraries arriving earliest, `/Trips/plan` now
+  returns the one with the fewest changes, then the one leaving latest,
+  then the one walking least. It used to return whichever it found first,
+  often with more changes than needed (6 where 4 arrive as early). The
+  arrival time is never later than before; `changes` can be lower, the
+  legs and departure can differ, and `exceedsRecommendedChanges` is set
+  less often.
+- `arriveBy`: of the itineraries leaving latest, the one with the fewest
+  changes, then the earliest-arriving. It used to be the earliest-arriving
+  one, so an answer can now arrive later (never after `arriveBy`) when
+  that saves a change. The departure is unchanged.
+- `results=options`, and `results=fastest` with `waypoints` or `via`, are
+  unchanged.
+
 ## 2026-10-24: a TfL stop with its own station gets rides too
 
 Changed candidates and plans, no new fields. DS-MCP needs no change. See

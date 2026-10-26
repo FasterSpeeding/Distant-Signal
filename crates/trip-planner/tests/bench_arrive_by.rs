@@ -1256,3 +1256,120 @@ fn bench_live_overlay() {
         );
     }
 }
+
+/// This thread's CPU time so far, from `/proc/thread-self/schedstat` (the
+/// first field, nanoseconds on a CPU). Unlike wall time, it does not grow
+/// while the thread waits for a CPU on a loaded machine.
+#[expect(
+    clippy::unwrap_used,
+    reason = "bench code: Linux only; an unreadable schedstat should stop the bench"
+)]
+fn thread_cpu() -> Duration {
+    let text = std::fs::read_to_string("/proc/thread-self/schedstat").unwrap();
+    Duration::from_nanos(text.split_whitespace().next().unwrap().parse().unwrap())
+}
+
+/// `results=fastest` (CSA depart-after 08:00 and arrive-by 12:00) over 40
+/// random pairs, with no fixed links and with the synthetic ones indexed
+/// both ways, in CPU time: per repetition, the CPU time of all 40 queries,
+/// then the median over `DS_BENCH_REPS` repetitions (default 9). Also the
+/// total changes of the answers, which a fewer-changes tie-break lowers
+/// without moving any arrival (also printed, as a checksum). For an
+/// instruction count, run it once under `valgrind --tool=callgrind` with
+/// `DS_BENCH_REPS=1`.
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn bench_fastest_cpu() {
+    let reps: usize = std::env::var("DS_BENCH_REPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(9);
+    let (connections, plain, both_ways) = {
+        let (connections, _, both_ways) = link_indexes();
+        let (_, plain) = network();
+        (connections, plain, both_ways)
+    };
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    let mut rng = Rng(0xfa57);
+    let pairs: Vec<(Vec<String>, Vec<String>)> = (0..40)
+        .map(|_| {
+            (
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+            )
+        })
+        .collect();
+    let changes = |legs: &[trip_planner::JourneyLeg]| {
+        legs.iter()
+            .filter(|leg| matches!(leg, trip_planner::JourneyLeg::Train(_)))
+            .count()
+            .saturating_sub(1)
+    };
+    for (name, interchange) in [("no links", &plain), ("links both ways", &both_ways)] {
+        let depart = || {
+            let (mut arrivals, mut total) = (0u64, 0usize);
+            for (from, to) in &pairs {
+                if let Some(journey) = scan_connections_restricted(
+                    ScanOptions {
+                        connections: &connections,
+                        interchange,
+                        from_tiplocs: from,
+                        to_tiplocs: to,
+                        departure_min: 480,
+                        date,
+                    },
+                    None,
+                    None,
+                ) {
+                    arrivals += u64::from(journey.arrival_min);
+                    total += changes(&journey.legs);
+                }
+            }
+            (arrivals, total)
+        };
+        let arrive = || {
+            let (mut departures, mut total) = (0u64, 0usize);
+            for (from, to) in &pairs {
+                if let Some(journey) = scan_connections_arrive_by(
+                    ArriveByOptions {
+                        connections: &connections,
+                        interchange,
+                        from_tiplocs: from,
+                        waypoints: &[],
+                        to_tiplocs: to,
+                        vias: None,
+                        arrive_by_min: 720,
+                        date,
+                    },
+                    None,
+                    None,
+                ) {
+                    departures += u64::from(journey.departure_min);
+                    total += changes(&journey.legs);
+                }
+            }
+            (departures, total)
+        };
+        let measure = |f: &dyn Fn() -> (u64, usize)| {
+            let mut samples = Vec::new();
+            let mut result = (0, 0);
+            for _ in 0..reps {
+                let started = thread_cpu();
+                result = f();
+                samples.push(thread_cpu().saturating_sub(started));
+            }
+            samples.sort();
+            (samples[samples.len() / 2], samples[0], result)
+        };
+        for (label, f) in [
+            ("csa depart 08:00", &depart as &dyn Fn() -> (u64, usize)),
+            ("csa arriveBy 12:00", &arrive),
+        ] {
+            let (median, min, (times, total)) = measure(f);
+            println!(
+                "{name:16} {label:20} cpu median {median:>9.2?} min {min:>9.2?} \
+                 (40 queries; time checksum {times}, total changes {total})"
+            );
+        }
+    }
+}
