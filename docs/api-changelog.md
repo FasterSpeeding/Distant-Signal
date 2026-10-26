@@ -71,6 +71,19 @@ docs/superpowers/specs/2026-10-24-trips-plan-max-changes-12-design.md.
 
 DS-MCP: its own default of 4 now matches DS. Its schema's ceiling of 24
 is above DS's 12; values 13 to 24 are a 400 from DS.
+
+## 2026-10-26: station code and TfL stop id lists
+
+Additive: two new public, unauthenticated routes for the web app's
+`/sitemap.xml`. Nothing existing changes. DS-MCP needs no change.
+
+- **New: `GET /public/stations/codes`**: `{"codes": ["AAP", ...]}`, every
+  station's CRS code, sorted. Just the codes; names come from
+  `GET /public/stations?q=`.
+- **New: `GET /public/tfl/stops/ids`**: `{"ids": ["940GZZLUEUS", ...]}`,
+  every TfL Tube, DLR and tram stop id, sorted (empty until the TfL stops
+  job has run).
+- Both send `Cache-Control: public, max-age=3600` and are not rate limited.
 ## 2026-10-24: Tube access legs charge a change between branches
 
 Additive fields, changed estimates. DS-MCP needs no change. See

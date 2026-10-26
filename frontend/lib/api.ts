@@ -1341,6 +1341,29 @@ export async function getTflStop(id: string): Promise<TflStopDetail> {
   });
 }
 
+// --- The sitemap's lists (`app/sitemap.ts`). Public, identical for every
+// caller, so no session cookie is forwarded, and cached for `revalidate`
+// seconds in Next's data cache: a crawler fetching the sitemap costs the api
+// nothing between refreshes.
+
+/** `GET /public/stations/codes`: every station's CRS code. */
+export async function getStationCodes(revalidate: number): Promise<string[]> {
+  const body = await fetchJson<{ codes: string[] }>(`${baseUrl()}/public/stations/codes`, { next: { revalidate } });
+  return body.codes;
+}
+
+/** `GET /public/tfl/stops/ids`: every TfL Tube, DLR and tram stop id. */
+export async function getTflStopIds(revalidate: number): Promise<string[]> {
+  const body = await fetchJson<{ ids: string[] }>(`${baseUrl()}/public/tfl/stops/ids`, { next: { revalidate } });
+  return body.ids;
+}
+
+/** `GET /public/lines` as an anonymous caller: the catalogue and TfL lines,
+ * never anyone's custom line. */
+export async function getPublicLines(revalidate: number): Promise<LineSummary[]> {
+  return fetchJson<LineSummary[]>(`${baseUrl()}/public/lines`, { next: { revalidate } });
+}
+
 /** `GET /public/tfl/stops/{id}/arrivals`: TfL's live predictions, by line
  * and platform. Live, so never cached here (the api keeps each stop's
  * answer for about 30 s); `ApiUnavailableError` when TfL can't be

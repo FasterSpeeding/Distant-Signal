@@ -9,7 +9,7 @@ import { StopRailLinks } from '@/components/TransitRailLinks';
 import { TransitStopBoard } from '@/components/TransitStopBoard';
 import { getTransitDepartures, getTransitNetwork, getTransitStop } from '@/lib/api';
 import { formatDate } from '@/lib/dateFormat';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { localLineId, orNotFound, TRANSIT_ID, TRANSIT_STOP_ID } from '@/lib/transit';
 
 interface Params {
@@ -41,7 +41,11 @@ async function load(network: string, stop: string) {
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { network, stop } = await params;
   const [detail, stopDetail] = await load(network, stop);
-  return pageMetadata(`${stopDetail.name}, ${detail.name}`, `Scheduled tram departures from ${stopDetail.name}.`);
+  const title = `${stopDetail.name}, ${detail.name}`;
+  return pageMetadata(title, `Scheduled tram departures from ${stopDetail.name}.`, {
+    path: `/transit/${encodeURIComponent(network)}/stops/${encodeURIComponent(stop)}`,
+    imageAlt: previewImageAlt(title),
+  });
 }
 
 /** `/transit/[network]/stops/[stop]`: a tram stop's scheduled departures
