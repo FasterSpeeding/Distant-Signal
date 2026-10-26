@@ -349,7 +349,7 @@ jobs:
       # first #[ignore]d tests in this repo needing a live Redis rather than
       # a live Postgres -- mirrors the postgres: block above exactly.
       redis:
-        image: redis:7@sha256:44960b3100c48159a66d28c18b0588c193492e25f7551d60e51dd464fc3eca5b
+        image: redis:8@sha256:0a014ae5c04f55c82aaad2314de411c7a203de1c4312c3e526939226a0185dd9
         ports:
           - 6379:6379
         options: >-
@@ -728,7 +728,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7@sha256:44960b3100c48159a66d28c18b0588c193492e25f7551d60e51dd464fc3eca5b
+        image: redis:8@sha256:0a014ae5c04f55c82aaad2314de411c7a203de1c4312c3e526939226a0185dd9
         ports:
           - 6379:6379
         options: >-
