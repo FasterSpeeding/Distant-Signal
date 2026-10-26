@@ -11,7 +11,6 @@ import {
   VisuallyHidden,
 } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
-import { changedFromPlatform } from '@/lib/platformLabel';
 import { DelayBadge } from './DelayBadge';
 import { PhoneLabel } from './PhoneLabel';
 import { PlatformBadge } from './PlatformBadge';
@@ -484,7 +483,7 @@ function JourneyStopRow({
         <TableTd>
           <PlatformBadge
             platform={stop.platform}
-            plannedPlatform={changedFromPlatform(stop)}
+            plannedPlatform={stop.plannedPlatform}
             platformChanged={stop.platformChanged}
             platformStatus={stop.platformStatus}
             bookedPlatform={stop.bookedPlatform}

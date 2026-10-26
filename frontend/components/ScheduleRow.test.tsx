@@ -104,6 +104,17 @@ describe('ScheduleRow', () => {
     expect(screen.getByText('Platform 9 (changed from 6)')).toBeInTheDocument();
   });
 
+  // The same cancelled platform the calling-point table shows: a cancelled
+  // departure no longer calls at its platform.
+  it("strikes through a cancelled departure's platform and says so", () => {
+    renderWithMantine(
+      <ScheduleRow row={row({ isCancelled: true, platform: '6', plannedPlatform: '6', platformChanged: false })} />,
+    );
+    const badge = document.querySelector('[data-platform-badge]');
+    expect(badge).toHaveAttribute('data-platform-state', 'cancelled');
+    expect(badge).toHaveTextContent('Platform 6 (cancelled)');
+  });
+
   it('shows no platform badge at all when the platform is unknown', () => {
     renderWithMantine(<ScheduleRow row={row({ platform: null })} />);
     expect(screen.queryByText(/Platform/)).not.toBeInTheDocument();
