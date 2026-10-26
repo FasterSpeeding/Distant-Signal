@@ -205,7 +205,8 @@ no client is ever given. So no service can authenticate as `default`, and
 the old shared `redis.auth` password no longer works.
 
 **Why not `"off"`.** Prod ran with `defaultUser: "off"` on 2026-10-09 and
-found that Redis 7.4 ACL-checks the MULTI/EXEC blocks it replays from the
+found that Redis 7.4 (and Valkey 8.1, which shares this code) ACL-checks
+the MULTI/EXEC blocks it replays from the
 AOF at startup as the `default` user. That replay comes from the fake AOF
 client, which is hard-wired to `default`. With `default` off, it rejected
 them: ACL LOG showed about 82k `xclaim` and 18k `xgroup|setid` entries in
