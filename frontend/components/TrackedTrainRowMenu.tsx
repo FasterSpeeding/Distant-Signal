@@ -63,7 +63,10 @@ export function TrackedTrainRowMenu({
         </Menu.Target>
         <Menu.Dropdown>
           <Menu.Item onClick={() => renameRef.current?.open()}>Rename</Menu.Item>
-          <Menu.Item color="red" onClick={() => deleteRef.current?.open()}>
+          {/* The menu's danger token, not `color="red"`: Mantine paints a
+              bare theme colour at shade 6 in both schemes, 3.28:1 on the
+              white dropdown (app/globals.css, `--ds-menu-danger-text`). */}
+          <Menu.Item color="var(--ds-menu-danger-text)" onClick={() => deleteRef.current?.open()}>
             Stop tracking
           </Menu.Item>
         </Menu.Dropdown>
