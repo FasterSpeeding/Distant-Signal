@@ -529,6 +529,19 @@ test.describe('accessibility: interactive sub-states', () => {
     await expectNoViolations(page);
   });
 
+  test('/track, a station picked in a station field', async ({ page }) => {
+    // The field shows the station by name with its clear button, and its
+    // live region says what was picked.
+    await page.goto('/track');
+    const origin = page.getByRole('combobox', { name: 'Origin station' });
+    await origin.fill(REAL_STATION_CRS);
+    await origin.press('Tab');
+    await expect(origin).toHaveValue(new RegExp(`\\(${REAL_STATION_CRS}\\)$`));
+    await expect(page.getByRole('button', { name: 'Clear Origin station' })).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: 'Origin station set to' })).toBeAttached();
+    await expectNoViolations(page);
+  });
+
   test('/lines/new, advanced options expanded', async ({ page }) => {
     await page.goto('/lines/new');
     await page.getByRole('button', { name: /Show advanced options/i }).click();

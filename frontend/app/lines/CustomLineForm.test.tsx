@@ -52,7 +52,7 @@ describe('CustomLineForm', () => {
     vi.unstubAllGlobals();
   });
 
-  it('selecting a station suggestion sets the Add station field to just the CRS code', async () => {
+  it('selecting a station suggestion shows it in the Add station field by name and code', async () => {
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Add station' });
 
@@ -65,7 +65,7 @@ describe('CustomLineForm', () => {
     const option = await screen.findByRole('option', { name: 'WOK · Woking', hidden: true });
     fireEvent.click(option);
 
-    expect(input).toHaveValue('WOK');
+    expect(input).toHaveValue('Woking (WOK)');
   });
 
   // Mirrors `StationSearchForm`'s own name-vs-code resolution test: typing
@@ -86,8 +86,8 @@ describe('CustomLineForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     // Task 3.4.4: the chip is now numbered by travel order -- the first
-    // station added is "1 WOK", not a bare "WOK".
-    expect(screen.getByText('1 WOK')).toBeInTheDocument();
+    // station added is "1 Woking (WOK)", by name and code.
+    expect(screen.getByText('1 Woking (WOK)')).toBeInTheDocument();
     expect(input).toHaveValue('');
   });
 
@@ -129,16 +129,13 @@ describe('CustomLineForm', () => {
   it('the station chip close button is explicitly white, not the default grey, for WCAG 1.4.11 contrast', async () => {
     renderWithProvider({ existingLine });
 
-    const closeButton = screen.getByRole('button', { name: 'Remove WOK' });
+    const closeButton = await screen.findByRole('button', { name: 'Remove Woking (WOK)' });
     expect(closeButton).toHaveStyle({ color: 'var(--mantine-color-white)' });
   });
 
-  it('the committed station chip carries the resolved name as a title tooltip', async () => {
-    // The chip keeps its bare code (space is at a premium in this compact
-    // list) but gains a `title=` tooltip carrying the full name -- the
-    // same tactic the operator pill already uses above. `nameByCode`
-    // already holds the answer from the suggestions fetch, so this is a
-    // pure-frontend fix with no backend dependency.
+  it('the committed station chip shows the station by name and code', async () => {
+    // `Name (CODE)` (docs/style-guide.md), from the label the field
+    // already learnt from its suggestions.
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Add station' });
 
@@ -152,8 +149,8 @@ describe('CustomLineForm', () => {
     fireEvent.click(option);
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    const chip = screen.getByText('1 WOK').closest('[title]');
-    expect(chip).toHaveAttribute('title', 'Woking');
+    expect(screen.getByText('1 Woking (WOK)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove Woking (WOK)' })).toBeInTheDocument();
   });
 
   // Clicking Add after typing a station name -- without picking the
@@ -173,7 +170,7 @@ describe('CustomLineForm', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(screen.getByText('1 WOK')).toBeInTheDocument();
+    expect(screen.getByText('1 Woking (WOK)')).toBeInTheDocument();
     expect(input).toHaveValue('');
   });
 
@@ -184,7 +181,8 @@ describe('CustomLineForm', () => {
     fireEvent.change(input, { target: { value: 'wok' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(screen.getByText('1 WOK')).toBeInTheDocument();
+    // Named once its lookup comes back.
+    expect(await screen.findByText('1 Woking (WOK)')).toBeInTheDocument();
     expect(input).toHaveValue('');
   });
 
@@ -206,7 +204,7 @@ describe('CustomLineForm', () => {
 
     // `existingLine.stations` already contains 'WOK' -- still exactly one
     // WOK badge, not two.
-    expect(screen.getAllByText('1 WOK')).toHaveLength(1);
+    expect(await screen.findAllByText('1 Woking (WOK)')).toHaveLength(1);
   });
 
   // Typed text that resolves (via the raw-text fallback) to something
@@ -223,7 +221,7 @@ describe('CustomLineForm', () => {
     expect(screen.queryByRole('button', { name: 'Create line' })).toBeInTheDocument();
   });
 
-  it('selecting an operator suggestion adds just the ATOC code as a tag', async () => {
+  it('selecting an operator suggestion adds a tag showing the operator by name and code', async () => {
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Operators' });
 
@@ -236,11 +234,17 @@ describe('CustomLineForm', () => {
     const option = await screen.findByRole('option', { name: 'SW · South Western Railway', hidden: true });
     fireEvent.click(option);
 
-    expect(screen.getByText('SW')).toBeInTheDocument();
+    expect(screen.getByText('South Western Railway (SW)')).toBeInTheDocument();
     expect(screen.queryByText('SW · South Western Railway')).not.toBeInTheDocument();
   });
 
-  it('the committed operator pill carries the full name as a title tooltip', async () => {
+  it('a saved line shows its operators by name and code', async () => {
+    renderWithProvider({ existingLine: { ...existingLine, operators: ['SW'] } });
+
+    expect(await screen.findByText('South Western Railway (SW)')).toBeInTheDocument();
+  });
+
+  it('the committed operator pill keeps its code in the request', async () => {
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Operators' });
 
@@ -253,8 +257,16 @@ describe('CustomLineForm', () => {
     const option = await screen.findByRole('option', { name: 'SW · South Western Railway', hidden: true });
     fireEvent.click(option);
 
-    const pill = screen.getByText('SW').closest('[title]');
-    expect(pill).toHaveAttribute('title', 'South Western Railway');
+    expect(screen.getByText('South Western Railway (SW)')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Name', { exact: false }), { target: { value: 'My Commute' } });
+    const stationInput = screen.getByRole('combobox', { name: 'Add station' });
+    fireEvent.change(stationInput, { target: { value: 'WOK' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    fireEvent.change(stationInput, { target: { value: 'CLJ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create line' }));
+    const save = vi.mocked(fetch).mock.calls.find(([url]) => String(url) === '/api/lines');
+    expect(JSON.parse(String(save?.[1]?.body))).toMatchObject({ operators: ['SW'], stations: ['WOK', 'CLJ'] });
   });
 
   it('renders no Cancel action when no cancelHref is given', () => {
