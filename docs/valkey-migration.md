@@ -81,8 +81,14 @@ consumers, delivery counts), `XINFO CONSUMERS`, a hash of every stream's
 
 The DS Redis-backed tests passed against `valkey/valkey:8.1.10`
 (`common --test redis_acl`, `ingest-stream --test redis_stream`,
-`movement-feed`, `enricher stream::`), and `AUTH default <anything>` on a
-`nopass` default user returned OK, as on Redis 7.4.
+`movement-feed`, `ingest-writer` and `enricher`, all `--ignored`; re-run
+2026-10-27 after the `darwin-relay` and `poller-transit-net` users
+landed), and `AUTH default <anything>` on a `nopass` default user returned
+OK, as on Redis 7.4. The chart's ACL file with every `optional` user on
+(19 users) loads in Valkey 8.1.10 when the redis-acl initContainer's own
+awk fills it in the Valkey image, the `exec` probe (`redis-cli --user
+ds-admin ping`) answers, and each new producer user can XADD only to its
+own stream.
 
 Surprises:
 
@@ -172,8 +178,10 @@ removing this pin.
 5. Disk: `$R df -h /data` and `$R du -sh /data/appendonlydir`. Free space
    must be at least 1.5 times `used_memory` (`$CLI INFO memory`), about
    1.3 GB for 862 MB.
-6. ACL: `$CLI ACL USERS | wc -l` (17) and `$CLI ACL LOG 5` (note what is
-   there; it should not grow).
+6. ACL: `$CLI ACL USERS | wc -l` (17 on 2026-10-26; one more for each of
+   the `optional` users `darwin-relay` and `poller-transit-net` whose
+   client is on by then) and `$CLI ACL LOG 5` (note what is there; it
+   should not grow).
 7. Copy of the AOF (read-only, to the operator's machine):
    ```sh
    $R tar cf - -C /data appendonlydir > appendonlydir-pre-valkey-$(date +%F).tar
@@ -229,7 +237,7 @@ restarted since, check the manifest again first.
    there with a last-delivered-id and entries-read no lower than before
    (traffic continued); `pending` lower only by the step 1.4 count; lag
    back near its usual size within minutes.
-4. `$CLI ACL USERS | wc -l` is 17, and `$CLI ACL LOG 5` has nothing new
+4. `$CLI ACL USERS | wc -l` matches the pre-check, and `$CLI ACL LOG 5` has nothing new
    (no `context multi` entries).
 5. Every client is back: `$CLI CLIENT LIST | grep -o 'user=[^ ]*' | sort | uniq -c`
    shows each client user and no `user=default`; the consumers' and
