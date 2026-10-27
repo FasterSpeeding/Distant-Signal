@@ -235,6 +235,7 @@ mod tests {
                 public_departure: at,
                 ..StopTimetable::default()
             },
+            platform_evidence: None,
         }
     }
 
