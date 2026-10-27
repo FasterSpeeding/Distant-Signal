@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { HalfHourlyTrendsResults, toHalfHourlyChartPoints } from './HalfHourlyTrendsResults';
@@ -64,6 +64,12 @@ function halfHourlyRow(overrides: Partial<LineHalfHourlyStats> = {}): LineHalfHo
   };
 }
 
+// TrendsCharts loads its Recharts half on demand (next/dynamic); load it once
+// up front so the first chart assertion isn't timed against a cold import.
+beforeAll(async () => {
+  await import('@/app/lines/[id]/history/TrendsChartParts');
+});
+
 describe('toHalfHourlyChartPoints', () => {
   it('preserves a half hour at or above the sparse-data floor', () => {
     const stats = [halfHourlyRow({ sampleCycles: SPARSE_DATA_FLOOR_CYCLES_HALF_HOURLY })];
@@ -113,7 +119,7 @@ describe('HalfHourlyTrendsResults', () => {
       await HalfHourlyTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
 
-    const charts = screen.getAllByTestId('line-chart');
+    const charts = await screen.findAllByTestId('line-chart');
     const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
     expect(rateChart).toBeDefined();
     const points = JSON.parse(rateChart!.dataset.points as string);
@@ -135,7 +141,7 @@ describe('HalfHourlyTrendsResults', () => {
     );
 
     expect(screen.getByText(HONESTY_COPY.halfHour)).toBeInTheDocument();
-    expect(screen.getAllByTestId('line-chart')).toHaveLength(2);
+    expect(await screen.findAllByTestId('line-chart')).toHaveLength(2);
   });
 
   it('puts the fuller mechanical explanation behind a collapsed "How these rates are calculated" disclosure, matching TrendsResults.tsx', async () => {
@@ -182,7 +188,7 @@ describe('HalfHourlyTrendsResults', () => {
       await HalfHourlyTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
     expect(screen.getByRole('heading', { name: 'Trains counted' })).toBeInTheDocument();
-    const barChart = screen.getByTestId('bar-chart');
+    const barChart = await screen.findByTestId('bar-chart');
     const points = JSON.parse(barChart.dataset.points as string);
     expect(points[0].total).toBe(9);
   });
@@ -199,7 +205,7 @@ describe('HalfHourlyTrendsResults', () => {
     renderWithMantine(
       await HalfHourlyTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
-    const barChart = screen.getByTestId('bar-chart');
+    const barChart = await screen.findByTestId('bar-chart');
     const points = JSON.parse(barChart.dataset.points as string);
     const sparse = points.find((p: { bucketKey: string }) => p.bucketKey === '2026-08-31T13:30:00Z');
     expect(sparse.total).toBe(2);

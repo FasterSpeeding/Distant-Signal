@@ -40,6 +40,8 @@ vi.mock('@/lib/suggestions', () => ({
   getStationNames: async (codes: string[]) =>
     new Map(codes.flatMap((code) => (KNOWN_NAMES.has(code) ? [[code, KNOWN_NAMES.get(code)!] as const] : []))),
 }));
+// From and To also look up tram stations (`GET /api/transit/networks`).
+vi.mock('@/lib/plannerEnds', () => ({ searchPlannerEnds: async () => [] }));
 
 const plan: TripPlanResponse = {
   results: 'fastest',

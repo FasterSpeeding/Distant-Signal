@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, Modal, Stack } from '@mantine/core';
-import { DateInput } from '@mantine/dates';
+import { DateInput } from '@/components/LazyDateFields';
 import { useDisclosure } from '@mantine/hooks';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';

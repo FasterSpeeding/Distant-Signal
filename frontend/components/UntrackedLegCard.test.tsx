@@ -78,3 +78,51 @@ describe('UntrackedLegCard', () => {
     expect(screen.queryByRole('button', { name: /remove/i })).not.toBeInTheDocument();
   });
 });
+
+describe('UntrackedLegCard stop links', () => {
+  it("links a saved tram ride's Metrolink stations to their stop pages", () => {
+    renderWithMantine(
+      <UntrackedLegCard
+        journeyId={1}
+        leg={leg({
+          transitMode: 'tram',
+          lineName: 'Blue Line',
+          originName: 'Piccadilly',
+          destinationName: 'Victoria',
+          originStopId: '9400ZZMAPIC',
+          destinationStopId: '9400ZZMAVIC',
+        })}
+        isOwner={false}
+        isOnlyLeg={false}
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'Piccadilly' })).toHaveAttribute(
+      'href',
+      '/transit/metrolink/stops/9400ZZMAPIC',
+    );
+    expect(screen.getByRole('link', { name: 'Victoria' })).toHaveAttribute(
+      'href',
+      '/transit/metrolink/stops/9400ZZMAVIC',
+    );
+  });
+
+  it('links a London tram stop to its TfL stop page, and leaves a free-text place as text', () => {
+    renderWithMantine(
+      <UntrackedLegCard
+        journeyId={1}
+        leg={leg({
+          transitMode: 'tram',
+          lineName: null,
+          originName: 'Wimbledon',
+          destinationName: 'Home',
+          originStopId: '940GZZCRWMB',
+          destinationStopId: null,
+        })}
+        isOwner={false}
+        isOnlyLeg={false}
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'Wimbledon' })).toHaveAttribute('href', '/tfl/stops/940GZZCRWMB');
+    expect(screen.queryByRole('link', { name: 'Home' })).toBeNull();
+  });
+});

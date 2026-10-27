@@ -155,6 +155,9 @@ async fn server_main() -> anyhow::Result<()> {
     let app = AppState::init().await?;
     // CORPUS_FALLBACK_ENABLED (default off): see `data::corpus_crosswalk`.
     data::corpus_crosswalk::init_fallback_from_env()?;
+    // API_TRIP_PLAN_TRANSIT_NETWORKS (default empty): an unknown network
+    // fails startup. See `data::transit_planning`.
+    data::transit_planning::check_switch_from_env()?;
 
     // Permissive ORIGIN, deliberately non-credentialed. The four
     // line-status endpoints and /public/health are intentionally public.

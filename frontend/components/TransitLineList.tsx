@@ -1,7 +1,7 @@
-import { ColorSwatch, Group, Stack, Text } from '@mantine/core';
+import { Group, Stack, Text } from '@mantine/core';
 import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
+import { TransitLineSwatch } from '@/components/TransitLineSwatch';
 import { TransitStatusBadge } from '@/components/TransitStatusBadge';
-import { lineColour } from '@/lib/transit';
 import type { TransitLine, TransitLineStatus } from '@/lib/types';
 
 /** A network's lines as compact cards that wrap (seven Metrolink lines
@@ -20,7 +20,7 @@ export function TransitLineList({
         <ClickableCard key={line.id} padding="sm">
           <Stack gap={6} align="flex-start">
             <Group gap="xs" wrap="nowrap">
-              <ColorSwatch color={lineColour(line)} size={14} withShadow={false} aria-hidden="true" />
+              <TransitLineSwatch line={line} />
               <Text fw={600}>
                 <CardTitleLink href={`/transit/${network}/lines/${line.lineId}`}>{line.name}</CardTitleLink>
               </Text>

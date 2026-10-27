@@ -1,21 +1,37 @@
 'use client';
 
-import { BarChart, LineChart } from '@mantine/charts';
-import { Stack, Title, type TitleOrder } from '@mantine/core';
-import { ReferenceArea } from 'recharts';
+import dynamic from 'next/dynamic';
+import { Box, Stack, Title, type TitleOrder } from '@mantine/core';
+import type { ReactNode } from 'react';
 import {
   bucketTickLabel,
   bucketTooltipLabel,
   CHART_COLORS,
   CHART_CURVE,
-  CHART_GAP_FILL,
-  CHART_GAP_OPACITY,
   formatCount,
   formatMinutes,
   formatRate,
 } from '@/lib/chartTheme';
 import type { TrendGranularity } from '@/lib/history';
 import type { ChartPoint } from './chartPoint';
+import type { ChartGap } from './TrendsChartParts';
+
+// Recharts and `@mantine/charts` are a large chunk that only these charts
+// use, so they load on demand. Client-only (`ssr: false`): Recharts'
+// responsive container has no size to draw at on the server anyway.
+// `ChartSlot` holds each chart's height while the chunk loads, so nothing
+// below it moves when the chart appears.
+const TrendsBarChart = dynamic(() => import('./TrendsChartParts').then((m) => m.TrendsBarChart), {
+  ssr: false,
+});
+const TrendsLineChart = dynamic(() => import('./TrendsChartParts').then((m) => m.TrendsLineChart), {
+  ssr: false,
+});
+
+/** Reserves a chart's `h` before (and while) it renders. */
+function ChartSlot({ h, children }: { h: number; children: ReactNode }) {
+  return <Box mih={h}>{children}</Box>;
+}
 
 /** A contiguous run of one or more buckets where every rate/delay field is
  * `null` -- i.e. below the caller's own sparse-data floor (see
@@ -135,20 +151,10 @@ export function TrendsCharts({
   const tooltipProps = {
     labelFormatter: (label: unknown) => (typeof label === 'string' ? bucketTooltipLabel(granularity, label) : ''),
   };
-  const gapAreas = gapSpans(points).map((span) => {
-    const { x1, x2 } = referenceAreaBounds(span, points);
-    return (
-      <ReferenceArea
-        key={`${span.startKey}-${span.endKey}`}
-        x1={x1}
-        x2={x2}
-        fill={CHART_GAP_FILL}
-        fillOpacity={CHART_GAP_OPACITY}
-        stroke="none"
-        ifOverflow="visible"
-      />
-    );
-  });
+  const gaps: ChartGap[] = gapSpans(points).map((span) => ({
+    key: `${span.startKey}-${span.endKey}`,
+    ...referenceAreaBounds(span, points),
+  }));
 
   return (
     <>
@@ -166,15 +172,17 @@ export function TrendsCharts({
               never null for a bucket with a real row -- see this plan's
               "Judgment call" section for why a low bar for a sparse bucket
               is the informative signal, not something to hide. */}
-          <BarChart
-            h={180}
-            data={points}
-            dataKey="bucketKey"
-            series={[{ name: 'total', label: 'Trains counted', color: CHART_COLORS.count }]}
-            valueFormatter={formatCount}
-            xAxisProps={xAxisProps}
-            tooltipProps={tooltipProps}
-          />
+          <ChartSlot h={180}>
+            <TrendsBarChart
+              h={180}
+              data={points}
+              dataKey="bucketKey"
+              series={[{ name: 'total', label: 'Trains counted', color: CHART_COLORS.count }]}
+              valueFormatter={formatCount}
+              xAxisProps={xAxisProps}
+              tooltipProps={tooltipProps}
+            />
+          </ChartSlot>
         </Stack>
       )}
       <Stack gap={4}>
@@ -186,47 +194,49 @@ export function TrendsCharts({
             combined onto this chart or its axis -- see the second LineChart
             below, and the plan's Global Constraints. The dash patterns keep
             the three apart without relying on colour. */}
-        <LineChart
-          h={310}
-          data={points}
-          dataKey="bucketKey"
-          withLegend
-          curveType={CHART_CURVE}
-          series={[
-            { name: 'delayRate', label: 'Delay rate', color: CHART_COLORS.delay },
-            {
-              name: 'cancellationRate',
-              label: 'Cancellation rate',
-              color: CHART_COLORS.cancellation,
-              strokeDasharray: '6 4',
-            },
-            { name: 'skipRate', label: 'Skip rate', color: CHART_COLORS.skip, strokeDasharray: '2 3' },
-          ]}
-          valueFormatter={formatRate}
-          connectNulls={false}
-          xAxisProps={xAxisProps}
-          tooltipProps={tooltipProps}
-        >
-          {gapAreas}
-        </LineChart>
+        <ChartSlot h={310}>
+          <TrendsLineChart
+            h={310}
+            data={points}
+            dataKey="bucketKey"
+            withLegend
+            curveType={CHART_CURVE}
+            series={[
+              { name: 'delayRate', label: 'Delay rate', color: CHART_COLORS.delay },
+              {
+                name: 'cancellationRate',
+                label: 'Cancellation rate',
+                color: CHART_COLORS.cancellation,
+                strokeDasharray: '6 4',
+              },
+              { name: 'skipRate', label: 'Skip rate', color: CHART_COLORS.skip, strokeDasharray: '2 3' },
+            ]}
+            valueFormatter={formatRate}
+            connectNulls={false}
+            xAxisProps={xAxisProps}
+            tooltipProps={tooltipProps}
+            gaps={gaps}
+          />
+        </ChartSlot>
       </Stack>
       <Stack gap={4}>
         <Title order={order} size="h6">
           Average delay (minutes)
         </Title>
-        <LineChart
-          h={220}
-          data={points}
-          dataKey="bucketKey"
-          curveType={CHART_CURVE}
-          series={[{ name: 'avgDelayMinutes', label: 'Average delay', color: CHART_COLORS.delay }]}
-          valueFormatter={formatMinutes}
-          connectNulls={false}
-          xAxisProps={xAxisProps}
-          tooltipProps={tooltipProps}
-        >
-          {gapAreas}
-        </LineChart>
+        <ChartSlot h={220}>
+          <TrendsLineChart
+            h={220}
+            data={points}
+            dataKey="bucketKey"
+            curveType={CHART_CURVE}
+            series={[{ name: 'avgDelayMinutes', label: 'Average delay', color: CHART_COLORS.delay }]}
+            valueFormatter={formatMinutes}
+            connectNulls={false}
+            xAxisProps={xAxisProps}
+            tooltipProps={tooltipProps}
+            gaps={gaps}
+          />
+        </ChartSlot>
       </Stack>
     </>
   );

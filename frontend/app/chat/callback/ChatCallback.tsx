@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, Loader, Group, Stack, Text, Title } from '@mantine/core';
-import { auth, type AuthResult } from '@modelcontextprotocol/sdk/client/auth.js';
+import type { AuthResult } from '@modelcontextprotocol/sdk/client/auth.js';
 import { chatOAuthProvider, startMcpSignIn } from '@/lib/mcpAuthorization';
 import { describeFailure } from '@/lib/failure';
 import { ButtonLink } from '@/components/ButtonLink';
@@ -91,7 +91,11 @@ function startExchange(serverUrl: string): Exchange {
     };
   }
 
-  return { kind: 'pending', promise: auth(provider, { serverUrl, authorizationCode: code }) };
+  // The MCP SDK is loaded on demand, so it stays out of this page's first load.
+  const promise = import('@modelcontextprotocol/sdk/client/auth.js').then(({ auth }) =>
+    auth(provider, { serverUrl, authorizationCode: code }),
+  );
+  return { kind: 'pending', promise };
 }
 
 type CallbackState = { kind: 'connecting' } | { kind: 'success' } | { kind: 'error'; message: string };
