@@ -159,6 +159,70 @@ are unchanged, but should prefer `cancellation` (DS-181; rules in
   reason code, are now kept (`train_reasons`), so reinstatement and
   location are known for them. Only messages processed after the deploy.
 
+## 2026-10-26: `platformBasis: "confirmed"` and `platformSuppressed` from the Darwin Push Port (DS-152)
+
+Additive. DS-MCP needs no change; it may show "confirmed". Pre-departure
+prediction phase 3 (docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md,
+section 6.2 item 4), off by default (`darwinRelay.enabled`).
+
+- On `JourneyStop` (tracked trains' journey legs, `GET /Train/{id}` and the
+  by-uid endpoint), `platform` can now come from the Darwin Push Port for
+  any stop of the train, terminating and set-down stops included, not
+  only from a station's departure board. A board row polled after
+  Darwin's last change that shows another platform still wins.
+- The operator's confirmation of that platform is one more source of
+  `platformBasis: "confirmed"`, beside the TRUST evidence (DS-180): the
+  same value, the same rule. `"board"` stays the value for a live,
+  unconfirmed one.
+- `platformChanged` compares that platform with `bookedPlatform` as before;
+  without a booked platform, with Darwin's planned one (`plannedPlatform`
+  falls back to it).
+- `platformStatus` is `"cancelled"` when Darwin cancelled the train's call
+  there.
+- New `platformSuppressed: boolean`: Darwin has a platform for this stop
+  but suppresses it from public display (as station screens do). That
+  platform is not served: `platform` stays as any board shows it and
+  `displayPlatform` falls back to the booked one. So a hidden platform and
+  one not yet allocated are told apart. `false` without Push Port data.
+
+## 2026-10-26: `predictedStart` prefers Darwin's next-working links; joins and divides cap it (DS-152)
+
+Additive; no new field. DS-MCP needs no change. Pre-departure prediction
+phases 2 and 3 (docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md,
+sections 3a and 4).
+
+- `predictedStart.previousWorking.link` (train level: `GET /Train/{id}`,
+  the by-uid endpoint and journey legs) may now be `"association"`: the
+  incoming train is Darwin's live next-working link for this train
+  (Darwin Push Port, off by default), which is preferred over the
+  timetable inference (`"inferred"`) whenever it exists. Clients that
+  ignore `link` keep working. An association link is never capped by
+  operator, so Thameslink and Chiltern trains can reach `high` on it.
+- An `"inferred"` link where either train joins or divides that day (a
+  timetable `JJ`/`VV` association) is capped at `confidence: "medium"`:
+  it is still shown with its minutes, but never `high`, so it never
+  pushes.
+
+## 2026-10-26: arrival boards give alighting stops a live platform (DS-152)
+
+Additive; no new field. DS-MCP needs no change. Pre-departure prediction
+phase 3 (docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md,
+section 6.2 item 3), off by default (`pollers.ldbws.trackedStopArrivals`).
+
+- On `JourneyStop` (tracked trains' journey legs, `GET /Train/{id}` and the
+  by-uid endpoint), a stop with a booked arrival where the train terminates
+  or only sets down (usually the user's destination) can now have a live
+  `platform`, `platformStatus` and `displayPlatform`, with `platformBasis:
+  "board"`: the platform from that station's LDBWS arrival board, polled
+  for the tracked train. Before, such a stop only ever had its booked
+  platform (`platformBasis: "booked"`), because departure boards never list
+  it.
+- Only a unique, fresh (at most 10 minutes old) match counts, by RSID and
+  booked arrival time (else operator, origin and time), as for departure
+  boards. A cancelled arrival keeps its platform with `platformStatus:
+  "cancelled"`. `platformChanged` compares it with `bookedPlatform`.
+  `board` (the departure board's row) is unchanged and stays `null` there.
+
 ## 2026-10-26: journey lists in one travel order, shared journeys merged in
 
 Additive parameter and fields; two lists change order. DS-MCP needs no

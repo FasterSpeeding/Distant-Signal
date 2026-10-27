@@ -91,6 +91,7 @@ SERVICES: Mapping[str, Sequence[str]] = {
     # writer-maintenance: the one-off ingest repairs moved out of the api
     # image (ingest phase 5 prep, Q2).
     "ingest-writer": ("ingest-writer", "writer-maintenance"),
+    "darwin-relay": ("darwin-relay",),
     "movement-relay": ("movement-relay",),
     "notifier": ("notifier",),
     "poller-incidents": ("poller-incidents",),

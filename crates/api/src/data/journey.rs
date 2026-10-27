@@ -499,7 +499,20 @@ pub async fn build_journey_stops_batch(
         trains.dedup();
         crate::data::stop_board::tracked_boards_for_trains(pool, &trains).await?
     };
-    let board_index = crate::data::stop_board::BoardIndex::with_tracked(&board_rows, &tracked_rows);
+    // And their alighting stops' arrival boards (DS-152).
+    let tracked_arrivals = {
+        let mut trains: Vec<(String, NaiveDate)> = requests
+            .iter()
+            .zip(&built)
+            .filter(|(_, stops)| matches!(stops, Ok(Some(_))))
+            .map(|(request, _)| (request.train_uid.to_string(), request.service_date))
+            .collect();
+        trains.sort();
+        trains.dedup();
+        crate::data::stop_board::tracked_arrivals_for_trains(pool, &trains).await?
+    };
+    let board_index = crate::data::stop_board::BoardIndex::with_tracked(&board_rows, &tracked_rows)
+        .with_tracked_arrivals(&tracked_arrivals);
     // The train's own RSID and operator, only when there is a board to
     // match against.
     let board_keys = if board_index.is_empty() {
@@ -527,6 +540,19 @@ pub async fn build_journey_stops_batch(
         trains.sort();
         trains.dedup();
         crate::data::platform_confirmation::previous_working_arrivals(pool, &trains).await?
+    };
+    // The Darwin Push Port's locations for these trains (DS-152); empty
+    // while darwin-relay is off.
+    let darwin_calls = {
+        let mut trains: Vec<(String, NaiveDate)> = requests
+            .iter()
+            .zip(&built)
+            .filter(|(_, stops)| matches!(stops, Ok(Some(_))))
+            .map(|(request, _)| (request.train_uid.to_string(), request.service_date))
+            .collect();
+        trains.sort();
+        trains.dedup();
+        ds_store::darwin::calls_for_trains(pool, &trains).await?
     };
     let now = Utc::now();
 
@@ -563,6 +589,14 @@ pub async fn build_journey_stops_batch(
             previous_working.get(&(request.train_uid.to_string(), request.service_date)),
             now,
         );
+        // The Push Port (DS-152): every stop Darwin knows, with its
+        // confirmed and suppressed flags. After the board match, whose
+        // older rows it replaces.
+        if let Some(calls) =
+            darwin_calls.get(&(request.train_uid.to_string(), request.service_date))
+        {
+            crate::data::pushport_platform::apply_pushport_platforms(stops, calls);
+        }
         apply_platform_basis(stops);
         match request.current_delay_minutes {
             Some(delay) => apply_delay_estimates(stops, Some(delay)),
@@ -1296,6 +1330,8 @@ const MAY_HAVE_ARRIVED_THRESHOLD: Duration = Duration::minutes(15);
 ///   (else the board's first-seen platform stays), so `platform_changed`
 ///   names the platform it changed from. See
 ///   `platform_confirmation`'s module doc for when evidence is set.
+///   The Darwin Push Port's confirmed flag (DS-152, `pushport_platform`)
+///   is one more evidence source.
 /// - Else a live `platform` is shown, on basis `board`.
 /// - Else the `booked_platform`, on basis `booked`: provisional, nothing
 ///   live has shown it.
@@ -1575,6 +1611,7 @@ pub(crate) mod test_support {
             platform_status: None,
             booked_platform: None,
             platform_basis: None,
+            platform_suppressed: false,
             display_platform: None,
             platform_evidence: None,
             live_status: None,
@@ -1619,6 +1656,7 @@ mod tests {
             platform_status: None,
             booked_platform: None,
             platform_basis: None,
+            platform_suppressed: false,
             display_platform: None,
             platform_evidence: None,
             live_status: None,

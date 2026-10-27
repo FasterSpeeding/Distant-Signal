@@ -773,8 +773,8 @@ export type PlatformStatus = 'active' | 'cancelled';
 // `booked`: only the timetable's platform is known, so it is provisional
 // ("booked, not confirmed"). `board`: a live departure board shows it (not
 // a confirmation: boards show the booked platform until it changes).
-// `confirmed` is reserved and not served yet. Render any other value as
-// `board`.
+// `confirmed`: the operator confirmed it (Darwin Push Port, DS-152). Render
+// any other value as `board`.
 export type PlatformBasis = 'booked' | 'board' | 'confirmed';
 
 /** `predictedStart.confidence`. `low` comes without a number. */
@@ -895,6 +895,10 @@ export interface JourneyStop {
   // What `displayPlatform` rests on (DS-127): `booked` marks a provisional
   // platform. Optional: older responses lack it.
   platformBasis?: PlatformBasis | null;
+  // DS-152: Darwin's Push Port has a platform for this stop but suppresses
+  // it from public display (not served; `displayPlatform` stays booked).
+  // Absent from older servers.
+  platformSuppressed?: boolean;
   // The platform to show: the live `platform` when known, else
   // `bookedPlatform` (DS-127). Optional: older responses lack it.
   displayPlatform?: string | null;

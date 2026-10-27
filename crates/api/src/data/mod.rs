@@ -34,6 +34,7 @@ pub mod notifications;
 pub mod operators;
 pub mod platform_confirmation;
 pub mod preferences;
+pub mod pushport_platform;
 pub mod queries;
 pub mod recently_cleared;
 pub mod reconciliation;

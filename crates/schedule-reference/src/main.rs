@@ -224,12 +224,20 @@ fn read_prefixed_lines_multi(path: &std::path::Path, prefixes: &[&str]) -> anyho
 /// prefix filter changed nothing but cost a copy. Line terminators are
 /// stripped exactly as `BufRead::lines` did (`\n`, then one `\r`), and a
 /// non-UTF-8 line is still an error for the whole read, as it was.
+///
+/// The same pass also collects the `AA` association records
+/// ([`schedule_query::AssociationIndex`], DS-152), which the schedule
+/// index ignores, so the file is still read once.
 fn build_schedule_index_from_file(
     path: &std::path::Path,
-) -> anyhow::Result<schedule_query::ScheduleIndex> {
+) -> anyhow::Result<(
+    schedule_query::ScheduleIndex,
+    schedule_query::AssociationIndex,
+)> {
     use std::io::BufRead;
     let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
     let mut builder = schedule_query::ScheduleIndexBuilder::default();
+    let mut associations = schedule_query::AssociationIndexBuilder::default();
     let mut line = String::new();
     loop {
         line.clear();
@@ -238,9 +246,13 @@ fn build_schedule_index_from_file(
         }
         let trimmed = line.strip_suffix('\n').unwrap_or(&line);
         let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
-        builder.push_line(trimmed);
+        if trimmed.starts_with("AA") {
+            associations.push_line(trimmed);
+        } else {
+            builder.push_line(trimmed);
+        }
     }
-    Ok(builder.finish())
+    Ok((builder.finish(), associations.finish()))
 }
 
 /// Every product one delivery's publish cycle is responsible for, and what
@@ -1321,8 +1333,8 @@ async fn publish_cif_derived_products(
 
     // Streamed straight off disk into the index -- see
     // `build_schedule_index_from_file` for the OOM this replaced.
-    let index = match build_schedule_index_from_file(mca_path) {
-        Ok(index) => index,
+    let (index, associations) = match build_schedule_index_from_file(mca_path) {
+        Ok(built) => built,
         Err(err) => {
             tracing::error!(error = ?err, "failed to read CIF SCHEDULE records from delivery; skipping this cycle's CIF-derived publishes");
             // Retryable, not permanent: a read of the read-only-mounted PVC
@@ -1420,6 +1432,9 @@ async fn publish_cif_derived_products(
         // Fifth: every schedule's service mode for the date, so `api` can
         // label buses and ferries (TRUST never reports them).
         publish_schedule_services(sink, config, &index, date, window_has_schedules, outcome).await;
+        // Sixth, best effort: the date's CIF joins and divides (DS-152),
+        // for the late-start prediction's cap. Never a tracked product.
+        publish_schedule_associations(sink, &associations, date).await;
     }
 }
 
@@ -2257,6 +2272,54 @@ async fn publish_schedule_services(
     match result {
         Ok(()) => outcome.succeeded(key),
         Err(err) => outcome.failed(key, &err),
+    }
+}
+
+/// The CIF associations in force on `date`
+/// ([`schedule_query::AssociationIndex::on_date`]) as `schedule_associations`
+/// rows.
+fn schedule_associations_rows(
+    associations: &schedule_query::AssociationIndex,
+    date: chrono::NaiveDate,
+) -> Vec<serde_json::Value> {
+    associations
+        .on_date(date)
+        .into_iter()
+        .map(|association| {
+            serde_json::json!({
+                "service_date": date,
+                "main_uid": association.main_uid,
+                "assoc_uid": association.assoc_uid,
+                "assoc_service_date": association.assoc_service_date,
+                "category": association.category.code(),
+                "tiploc": association.tiploc,
+            })
+        })
+        .collect()
+}
+
+/// Publishes [`schedule_associations_rows`] for `date`, best effort
+/// (DS-152): they only cap the late-start prediction, so a failure is
+/// logged and counted (the sink's `associations` operation) and never
+/// holds the delivery back; the date's old rows stay until the next
+/// publish. A delivery with no `AA` record at all publishes nothing,
+/// rather than clearing every date.
+async fn publish_schedule_associations(
+    sink: &impl PublishSink,
+    associations: &schedule_query::AssociationIndex,
+    date: chrono::NaiveDate,
+) {
+    if associations.is_empty() {
+        return;
+    }
+    let rows = schedule_associations_rows(associations, date);
+    match sink.associations(date, &rows).await {
+        Ok(()) => {
+            tracing::info!(%date, rows = rows.len(), "published schedule associations");
+        }
+        Err(err) => {
+            tracing::warn!(%date, error = %err, "could not publish schedule associations; the date keeps its previous ones");
+        }
     }
 }
 
@@ -5410,7 +5473,8 @@ mod schedule_index_from_file_tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(file.path(), lines.join("\r\n")).unwrap();
 
-        let streamed = build_schedule_index_from_file(file.path()).unwrap();
+        let (streamed, associations) = build_schedule_index_from_file(file.path()).unwrap();
+        assert!(associations.is_empty());
         let from_text = schedule_query::ScheduleIndex::from_text(&lines.join("\n"));
 
         let date = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
@@ -6092,6 +6156,14 @@ mod publish_memory_harness {
             ready(encode(rows))
         }
 
+        fn associations(
+            &self,
+            _service_date: chrono::NaiveDate,
+            rows: &[serde_json::Value],
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            ready(encode(rows))
+        }
+
         fn record_completed_publish(
             &self,
             _delivery: &str,
@@ -6159,5 +6231,79 @@ mod publish_memory_harness {
             mib(common::heap::resident_set_bytes()),
             rss_split()
         );
+    }
+}
+
+/// DS-152: the CIF associations publish, against the recording sink.
+#[cfg(test)]
+mod schedule_associations_tests {
+    use super::*;
+    use crate::sink::fake::{ASSOCIATIONS, Fail, FakePublishSink};
+
+    /// A synthetic `AA` line (join at `YORK`, every day of 2026-07).
+    fn aa_line(main: &str, assoc: &str, stp: char) -> String {
+        let mut line = format!("AAN{main}{assoc}2607012607311111111JJSYORK     TP");
+        while line.len() < 79 {
+            line.push(' ');
+        }
+        line.push(stp);
+        line
+    }
+
+    fn index(lines: &[String]) -> schedule_query::AssociationIndex {
+        let mut builder = schedule_query::AssociationIndexBuilder::default();
+        for line in lines {
+            builder.push_line(line);
+        }
+        builder.finish()
+    }
+
+    fn day() -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2026, 7, 10).expect("date")
+    }
+
+    #[tokio::test]
+    async fn a_dates_associations_are_published_as_rows() {
+        let sink = FakePublishSink::new();
+        publish_schedule_associations(&sink, &index(&[aa_line("M00001", "A00001", 'P')]), day())
+            .await;
+        let calls = sink.calls_to(ASSOCIATIONS);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].query, "service_date=2026-07-10");
+        assert_eq!(
+            calls[0].body,
+            serde_json::json!([{
+                "service_date": "2026-07-10",
+                "main_uid": "M00001",
+                "assoc_uid": "A00001",
+                "assoc_service_date": "2026-07-10",
+                "category": "JJ",
+                "tiploc": "YORK",
+            }])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_delivery_without_associations_publishes_nothing() {
+        let sink = FakePublishSink::new();
+        publish_schedule_associations(&sink, &index(&[]), day()).await;
+        assert_eq!(sink.count(ASSOCIATIONS), 0);
+    }
+
+    #[tokio::test]
+    async fn a_failed_publish_is_only_logged() {
+        let sink = FakePublishSink::new();
+        sink.fail(ASSOCIATIONS, 1, Fail::Transient);
+        publish_schedule_associations(&sink, &index(&[aa_line("M00001", "A00001", 'P')]), day())
+            .await;
+        assert_eq!(sink.count(ASSOCIATIONS), 1);
+    }
+
+    #[test]
+    fn the_streaming_read_collects_association_lines() {
+        let file = tempfile::NamedTempFile::new().expect("temp file");
+        std::fs::write(file.path(), aa_line("M00001", "A00001", 'P')).expect("write");
+        let (_, associations) = build_schedule_index_from_file(file.path()).expect("read");
+        assert_eq!(associations.on_date(day()).len(), 1);
     }
 }

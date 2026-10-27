@@ -14,6 +14,7 @@
 //! | `network_departures` | `post_schedule_network_departures` | `schedule::upsert_schedule_network_departures` |
 //! | `publish_part` | the two chunked routes and `ScheduleChunkParams` | `schedule::SchedulePublishPart`, `schedule::upsert_*_publish_part`, `schedule::finish_*_without_rows` |
 //! | `services` | `post_schedule_services` | `schedule::services::replace_for_date`, then `schedule::turnarounds::replace_inferred_for_date` (no api route; best effort) |
+//! | `associations` | none | `schedule::associations::replace_for_date` (DS-152; best effort, logged by the caller) |
 //! | `record_completed_publish`, `last_completed_publish` | `/schedule-reference-publishes` | `schedule::{insert,last_completed}_schedule_reference_publish` |
 //!
 //! The CIF-derived rows arrive as the JSON values the api's routes take and
@@ -33,7 +34,7 @@ use sqlx::PgPool;
 use super::{ChunkPart, DatedProduct, LinePopulation, PublishSink, SinkError};
 
 /// The `operation` labels this sink records.
-pub(crate) const OPERATIONS: [&str; 10] = [
+pub(crate) const OPERATIONS: [&str; 11] = [
     "stanox_crs",
     "tiploc_crs",
     "tiploc_locations",
@@ -43,6 +44,7 @@ pub(crate) const OPERATIONS: [&str; 10] = [
     "publish_part",
     "services",
     "turnarounds",
+    "associations",
     "publish_marker",
 ];
 
@@ -329,6 +331,21 @@ impl PublishSink for DbSink<'_> {
             // links and never fails the services product.
             refresh_turnarounds(&self.pool, service_date).await;
             Ok(())
+        })
+        .await
+    }
+
+    async fn associations(
+        &self,
+        service_date: chrono::NaiveDate,
+        rows: &[serde_json::Value],
+    ) -> Result<(), SinkError> {
+        timed("associations", async {
+            let rows: Vec<ds_store::schedule::associations::ScheduleAssociationRow> = typed(rows)?;
+            ds_store::schedule::associations::replace_for_date(&self.pool, service_date, &rows)
+                .await
+                .map(drop)
+                .map_err(db_error)
         })
         .await
     }
