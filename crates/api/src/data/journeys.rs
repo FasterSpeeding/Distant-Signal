@@ -4044,30 +4044,21 @@ mod db_tests {
         cleanup_user(&pool, "TEST-JOURNEY-COMMIT-SHARED").await;
     }
 
-    /// 2026-09-26 review, Medium finding 10: `set_leg_train_subscription`
-    /// ("Change train") deactivating an orphaned subscription is meant to
-    /// be scoped to the journey-leg context it was replacing, not a
-    /// permanent verdict on the underlying `(user_id, trains_id)` pin --
-    /// `train_tracking::create_subscription_for_train` is idempotent on
-    /// that exact key, so before this fix a disabled row, once created,
-    /// could never come back: ANY later, unrelated call for the same user
-    /// and the same physical train (a brand-new journey leg auto-matching
-    /// to it, a standalone "Track this train", a second journey) just
-    /// silently inherited the disabled row forever.
-    ///
-    /// Since DS-93 "Change train" deletes a leg-only old subscription
-    /// rather than disabling it, so nothing writes the flag any more; a row
-    /// disabled before that still exists, so this disables one directly
-    /// (as the old "Change train" left it), then calls
-    /// `create_subscription_for_train` directly for the SAME `(user_id,
-    /// trains_id)` -- exactly what a brand-new, unrelated journey/tracking
-    /// use case does -- and asserts it comes back re-enabled.
+    /// DS-153: a user's "off" for a train sticks. Before, any later call of
+    /// `train_tracking::create_subscription_for_train` for the same
+    /// `(user_id, trains_id)` (a brand-new journey leg auto-matching onto
+    /// it, a standalone "Track this train", a second journey) turned a
+    /// disabled row back on (2026-09-26 review, Medium finding 10, from
+    /// when "Change train" disabled orphaned rows). FALSE is now the user's
+    /// own choice (`PATCH /Train/{trackingId}`), so this turns the first
+    /// train off as the user would, re-establishes the same train through
+    /// another use, and asserts it is the same row, still off.
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                a_disabled_subscription_is_reactivated_by_a_later_unrelated_use -- --ignored \
+                a_disabled_subscription_stays_off_when_the_train_is_used_again -- --ignored \
                 --test-threads=1`"]
-    async fn a_disabled_subscription_is_reactivated_by_a_later_unrelated_use() {
+    async fn a_disabled_subscription_stays_off_when_the_train_is_used_again() {
         let pool = connect().await;
         let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-M10-REACTIVATE";
@@ -4106,8 +4097,8 @@ mod db_tests {
                 .expect("commit first pick")
         );
 
-        // A row the old "Change train" disabled: the leg moved to a
-        // different train, and this one was left unreferenced and off.
+        // The leg moves to a different train, and the user turns the first
+        // one's pushes off.
         let second_trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-M10-UID-SECOND", service_date)
                 .await
@@ -4124,20 +4115,16 @@ mod db_tests {
             .bind(leg_id)
             .execute(&pool)
             .await
-            .expect("move the leg the way the old \"Change train\" did");
+            .expect("move the leg to the second train");
         sqlx::query("UPDATE train_subscriptions SET notifications_enabled = FALSE WHERE id = $1")
             .bind(first_tracking_id)
             .execute(&pool)
             .await
-            .expect("disable the old subscription the way the old \"Change train\" did");
+            .expect("turn the first train's pushes off, as PATCH /Train/{id} does");
 
-        // The new use case: a LATER, unrelated call for the SAME
-        // `(user_id, trains_id)` as the disabled subscription -- e.g. a
-        // fresh "Track this train" or a different journey's leg
-        // auto-matching onto the same physical train. This has nothing to
-        // do with the journey/leg above; it must not silently inherit a
-        // notification stream the "Change train" action killed for a
-        // different reason entirely.
+        // A LATER, unrelated call for the SAME `(user_id, trains_id)`: a
+        // fresh "Track this train" or a different journey's leg matching
+        // onto the same physical train.
         let reused_tracking_id = crate::data::train_tracking::create_subscription_for_train(
             &pool,
             first_trains_id,
@@ -4151,10 +4138,11 @@ mod db_tests {
              return the SAME row, not a duplicate"
         );
         assert!(
-            notifications_enabled_of(&pool, first_tracking_id).await,
-            "a new, unrelated use of the same physical train must re-enable notifications, not \
-             inherit the stale disabled flag forever"
+            !notifications_enabled_of(&pool, first_tracking_id).await,
+            "using the same physical train again must not turn the user's \"off\" back on"
         );
+        // A brand-new subscription still starts enabled.
+        assert!(notifications_enabled_of(&pool, second_tracking_id).await);
 
         cleanup_user(&pool, user_id).await;
         sqlx::query("DELETE FROM trains WHERE id IN ($1, $2)")

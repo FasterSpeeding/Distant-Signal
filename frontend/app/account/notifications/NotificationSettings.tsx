@@ -179,7 +179,7 @@ export function NotificationSettings({ pinnedLines }: { pinnedLines: PinnedLineA
       <PreferencesSection
         id="what-to-send-heading"
         title="What to send"
-        description="These apply on every device. Each tracked train also has its own switch on its page."
+        description="These apply on every device. Each tracked train also has its own switch on its page; a train turned off there sends nothing, suggestions included."
       >
         <Stack gap="md">
           {SWITCHES.map(({ key, label, description }) => (

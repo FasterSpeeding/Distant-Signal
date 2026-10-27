@@ -7,7 +7,9 @@ import { describeFailure, failureFromResponse } from '@/lib/failure';
 /** "Notify me about this train": the owner's per-train push switch
  * (`PATCH /Train/{trackingId}` `{notificationsEnabled}`), on the train page
  * and on a journey's train leg. Off, the train sends no delay, cancellation,
- * skipped-stop or late-start notifications; the page still shows all of it.
+ * skipped-stop, late-start or suggested-train notifications, and stays off
+ * when the same train is tracked again or added to another journey; the
+ * page still shows all of it.
  * A failed save puts the switch back and says so. */
 export function TrainNotificationsSwitch({
   trackingId,
@@ -46,7 +48,7 @@ export function TrainNotificationsSwitch({
     <Stack gap={4}>
       <Switch
         label="Notify me about this train"
-        description="Delays, cancellations and skipped stops, on every device with notifications on."
+        description="Delays, cancellations, skipped stops and suggested trains, on every device with notifications on. Off stays off if you add this train again."
         checked={enabled}
         disabled={saving}
         onChange={(event) => void change(event.currentTarget.checked)}
