@@ -96,6 +96,16 @@ describe('ServiceRow', () => {
     expect(screen.getByText('Cancelled')).toBeInTheDocument();
   });
 
+  it('says why a cancelled train is cancelled, and only a cancelled one (DS-181)', () => {
+    const { unmount } = renderRow({
+      train: train({ uid: 'C1', live: { ...live, cancelled: true, cancelReason: 'Points failure' } }),
+    });
+    expect(screen.getByRole('listitem')).toHaveTextContent('Reason: points failure.');
+    unmount();
+    renderRow({ train: train({ uid: 'C1', live: { ...live, cancelReason: 'Points failure' } }) });
+    expect(screen.getByRole('listitem')).not.toHaveTextContent('Reason');
+  });
+
   it('says "Timetable only" for a bus, with its badge', () => {
     renderRow({ train: train({ uid: 'C1', serviceMode: 'bus', liveTracking: false }) });
     expect(screen.getByRole('link')).toHaveTextContent('Timetable only');

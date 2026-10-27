@@ -341,6 +341,30 @@ describe('JourneyProgress', () => {
     expect(nodes[2]).toHaveAttribute('data-node-state', 'cancelled-remaining');
   });
 
+  it('per-stop cancellation (DS-181): only the cancelled calls read cancelled, before or after the marker', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z', cancelled: false }),
+          // Cancelled between A and C, which the train then reached.
+          stop({ crs: 'B', kind: 'Intermediate', cancelled: true }),
+          stop({ crs: 'C', kind: 'Intermediate', actualArrival: '2026-09-12T08:30:00Z', cancelled: false }),
+          // Still served, though TRUST calls the train cancelled.
+          stop({ crs: 'D', kind: 'Terminate', cancelled: false }),
+        ]}
+        resolutionStatus="resolved"
+        status="cancelled"
+        trainUid="C1"
+        mayHaveArrived={false}
+        lastReportedLocation={null}
+      />,
+    );
+    const states = Array.from(container.querySelectorAll('[data-journey-node]')).map((n) =>
+      n.getAttribute('data-node-state'),
+    );
+    expect(states).toEqual(['reached', 'cancelled-remaining', 'marker', 'not-reached']);
+  });
+
   it('cancelled before any confirmed movement: every node is cancelled-remaining, none is a marker', () => {
     const { container } = renderWithMantine(
       <JourneyProgress

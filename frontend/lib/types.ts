@@ -907,6 +907,12 @@ export interface JourneyStop {
   status?: LiveStopStatus | null;
   // Minutes late the stop is expected to be; set only when `status` is 'Late'.
   lateMinutes?: number | null;
+  // This call is in a cancelled part of the train's run (DS-181): the whole
+  // train is cancelled, or it terminates short of, starts after, or is
+  // cancelled between stations around this call. See `Cancellation`. Not set
+  // for a skipped call (`stopStatus: 'Skipped'`). Optional: absent from an
+  // older backend.
+  cancelled?: boolean;
   // This train's row on the stop's live LDBWS departure board, or `null`
   // when there is no unique fresh match (`crates/api/src/data/stop_board.rs`).
   // `null` means "not known", never "on time". Optional so older fixtures
@@ -1116,6 +1122,61 @@ export interface TrainJourneyState extends ServiceModeFields, TrackingPhaseField
   // TRUST change-of-origin reason code and text, same rules.
   changeOfOriginReasonCode?: string | null;
   changeOfOriginReason?: string | null;
+  // What part of the run is cancelled and why (DS-181,
+  // `crates/api/src/data/cancellation.rs`): `null` when nothing is,
+  // including after a reinstatement. Prefer it to `cancelled` and the
+  // reason fields above, which stay for older clients. Optional: absent
+  // from an older backend.
+  cancellation?: Cancellation | null;
+}
+
+/** `Cancellation.kind`: every public call cancelled, or only some. */
+export type CancellationKind = 'full' | 'partial';
+
+/** Where a cancellation reason came from, best first: Darwin Push Port
+ * (not served yet), Darwin's text on a live departure board, then
+ * Network Rail's TRUST delay attribution code. */
+export type CancellationReasonSource = 'darwin' | 'ldbws' | 'trust';
+
+export interface CancellationReason {
+  // TRUST delay attribution code ("JP"); `null` for board text.
+  code: string | null;
+  // Darwin's own sentence ("This train has been cancelled because of ..."),
+  // or the Network Rail glossary text for a TRUST code; `null` for a code
+  // with no text (system codes such as PD).
+  text: string | null;
+  source: CancellationReasonSource;
+}
+
+/** A call named by a cancellation. `stopIndex` indexes the response's own
+ * `journeyStops`. */
+export interface CancellationStop {
+  crs: string | null;
+  name: string | null;
+  stopIndex: number;
+}
+
+/** A part of the route not run: the calls between `from` and `to` are
+ * cancelled, and `from` itself at the origin end, `to` at the destination
+ * end. */
+export interface CancelledSection {
+  from: CancellationStop;
+  to: CancellationStop;
+}
+
+/** `TrainJourneyState.cancellation`. */
+export interface Cancellation {
+  kind: CancellationKind;
+  // The first call still served, when the train starts short.
+  startsFrom: CancellationStop | null;
+  // The last call still served, when the train terminates short.
+  terminatesAt: CancellationStop | null;
+  // The only section's ends; `null` when there are several.
+  from: CancellationStop | null;
+  to: CancellationStop | null;
+  sections: CancelledSection[];
+  reason: CancellationReason | null;
+  at: string | null; // RFC3339, when the cancellation was made
 }
 
 /** `GET /Train/by-uid/{uid}/{date}`'s response shape
@@ -1183,6 +1244,8 @@ export interface PublicTrainState extends ServiceModeFields, TimetableCertaintyF
   cancelReason?: string | null;
   changeOfOriginReasonCode?: string | null;
   changeOfOriginReason?: string | null;
+  // See `TrainJourneyState.cancellation`.
+  cancellation?: Cancellation | null;
 }
 
 /** `GET /public/trains/resolve`'s 200 body
@@ -3024,6 +3087,9 @@ export interface LineTrainSummaryLive {
   delayMinutes: number | null;
   delayProvisional: boolean;
   cancelled: boolean;
+  /** The cancellation's Network Rail reason text while `cancelled`
+   * (DS-181). Optional: absent from an older backend. */
+  cancelReason?: string | null;
   lastReportedLocation: string | null;
 }
 

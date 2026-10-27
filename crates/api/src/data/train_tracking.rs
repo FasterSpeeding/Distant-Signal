@@ -1035,6 +1035,14 @@ pub struct TrackedTrainState {
     /// Its glossary text, under the same rules as `cancel_reason`.
     #[sqlx(skip)]
     pub change_of_origin_reason: Option<String>,
+    /// What part of the run is cancelled and why (DS-181): full or partial,
+    /// the cancelled sections, terminated short or started short, and the
+    /// best reason with its source. `null` when nothing is cancelled,
+    /// including after a reinstatement. Filled with the fields above; see
+    /// `data::cancellation`. The older `cancelled`/`cancelReason*` fields
+    /// stay for compatibility.
+    #[sqlx(skip)]
+    pub cancellation: Option<crate::data::cancellation::Cancellation>,
     /// Planned, waiting for its first report, live, not in the timetable
     /// or timetable-only (`data::tracking_phase`, spec 2026-10-20 §4.3).
     /// Filled after the read by `tracking_phase::attach`; `None` (`null`)

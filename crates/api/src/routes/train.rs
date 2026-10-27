@@ -1250,6 +1250,7 @@ async fn schedule_only_public_state(
         cancel_reason: None,
         change_of_origin_reason_code: None,
         change_of_origin_reason: None,
+        cancellation: None,
         service: crate::data::schedule_services::ServiceModeFields::default(),
     };
 
@@ -2479,6 +2480,7 @@ mod tests {
             cancel_reason: None,
             change_of_origin_reason_code: None,
             change_of_origin_reason: None,
+            cancellation: None,
             tracking_phase: None,
             first_report_expected_at: None,
         }
