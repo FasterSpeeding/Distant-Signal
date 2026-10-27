@@ -3,6 +3,21 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-27: a train's push switch sticks, and covers its suggestions
+
+Behaviour only; no field changes. DS-MCP needs no change.
+
+- `notificationsEnabled` FALSE on a tracked train (`PATCH
+  /Train/{trackingId}`) now stays FALSE when the same user and train are
+  used again: tracking it again, or a journey leg (picked or
+  auto-committed) on the same train, returns the same subscription with
+  its switch as it was. Only a brand-new subscription starts with it on.
+  Before, any such reuse turned it back on.
+- A train with its pushes off sends no journey break suggestion for a
+  break it triggers either (the break and its suggestions still show in
+  the app), and such a break no longer holds back the pushes of the
+  journey's other trains.
+
 ## 2026-10-26: notification settings
 
 Additive. Nothing existing changes for a client that does not use the new
