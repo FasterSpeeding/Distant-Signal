@@ -2582,6 +2582,12 @@ pub struct JourneyListItem {
     /// `None` when it works. Additive, 2026-10-23.
     #[sqlx(skip)]
     pub open_break_id: Option<i64>,
+    /// The current leg's train's compact cancellation
+    /// (`data::cancellation`'s list form): full or partial, where it now
+    /// starts or terminates, and why. `null` when no part of its run is
+    /// cancelled, and for an open or untracked leg. Additive (2026-10-27).
+    #[sqlx(skip)]
+    pub cancellation: Option<crate::data::cancellation::CancellationSummary>,
     /// Set on a journey the caller follows rather than owns (DS-146,
     /// `include=followed` only): who shared it and how. Such a row is
     /// read-only. Absent on the caller's own journeys.
@@ -3051,6 +3057,13 @@ pub(crate) async fn list_journeys_for_user_capped(
         }
     }
     crate::data::tracking_phase::attach(pool, &mut rows, now).await;
+    crate::data::cancellation::attach_summaries(
+        pool,
+        &mut rows,
+        |row| row.trains_id.map(|id| (id, row.status.as_deref())),
+        |row, summary| row.cancellation = summary,
+    )
+    .await;
     let ids: Vec<i64> = rows.iter().map(|row| row.id).collect();
     let open: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT journey_id, id FROM journey_breaks WHERE journey_id = ANY($1) AND status = 'open'",
