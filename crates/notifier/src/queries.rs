@@ -625,6 +625,29 @@ struct Subscriber {
     id: i64,
     user_id: String,
     stop_crs: Option<String>,
+    /// The subscriber's `notification_preferences` (DS-153): their delay
+    /// and cancellation switches (TRUE without a row) and their own delay
+    /// threshold (NULL without one: the caller's default).
+    train_delay: bool,
+    train_cancel: bool,
+    delay_threshold_minutes: Option<i16>,
+}
+
+/// The threshold a user's train delays are judged at: their own
+/// `notification_preferences.delay_threshold_minutes`, else `default`
+/// (`TRAIN_DELAY_THRESHOLD_MINUTES`).
+pub(crate) fn user_delay_threshold(own: Option<i16>, default: i32) -> i32 {
+    own.map_or(default, i32::from)
+}
+
+/// Whether a user's per-type switches let a push at `rank` through
+/// (`train_severity_rank`: 2 cancelled, 1 delayed).
+pub(crate) fn train_rank_enabled(rank: u8, train_delay: bool, train_cancel: bool) -> bool {
+    match rank {
+        2 => train_cancel,
+        1 => train_delay,
+        _ => true,
+    }
 }
 
 /// The delay at each subscriber's own stop, measured against the PUBLIC
@@ -687,6 +710,11 @@ async fn subscriber_stop_delays(
 /// generating notifications -- this filter is the other, equally
 /// necessary half of that fix: without it, a deactivated subscription
 /// would still show up here and get notified exactly as before.
+///
+/// Per-user settings (DS-153, `notification_preferences`): each subscriber's
+/// own `delay_threshold_minutes` replaces `delay_threshold_minutes` (the
+/// default) for them, and their `train_delay`/`train_cancel` switches drop
+/// a candidate of that kind.
 pub(crate) async fn candidates_for_trains_id(
     pool: &PgPool,
     trains_id: i64,
@@ -724,9 +752,14 @@ pub(crate) async fn candidates_for_trains_id(
                 COALESCE((SELECT jl.destination_crs FROM journey_legs jl \
                           WHERE jl.train_subscription_id = ts.id \
                           ORDER BY jl.id LIMIT 1), \
-                         ts.pin_destination_crs) AS stop_crs \
+                         ts.pin_destination_crs) AS stop_crs, \
+                COALESCE(np.train_delay, TRUE) AS train_delay, \
+                COALESCE(np.train_cancel, TRUE) AS train_cancel, \
+                np.delay_threshold_minutes \
          FROM train_subscriptions ts \
+         LEFT JOIN notification_preferences np ON np.user_id = ts.user_id \
          WHERE ts.trains_id = $1 AND ts.notifications_enabled \
+           AND (np.user_id IS NULL OR np.train_delay OR np.train_cancel) \
          ORDER BY ts.user_id, \
                   EXISTS (SELECT 1 FROM journey_legs jl WHERE jl.train_subscription_id = ts.id) DESC, \
                   ts.id",
@@ -746,7 +779,15 @@ pub(crate) async fn candidates_for_trains_id(
     for (subscriber, delay_minutes) in subscribers.into_iter().zip(delays) {
         let tracked_train_id = subscriber.id;
         let user_id = subscriber.user_id;
+        let delay_threshold_minutes =
+            user_delay_threshold(subscriber.delay_threshold_minutes, delay_threshold_minutes);
         let new_rank = train_severity_rank(&status, delay_minutes, delay_threshold_minutes);
+        // The user turned this kind of push off: nothing is decided, so a
+        // later push of a kind they want still escalates from what they
+        // were last sent.
+        if !train_rank_enabled(new_rank, subscriber.train_delay, subscriber.train_cancel) {
+            continue;
+        }
 
         let previous = sqlx::query(
             "SELECT last_notified_status, last_notified_delay_minutes \
@@ -802,6 +843,8 @@ struct PredictedStartSubscriber {
     service_date: chrono::NaiveDate,
     last_notified_status: Option<String>,
     last_notified_delay_minutes: Option<i32>,
+    /// The subscriber's own threshold (DS-153), NULL for the default.
+    delay_threshold_minutes: Option<i16>,
 }
 
 /// The subscribers to push a predicted late start to now (DS-127, spec
@@ -811,8 +854,10 @@ struct PredictedStartSubscriber {
 /// for a train only Darwin's live next-working link knows (DS-152), by its
 /// date and then the prediction's own departure) and has no TRUST report yet,
 /// whose prediction is `high` confidence at or above
-/// `delay_threshold_minutes`, and whose last push for it was below the
-/// "delayed" rank. The push records itself in `train_notification_state`
+/// `delay_threshold_minutes` (the subscriber's own threshold when they set
+/// one, DS-153), and whose last push for it was below the "delayed" rank.
+/// A subscriber with `notification_preferences.predicted_start` off is
+/// left out. The push records itself in `train_notification_state`
 /// like a delay push, so the delay push that follows when TRUST reports the
 /// same lateness is not sent again, and a cancellation still is.
 pub(crate) async fn predicted_start_candidates(
@@ -825,11 +870,13 @@ pub(crate) async fn predicted_start_candidates(
     let subscribers: Vec<PredictedStartSubscriber> = sqlx::query_as(
         "SELECT DISTINCT ON (ts.user_id, ts.trains_id) ts.id, ts.user_id, ts.trains_id, \
                 tr.train_uid, tr.service_date, \
-                ns.last_notified_status, ns.last_notified_delay_minutes \
+                ns.last_notified_status, ns.last_notified_delay_minutes, \
+                np.delay_threshold_minutes \
          FROM trains tr \
          JOIN train_subscriptions ts ON ts.trains_id = tr.id AND ts.notifications_enabled \
          LEFT JOIN schedule_turnarounds st \
            ON st.uid = tr.train_uid AND st.service_date = tr.service_date \
+         LEFT JOIN notification_preferences np ON np.user_id = ts.user_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tr.id \
          LEFT JOIN train_notification_state ns \
            ON ns.user_id = ts.user_id AND ns.tracked_train_id = ts.id \
@@ -842,6 +889,7 @@ pub(crate) async fn predicted_start_candidates(
                                   AND dp.uid = tr.train_uid))) \
            AND (cs.status IS NULL OR cs.status = 'awaiting_activation') \
            AND cs.delay_minutes IS NULL \
+           AND COALESCE(np.predicted_start, TRUE) \
          ORDER BY ts.user_id, ts.trains_id, \
                   EXISTS (SELECT 1 FROM journey_legs jl WHERE jl.train_subscription_id = ts.id) DESC, \
                   ts.id",
@@ -879,18 +927,14 @@ pub(crate) async fn predicted_start_candidates(
         else {
             continue;
         };
-        let new_rank = train_severity_rank(
-            "awaiting_activation",
-            Some(late_minutes),
-            delay_threshold_minutes,
-        );
+        let threshold =
+            user_delay_threshold(subscriber.delay_threshold_minutes, delay_threshold_minutes);
+        let new_rank = train_severity_rank("awaiting_activation", Some(late_minutes), threshold);
         let previous_rank = match subscriber.last_notified_status.as_deref() {
             None => 0,
-            Some(status) => train_severity_rank(
-                status,
-                subscriber.last_notified_delay_minutes,
-                delay_threshold_minutes,
-            ),
+            Some(status) => {
+                train_severity_rank(status, subscriber.last_notified_delay_minutes, threshold)
+            }
         };
         if crate::decision::decide_train_notification(previous_rank, new_rank)
             == crate::decision::NotifyDecision::NotifyNow
@@ -1114,15 +1158,21 @@ pub(crate) fn register_forward_queue_metrics() {
     );
 }
 
+/// The users to tell about `line_id`'s change: everyone who pinned it with
+/// its alerts on (`pinned_lines.notify`), unless they turned line pushes
+/// off altogether (`notification_preferences.line_status`, DS-153).
 pub(crate) async fn pinned_users_for_line(
     pool: &PgPool,
     line_id: &str,
 ) -> anyhow::Result<Vec<String>> {
-    let rows =
-        sqlx::query_scalar::<_, String>("SELECT user_id FROM pinned_lines WHERE line_id = $1")
-            .bind(line_id)
-            .fetch_all(pool)
-            .await?;
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT pl.user_id FROM pinned_lines pl \
+         LEFT JOIN notification_preferences np ON np.user_id = pl.user_id \
+         WHERE pl.line_id = $1 AND pl.notify AND COALESCE(np.line_status, TRUE)",
+    )
+    .bind(line_id)
+    .fetch_all(pool)
+    .await?;
     Ok(rows)
 }
 
@@ -1359,6 +1409,16 @@ pub(crate) async fn push_subscriptions_for_user(
     Ok(rows)
 }
 
+/// Stamps `last_pushed_at` on a subscription a push was delivered to: the
+/// Notifications page shows it as the device's "last used" (DS-153).
+pub(crate) async fn mark_push_subscription_pushed(pool: &PgPool, id: i64) -> anyhow::Result<()> {
+    sqlx::query("UPDATE push_subscriptions SET last_pushed_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Error handling: called on a 404/410 from the push service (Task 6) --
 /// self-healing cleanup, mirroring users.rs's own "every write takes out
 /// its own trash" posture cited by the spec.
@@ -1426,6 +1486,12 @@ pub(crate) struct CommittedLeg {
 /// per leg, already carrying everything `skip_check::leg_is_skipped`
 /// (Task 9) needs -- no further per-leg query required.
 ///
+/// A leg whose train has its pushes turned off
+/// (`train_subscriptions.notifications_enabled`, `PATCH /Train/{trackingId}`)
+/// is left out, as the delay and cancellation pushes leave it out, and so
+/// is every leg of a user who turned skipped-stop pushes off
+/// (`notification_preferences.station_skip`, DS-153).
+///
 /// A leg committed to a bus or ferry (`schedule_services.mode <> 'train'`)
 /// is left out (2026-10-06): it is timetable-only, gets no live alerts, and
 /// Darwin's board would only ever pair it with some other service.
@@ -1448,8 +1514,11 @@ static COMMITTED_LEGS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::ne
          LEFT JOIN stations so ON so.crs = UPPER({origin})::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER({destination})::bpchar \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+         LEFT JOIN notification_preferences np ON np.user_id = j.user_id \
          WHERE jl.train_subscription_id IS NOT NULL \
            AND ts.trains_id IS NOT NULL \
+           AND ts.notifications_enabled \
+           AND COALESCE(np.station_skip, TRUE) \
            AND jl.service_date = $1 \
            AND {origin} IS NOT NULL \
            AND {destination} IS NOT NULL \
@@ -1802,6 +1871,10 @@ pub(crate) struct CommitCheckLeg {
     pub depart_before: Option<chrono::NaiveTime>,
     pub arrive_after: Option<chrono::NaiveTime>,
     pub arrive_before: Option<chrono::NaiveTime>,
+    /// Whether the owner wants the "needs attention" push when no train is
+    /// found (`notification_preferences.template_attention`, DS-153; TRUE
+    /// without a row). Off, the leg is still committed when a train is.
+    pub notify_attention: bool,
 }
 
 /// [`unmatched_auto_legs_for_commit_check`]'s query, each leg end read
@@ -1816,10 +1889,12 @@ static COMMIT_CHECK_LEGS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock:
         "SELECT jl.id AS journey_leg_id, jl.journey_id, j.user_id, \
                 {origin} AS origin_crs, {destination} AS destination_crs, \
                 so.name AS origin_name, sd.name AS destination_name, \
-                jl.service_date, jl.depart_after, jl.depart_before, jl.arrive_after, jl.arrive_before \
+                jl.service_date, jl.depart_after, jl.depart_before, jl.arrive_after, jl.arrive_before, \
+                COALESCE(np.template_attention, TRUE) AS notify_attention \
          FROM journey_legs jl \
          JOIN journeys j ON j.id = jl.journey_id \
          JOIN journey_templates jt ON jt.id = j.source_template_id \
+         LEFT JOIN notification_preferences np ON np.user_id = j.user_id \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
          LEFT JOIN stations so ON so.crs = UPPER({origin})::bpchar \
@@ -2189,14 +2264,11 @@ pub(crate) async fn find_or_create_train_with_cif_schedule(
 
 /// Duplicates `crates/api::data::train_tracking::create_subscription_for_train`
 /// -- same CTE idempotency idiom, same accepted "ordinary repeat case
-/// only" concurrency caveat as the original's own doc comment states, and
-/// (2026-09-26 review, Medium finding 10) the same re-activation of a
-/// previously-deactivated row: [`auto_commit_leg_to_train`] can auto-match
-/// an unrelated leg onto a physical train whose subscription a prior
-/// "Change train" already disabled, and that re-establishment is exactly
-/// the "new use case" that should bring notifications back, not a reason to
-/// hand back a silently-dead subscription. See the original's own doc
-/// comment for the full reasoning.
+/// only" concurrency caveat as the original's own doc comment states.
+/// Like the original it leaves an existing row's
+/// `notifications_enabled` alone (DS-153): the user's "off" for a train
+/// sticks when [`auto_commit_leg_to_train`] matches another leg onto it,
+/// and only a brand-new subscription starts enabled.
 ///
 /// Generic over the executor (not `&PgPool`) so
 /// [`auto_commit_leg_to_train`] can run it inside its own transaction
@@ -2219,9 +2291,6 @@ where
         "WITH existing AS ( \
              SELECT id FROM train_subscriptions \
              WHERE user_id = $1 AND trains_id = $2 ORDER BY id LIMIT 1 \
-         ), reactivated AS ( \
-             UPDATE train_subscriptions SET notifications_enabled = TRUE \
-             WHERE id IN (SELECT id FROM existing) AND notifications_enabled = FALSE \
          ), inserted AS ( \
              INSERT INTO train_subscriptions \
                  (user_id, trains_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs) \

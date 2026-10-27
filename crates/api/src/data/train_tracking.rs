@@ -437,24 +437,16 @@ where
 /// security/bug review, journeys area, Medium finding 3), while every
 /// standalone caller keeps passing a bare `&PgPool` unchanged.
 ///
-/// **Re-enables a previously-deactivated row (2026-09-26 review, Medium
-/// finding 10).** `journeys::set_leg_train_subscription` ("Change train")
-/// set `notifications_enabled = FALSE` on a subscription once it became
-/// unreferenced by any leg (since DS-93 it deletes a leg-only one instead,
-/// and nothing writes FALSE any more; this stays for any row still
-/// disabled) -- but that's scoped to the journey-leg context
-/// it was meant for, not a permanent verdict on the underlying
-/// `(user_id, trains_id)` pin. Before this fix, THIS function's idempotency
-/// meant a disabled row, once created, could never be re-enabled: any
-/// later, unrelated call for the same user and physical train (a brand-new
-/// journey leg auto-matching to it, a standalone "Track this train", even a
-/// direct re-pin) just got the same disabled row back unchanged, silently
-/// never notifying again for a use case that has nothing to do with the
-/// "Change train" action that disabled it. Reaching this function at all
-/// (new call, existing row) IS the new use case re-establishing the pin, so
-/// it re-enables notifications for it -- an `UPDATE ... WHERE
-/// notifications_enabled = FALSE` alongside the existing lookup, in the
-/// same statement, so a fresh call always returns a live subscription.
+/// **Leaves an existing row's push switch alone (DS-153).** Reaching this
+/// function for a `(user_id, trains_id)` that already has a row (a second
+/// journey leg on the same train, a standalone "Track this train", a
+/// re-pin) returns that row as it is: `notifications_enabled` is the
+/// user's own switch (`PATCH /Train/{trackingId}`), so their "off" sticks.
+/// Only a brand-new subscription starts enabled (the column's default).
+/// This used to re-enable a disabled row, from when "Change train" turned
+/// an orphaned subscription off (2026-09-26 review, Medium finding 10);
+/// since DS-93 that deletes such a row instead, so nothing but the user
+/// writes FALSE any more.
 ///
 /// **Serialised per `(user_id, trains_id)` (DB2-21).** The statement runs
 /// in its own (nested) transaction after
@@ -483,22 +475,11 @@ where
     // errors (RowNotFound) for a `trains_id` that names no `trains` row,
     // exactly as the previous plain `INSERT ... SELECT` did.
     //
-    // `reactivated` is a data-modifying CTE never read by the final SELECT
-    // -- per Postgres's own documented behavior for `WITH`, a data-modifying
-    // statement always runs to completion exactly once, regardless of
-    // whether anything references its output, so this still executes on
-    // every call. The `AND notifications_enabled = FALSE` guard makes it a
-    // no-op write (no row touched) on the overwhelmingly common path where
-    // the existing subscription is already enabled.
     let row: (i64,) = sqlx::query_as(
         "WITH existing AS ( \
              SELECT id FROM train_subscriptions \
              WHERE user_id = $1 AND trains_id = $2 \
              ORDER BY id LIMIT 1 \
-         ), \
-         reactivated AS ( \
-             UPDATE train_subscriptions SET notifications_enabled = TRUE \
-             WHERE id IN (SELECT id FROM existing) AND notifications_enabled = FALSE \
          ), \
          inserted AS ( \
              INSERT INTO train_subscriptions \
@@ -961,6 +942,13 @@ pub struct TrackedTrainState {
     #[sqlx(skip)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub single_leg_journey_ids: Option<Vec<i64>>,
+    /// Whether this subscription's delay, cancellation and skipped-stop
+    /// pushes are on (`train_subscriptions.notifications_enabled`, set by
+    /// `PATCH /Train/{trackingId}`). Owner's view only, like `journey_ids`;
+    /// absent from the JSON otherwise. Additive (2026-10-23).
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications_enabled: Option<bool>,
     /// The shared `trains` row's own surrogate key, needed to read
     /// `train_movement_events` for this train's live overlay -- internal
     /// plumbing for `routes::train`'s journey-stops attachment, never sent
@@ -1047,6 +1035,14 @@ pub struct TrackedTrainState {
     /// Its glossary text, under the same rules as `cancel_reason`.
     #[sqlx(skip)]
     pub change_of_origin_reason: Option<String>,
+    /// What part of the run is cancelled and why (DS-181): full or partial,
+    /// the cancelled sections, terminated short or started short, and the
+    /// best reason with its source. `null` when nothing is cancelled,
+    /// including after a reinstatement. Filled with the fields above; see
+    /// `data::cancellation`. The older `cancelled`/`cancelReason*` fields
+    /// stay for compatibility.
+    #[sqlx(skip)]
+    pub cancellation: Option<crate::data::cancellation::Cancellation>,
     /// Planned, waiting for its first report, live, not in the timetable
     /// or timetable-only (`data::tracking_phase`, spec 2026-10-20 §4.3).
     /// Filled after the read by `tracking_phase::attach`; `None` (`null`)
@@ -1515,8 +1511,9 @@ pub async fn rename_tracked_train(
     Ok(true)
 }
 
-/// Fills [`TrackedTrainState::journey_ids`] and
-/// [`TrackedTrainState::single_leg_journey_ids`] for the owner's own view
+/// Fills [`TrackedTrainState::journey_ids`],
+/// [`TrackedTrainState::single_leg_journey_ids`] and
+/// [`TrackedTrainState::notifications_enabled`] for the owner's own view
 /// of the train (`GET /Train/{trackingId}`), by the rules of
 /// `GET /Train/mine`'s `journeyIds` and `singleLegJourneyIds`.
 pub async fn attach_journey_ids(
@@ -1524,7 +1521,7 @@ pub async fn attach_journey_ids(
     state: &mut TrackedTrainState,
     user_id: &str,
 ) -> anyhow::Result<()> {
-    let (journey_ids, single_leg_journey_ids): (Vec<i64>, Vec<i64>) = sqlx::query_as(concat!(
+    let row: Option<(Vec<i64>, Vec<i64>, bool)> = sqlx::query_as(concat!(
         "SELECT (SELECT COALESCE(array_agg(DISTINCT jl.journey_id ORDER BY jl.journey_id), \
                                  '{}'::bigint[]) \
                  FROM journey_legs jl \
@@ -1534,16 +1531,42 @@ pub async fn attach_journey_ids(
                         SELECT ts2.id FROM train_subscriptions ts2 \
                         WHERE ts2.user_id = tt.user_id AND ts2.trains_id = tt.trains_id)), ",
         single_leg_journey_ids_sql!(),
-        " FROM train_subscriptions tt WHERE tt.id = $1 AND tt.user_id = $2"
+        ", tt.notifications_enabled \
+         FROM train_subscriptions tt WHERE tt.id = $1 AND tt.user_id = $2"
     ))
     .bind(state.id)
     .bind(user_id)
     .fetch_optional(pool)
-    .await?
-    .unwrap_or_default();
+    .await?;
+    let (journey_ids, single_leg_journey_ids, notifications_enabled) = match row {
+        Some((journeys, single_leg, enabled)) => (journeys, single_leg, Some(enabled)),
+        None => (Vec::new(), Vec::new(), None),
+    };
     state.journey_ids = Some(journey_ids);
     state.single_leg_journey_ids = Some(single_leg_journey_ids);
+    state.notifications_enabled = notifications_enabled;
     Ok(())
+}
+
+/// Turns a tracked train's pushes on or off (`PATCH /Train/{trackingId}`):
+/// its delay, cancellation and skipped-stop pushes, and its predicted late
+/// start. Owner only: `false` when `id` is not one of `user_id`'s
+/// subscriptions.
+pub async fn set_notifications_enabled(
+    pool: &PgPool,
+    id: i64,
+    user_id: &str,
+    enabled: bool,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE train_subscriptions SET notifications_enabled = $3 WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(enabled)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 #[cfg(test)]
@@ -4471,6 +4494,7 @@ mod db_tests {
             next_calling_point: Some("MKC".to_string()),
             eta_next: None,
             eta_source: None,
+            platform: None,
         };
         upsert_train_event(&pool, &event)
             .await
@@ -4593,6 +4617,7 @@ mod db_tests {
             next_calling_point: Some("WOK".to_string()),
             eta_next: None,
             eta_source: None,
+            platform: None,
         };
         upsert_train_event(&pool, &event_for(first_id))
             .await

@@ -206,6 +206,29 @@ describe('StationField', () => {
     expect(held()).toBe('940GZZLUODS');
   });
 
+  it('names a deep-linked Metrolink station from its stop page, never its id', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url === '/api/transit/metrolink/stops/9400ZZMAPIC'
+          ? new Response(JSON.stringify({ id: '9400ZZMAPIC', name: 'Piccadilly', platforms: [] }), { status: 200 })
+          : new Response('[]', { status: 404 }),
+      ),
+    );
+    renderWithMantine(<Harness initial="9400ZZMAPIC" allowTypedCode={plannerCode} />);
+    await waitFor(() => expect(field()).toHaveValue('Piccadilly (Metrolink)'));
+    expect(held()).toBe('9400ZZMAPIC');
+  });
+
+  it('keeps a picked tram station by its name', async () => {
+    const piccadilly: Suggestion = { code: '9400ZZMAPIC', name: 'Piccadilly (Metrolink)' };
+    renderWithMantine(<Harness search={async () => [piccadilly]} allowTypedCode={plannerCode} />);
+    fireEvent.change(field(), { target: { value: 'picc' } });
+    fireEvent.click(await screen.findByRole('option', { name: /Piccadilly \(Metrolink\)/ }));
+    expect(held()).toBe('9400ZZMAPIC');
+    expect(field()).toHaveValue('Piccadilly (Metrolink)');
+  });
+
   it('names a deep-linked station group by its label', async () => {
     vi.stubGlobal(
       'fetch',

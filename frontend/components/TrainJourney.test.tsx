@@ -913,7 +913,7 @@ describe('TrainJourney suppressTrainUidHeading', () => {
         suppressTrainUidHeading
       />,
     );
-    expect(screen.getByText('This service was cancelled.')).toBeInTheDocument();
+    expect(screen.getByText('This service was cancelled. No reason has been given.')).toBeInTheDocument();
     expect(screen.queryByText('UID C21373')).not.toBeInTheDocument();
   });
 

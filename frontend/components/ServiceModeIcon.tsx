@@ -1,4 +1,4 @@
-import type { ServiceMode } from '@/lib/types';
+import type { ServiceMode, TripPlanTransitServiceMode } from '@/lib/types';
 
 /** One icon per non-train service mode, in the same inline-SVG,
  * `currentColor`, 24-unit stroke style as `InfoIcon`/`WarningIcon` (the
@@ -8,11 +8,18 @@ import type { ServiceMode } from '@/lib/types';
  * - `replacementBus`: the bus with a two-way arrow above it -- standing in
  *   for a train.
  * - `ferry`: a boat on water.
+ * - `tram`: a tram under its overhead wire.
  *
  * Decorative: `aria-hidden`, and every use sits next to the mode's text
  * label (`ServiceModeBadge`), so nothing is said by the icon alone. A
  * train renders nothing. */
-export function ServiceModeIcon({ mode, size = 16 }: { mode: ServiceMode; size?: number }) {
+export function ServiceModeIcon({
+  mode,
+  size = 16,
+}: {
+  mode: ServiceMode | TripPlanTransitServiceMode;
+  size?: number;
+}) {
   if (mode === 'train') {
     return null;
   }
@@ -30,7 +37,13 @@ export function ServiceModeIcon({ mode, size = 16 }: { mode: ServiceMode; size?:
       aria-hidden="true"
       data-icon={mode}
     >
-      {mode === 'ferry' ? <FerryPaths /> : <BusPaths replacement={mode === 'replacementBus'} />}
+      {mode === 'ferry' ? (
+        <FerryPaths />
+      ) : mode === 'tram' ? (
+        <TramPaths />
+      ) : (
+        <BusPaths replacement={mode === 'replacementBus'} />
+      )}
     </svg>
   );
 }
@@ -69,6 +82,20 @@ function FerryPaths() {
       <path d="M6 14V9h12v5" />
       <path d="M12 9V4" />
       <path d="M2 22c2 0 2-1 4-1s2 1 4 1 2-1 4-1 2 1 4 1 2-1 4-1" />
+    </>
+  );
+}
+
+function TramPaths() {
+  return (
+    <>
+      {/* The overhead wire and the pantograph reaching it. */}
+      <path d="M3 2h18" />
+      <path d="M10 2l2 4 2-4" />
+      <rect x="5" y="6" width="14" height="13" rx="2" />
+      <path d="M5 12h14" />
+      <path d="M8 22l1-3" />
+      <path d="M16 22l-1-3" />
     </>
   );
 }

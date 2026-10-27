@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, vi, beforeEach } from 'vitest';
 import { screen, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import LineHistoryPage, { generateMetadata, HistoryResults } from './page';
@@ -80,6 +80,12 @@ async function renderPage(searchParams: { from?: string; to?: string; range?: st
 // the JSX. They're kept anyway as basic regression coverage for the page's
 // rendering logic (which was previously completely untested), not as a
 // substitute for the live check.
+// TrendsCharts loads its Recharts half on demand (next/dynamic); load it once
+// up front so the first chart assertion isn't timed against a cold import.
+beforeAll(async () => {
+  await import('@/app/lines/[id]/history/TrendsChartParts');
+});
+
 describe('LineHistoryPage', () => {
   beforeEach(() => {
     vi.mocked(api.getLineStatus).mockResolvedValue([report('c2c', 'c2c (London, Tilbury & Southend line)')]);

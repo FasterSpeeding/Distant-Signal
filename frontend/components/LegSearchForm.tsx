@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Button, Group, Stack, Text } from '@mantine/core';
-import { DateInput } from '@mantine/dates';
+import { DateInput } from '@/components/LazyDateFields';
 import { TimeFilterInput } from './TimeFilterInput';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { legSearchDraftFromLeg, legSearchFromDraft, type LegSearch, type LegSearchDraft } from '@/lib/legSearch';

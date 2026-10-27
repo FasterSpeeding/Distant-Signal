@@ -33,6 +33,11 @@ export interface ScheduleRowData {
    * fabricate" posture as `PlatformBadge`'s own `null` handling. */
   operator?: string;
   isCancelled: boolean;
+  /** What is cancelled and why, from the board (`boardCancellationNote`):
+   * "Cancelled: a fault with the signalling system", "Terminates at
+   * Woking". Shown under the row in words. Optional: `null`/absent for
+   * nothing to add. */
+  cancelNote?: string | null;
   delayMinutes: number;
   platform: string | null;
   plannedPlatform: string | null;
@@ -95,6 +100,11 @@ export function ScheduleRow({ row, onSelect }: { row: ScheduleRowData; onSelect?
       )}{' '}
       · {stationLabel(row.destinationCrs, row.destinationName)}
       {row.operator ? ` · ${row.operator}` : ''}
+      {row.cancelNote && (
+        <Text component="span" display="block" size="xs" c="var(--mantine-color-red-light-color)" data-cancel-note>
+          {row.cancelNote}
+        </Text>
+      )}
     </Text>
   );
   const trailing = (

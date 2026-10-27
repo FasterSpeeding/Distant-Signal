@@ -502,6 +502,12 @@ pub struct PlanningGraph {
     pub interchange: InterchangeData,
     /// Indices into `connections`, per TIPLOC run through without calling.
     pub passes: schedule_query::PassIndex,
+    /// The transit networks' part (DS-164), when
+    /// `API_TRIP_PLAN_TRANSIT_NETWORKS` lists any: `connections` then also
+    /// holds their trips, and requests that opt in plan on its interchange
+    /// data instead of `interchange` (see `data::transit_planning`). `None`
+    /// with the switch empty.
+    pub transit: Option<crate::data::transit_planning::TransitGraph>,
 }
 
 /// When `schedule-reference` last finished publishing a delivery

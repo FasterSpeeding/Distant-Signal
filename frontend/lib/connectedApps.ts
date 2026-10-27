@@ -8,6 +8,7 @@ export const CONNECTED_APP_SCOPES: readonly ConnectedAppScope[] = [
   'journeys:read',
   'journeys:write',
   'journeys:delete',
+  'preferences:read',
 ];
 
 /** What each scope lets an app do, as the consent page and the Connected
@@ -16,6 +17,7 @@ const SCOPE_SENTENCES: Record<ConnectedAppScope, string> = {
   'journeys:read': 'See your saved journeys',
   'journeys:write': 'Save journeys to your account',
   'journeys:delete': 'Delete journeys it saved, unless you have shared them',
+  'preferences:read': 'See your notification settings',
 };
 
 export function isConnectedAppScope(scope: string): scope is ConnectedAppScope {

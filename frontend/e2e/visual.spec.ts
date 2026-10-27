@@ -58,6 +58,9 @@ const PAGES: [name: string, path: string][] = [
   // After a search: the compact bar, with Station in its search slot.
   ['trains-searched', `/trains?station=${REAL_STATION_CRS}`],
   ['train', `/train/${TRAIN_UID}/${TRAIN_DATE}`],
+  // A train cut short (DS-181): the seed's W81181, cancelled en route at
+  // York with a reason, Edinburgh struck through.
+  ['train-part-cancelled', '/train/W81181/2026-12-03'],
   ['incidents', '/incidents'],
   // The plan form in each timing mode (2026-10-19), restored from the URL;
   // the seed's /plan timetable codes. The time and date fields are masked.
@@ -77,6 +80,9 @@ const PAGES: [name: string, path: string][] = [
   // in prompt, logged in the account sections too.
   ['preferences', '/account/preferences'],
   ['preferences-logged-in', '/account/preferences'],
+  // Every notification setting (DS-153), logged in: the seed user's
+  // defaults, no device with push on.
+  ['notifications', '/account/notifications'],
   // The Journeys page's Upcoming and Past lists, logged in: the seed's tracked trains and its
   // planned three-leg journey, named end to end (docs/style-guide.md,
   // "Journey names").
@@ -105,6 +111,7 @@ const LOGGED_IN_PAGES: ReadonlySet<string> = new Set([
   'home-logged-in',
   'account',
   'preferences-logged-in',
+  'notifications',
   'journeys',
   'group',
   'train-no-timetable',
@@ -170,6 +177,96 @@ function sessionCookie(value: string) {
     sameSite: 'Lax' as const,
   };
 }
+
+/** A planned route across Manchester for the tram itinerary shots: a
+ * train into MAN, a walk to Piccadilly's tram stop, the tram (or its
+ * replacement bus) to Victoria, a walk to MCV and a train on. `GET
+ * /Trips/plan` is answered here, so the shots need no tram timetable in the
+ * seed, and the replacement bus needs no closure. */
+function tramPlan(ride: 'tram' | 'replacementBus') {
+  const train = (trainUid: string, originCrs: string, destinationCrs: string, dep: string, arr: string) => ({
+    kind: 'train',
+    trainUid,
+    serviceDate: '2026-09-17',
+    originCrs,
+    destinationCrs,
+    scheduledDeparture: dep,
+    scheduledArrival: arr,
+    publicDeparture: dep,
+    publicArrival: arr,
+    arrivalDayOffset: 0,
+    serviceMode: 'train',
+    liveTracking: true,
+  });
+  const walk = (originCrs: string | null, destinationCrs: string | null, stop: object, towardsStop: boolean) => ({
+    kind: 'transfer',
+    mode: 'WALK',
+    originCrs,
+    destinationCrs,
+    minutes: 6,
+    transitWalk: { network: 'metrolink', stop, towardsStop, walkMinutes: 4, estimated: true },
+  });
+  const piccadilly = { id: '9400ZZMAPIC', name: 'Piccadilly' };
+  const victoria = { id: '9400ZZMAVIC', name: 'Victoria' };
+  const transit = {
+    kind: 'transit',
+    network: 'metrolink',
+    serviceMode: ride,
+    liveTracking: false,
+    realtime: false,
+    serviceDate: '2026-09-17',
+    scheduledDeparture: ride === 'tram' ? '07:44:00' : '07:45:00',
+    scheduledArrival: ride === 'tram' ? '07:52:00' : '08:01:00',
+    departureDayOffset: 0,
+    arrivalDayOffset: 0,
+    line: ride === 'tram' ? { id: 'metrolink:blue', name: 'Blue Line', colour: '#1f6fb5' } : null,
+    headsign: ride === 'tram' ? 'Bury' : 'Victoria',
+    originCrs: null,
+    destinationCrs: null,
+    originStop: { ...piccadilly, platform: ride === 'tram' ? 'To Bury' : null },
+    destinationStop: { ...victoria, platform: null },
+    ...(ride === 'tram' ? { headwayMinutes: 6 } : {}),
+    notices:
+      ride === 'tram'
+        ? [
+            {
+              kind: 'disruption',
+              lineId: 'metrolink:blue',
+              severity: 9,
+              description: 'Minor Delays',
+              message: 'Disruption reported on the Blue Line',
+              reason: 'Delays between Piccadilly and Eccles',
+            },
+          ]
+        : [],
+  };
+  const itinerary = {
+    legs: [
+      train('E2EVT1', 'SPT', 'MAN', '07:00:00', '07:30:00'),
+      walk('MAN', null, piccadilly, true),
+      transit,
+      walk(null, 'MCV', victoria, false),
+      train('E2EVT2', 'MCV', 'LDS', '08:10:00', '09:00:00'),
+    ],
+    changeCount: 2,
+    totalDurationMinutes: 120,
+    scheduledOnly: true,
+  };
+  return {
+    results: 'fastest',
+    segments: [{ originCrs: 'SPT', destinationCrs: 'LDS', cappedByMaxChanges: false, itineraries: [itinerary] }],
+    transitNotices: [],
+  };
+}
+
+/** Station names for the tram plan's codes (`getStationNames` searches
+ * each code). */
+const TRAM_PLAN_STATIONS: Record<string, string> = {
+  SPT: 'Stockport',
+  MAN: 'Manchester Piccadilly',
+  MCV: 'Manchester Victoria',
+  LDS: 'Leeds',
+};
 
 for (const scheme of SCHEMES) {
   for (const width of WIDTHS) {
@@ -271,6 +368,36 @@ for (const scheme of SCHEMES) {
           caret: 'hide',
         });
       });
+
+      // A planned route with a tram leg, and one with a replacement bus
+      // (transit trip planning §11.3): the itinerary card alone.
+      for (const ride of ['tram', 'replacementBus'] as const) {
+        const shot = ride === 'tram' ? 'plan-tram' : 'plan-replacement-bus';
+        test(shot, async ({ page }) => {
+          await page.route('**/api/Trips/plan?*', (route) => route.fulfill({ json: tramPlan(ride) }));
+          await page.route('**/api/stations?*', (route) => {
+            const code = (new URL(route.request().url()).searchParams.get('q') ?? '').toUpperCase();
+            const name = TRAM_PLAN_STATIONS[code];
+            return route.fulfill({ json: name ? [{ code, name }] : [] });
+          });
+          await page.clock.setFixedTime(FIXED_NOW);
+          await page.goto('/plan?origin=SPT&destination=LDS&date=2026-09-17&departAfter=07:00', {
+            waitUntil: 'networkidle',
+          });
+          await page.addStyleTag({ content: NO_MOTION_CSS });
+          await page.evaluate(() => document.fonts.ready);
+          await page.getByRole('button', { name: 'Find routes' }).click();
+          const card = page.locator('[data-plan-entry]').first();
+          await expect(card.getByText('Scheduled times, not live')).toBeVisible();
+          await expect(card.getByText('MAN · Manchester Piccadilly', { exact: false }).first()).toBeVisible();
+          await page.mouse.move(0, 0);
+
+          await expect(card).toHaveScreenshot(`${shot}-${scheme}-${width}.png`, {
+            animations: 'disabled',
+            caret: 'hide',
+          });
+        });
+      }
 
       // The /stations "Use my location" results
       // (app/stations/NearbyStationList.tsx), which only exist after the

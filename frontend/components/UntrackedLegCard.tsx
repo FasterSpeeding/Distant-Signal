@@ -2,8 +2,10 @@ import { Card, Group, Stack, Text } from '@mantine/core';
 import { EditUntrackedLegButton } from './EditUntrackedLegButton';
 import { RemoveJourneyLegButton } from './RemoveJourneyLegButton';
 import { StateBadge } from './StateBadge';
+import { TextLink } from './TextLink';
 import { formatDate } from '@/lib/dateFormat';
 import { UNTRACKED_STATUS_LABEL, untrackedLegPlaces, untrackedLegTimes, untrackedLegTitle } from '@/lib/untrackedLeg';
+import { stopPageHref } from '@/lib/transitStops';
 import type { JourneyLegDetail } from '@/lib/types';
 
 /** One untracked leg's card on a journey page: a Tube ride, a bus, a walk,
@@ -25,7 +27,6 @@ export function UntrackedLegCard({
   isOwner: boolean;
   isOnlyLeg: boolean;
 }) {
-  const places = untrackedLegPlaces(leg);
   const times = untrackedLegTimes(leg);
   const status = leg.untrackedStatus ?? 'planned';
   return (
@@ -36,7 +37,7 @@ export function UntrackedLegCard({
             <Text fw={600} size="lg">
               {untrackedLegTitle(leg)}
             </Text>
-            {places && <Text size="sm">{places}</Text>}
+            <UntrackedLegPlaces leg={leg} />
           </Stack>
           <Group gap="xs">
             <StateBadge tone="neutral">{UNTRACKED_STATUS_LABEL[status]}</StateBadge>
@@ -53,5 +54,40 @@ export function UntrackedLegCard({
         </Text>
       </Stack>
     </Card>
+  );
+}
+
+/** "Euston to Victoria", with each place picked from a stop linking to its
+ * page: a Metrolink station's (`9400ZZMA...`) on the transit pages, a TfL
+ * stop's (`940G...`, London trams included) on `/tfl/stops`. Plain text
+ * for free-text places. */
+function UntrackedLegPlaces({ leg }: { leg: JourneyLegDetail }) {
+  const places = untrackedLegPlaces(leg);
+  if (!places) return null;
+  const originHref = stopPageHref(leg.originStopId);
+  const destinationHref = stopPageHref(leg.destinationStopId);
+  if (!originHref && !destinationHref) return <Text size="sm">{places}</Text>;
+  const place = (name: string, href: string | null) =>
+    href ? (
+      <TextLink href={href} underline="always" inline size="sm">
+        {name}
+      </TextLink>
+    ) : (
+      name
+    );
+  const origin = leg.originName ? place(leg.originName, originHref) : null;
+  const destination = leg.destinationName ? place(leg.destinationName, destinationHref) : null;
+  return (
+    <Text size="sm">
+      {origin && destination ? (
+        <>
+          {origin} to {destination}
+        </>
+      ) : origin ? (
+        <>From {origin}</>
+      ) : (
+        <>To {destination}</>
+      )}
+    </Text>
   );
 }

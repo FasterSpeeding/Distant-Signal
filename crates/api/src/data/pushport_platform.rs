@@ -32,7 +32,7 @@ use chrono_tz::Europe::London;
 use ds_store::darwin::DarwinCall;
 
 use crate::data::journey::{JourneyStop, platforms_differ};
-use ds_store::trains::types::PlatformStatus;
+use ds_store::trains::types::{PlatformEvidence, PlatformEvidenceSource, PlatformStatus};
 
 /// `at` as Europe/London `HH:MM`.
 fn local_minute(at: DateTime<Utc>) -> NaiveTime {
@@ -117,6 +117,17 @@ pub fn apply_pushport_platforms(stops: &mut [JourneyStop], calls: &[DarwinCall])
         };
         if call.platform_hidden() {
             stop.platform_suppressed = true;
+            // Darwin hides the number from the public, so the forming
+            // unit's arrival platform (a prediction) is not shown either.
+            // The train's own report at the platform has happened, and
+            // stays.
+            if stop
+                .platform_evidence
+                .as_ref()
+                .is_some_and(|e| e.source == PlatformEvidenceSource::PreviousWorkingArrival)
+            {
+                stop.platform_evidence = None;
+            }
             continue;
         }
         let board_is_newer = stop.board.as_ref().is_some_and(|board| {
@@ -130,7 +141,20 @@ pub fn apply_pushport_platforms(stops: &mut [JourneyStop], calls: &[DarwinCall])
             continue;
         }
         stop.platform = Some(number.to_owned());
-        stop.platform_confirmed = call.platform_confirmed;
+        // The operator's confirmation is evidence like TRUST's (DS-180):
+        // `apply_platform_basis` turns it into `confirmed`. The train's own
+        // automatic report outranks it; it outranks the forming unit's
+        // arrival. A cancelled call is not confirmed.
+        let train_reported = stop
+            .platform_evidence
+            .as_ref()
+            .is_some_and(|e| e.source == PlatformEvidenceSource::TrainReport);
+        if call.platform_confirmed && !call.is_cancelled && !train_reported {
+            stop.platform_evidence = Some(PlatformEvidence {
+                platform: number.trim().to_ascii_uppercase(),
+                source: PlatformEvidenceSource::DarwinConfirmed,
+            });
+        }
         stop.platform_status = Some(if call.is_cancelled {
             PlatformStatus::Cancelled
         } else {
@@ -267,6 +291,53 @@ mod tests {
         cancelled.is_cancelled = true;
         apply_pushport_platforms(&mut stops, &[cancelled]);
         assert_eq!(stops[0].platform_status, Some(PlatformStatus::Cancelled));
+    }
+
+    fn evidence(platform: &str, source: PlatformEvidenceSource) -> Option<PlatformEvidence> {
+        Some(PlatformEvidence {
+            platform: platform.to_string(),
+            source,
+        })
+    }
+
+    #[test]
+    fn the_trains_own_report_outranks_darwin_and_darwin_the_forming_unit() {
+        let mut confirmed = call("YORK", "10:12", Some("5"));
+        confirmed.platform_confirmed = true;
+
+        let mut reported = vec![york()];
+        reported[0].platform_evidence = evidence("6", PlatformEvidenceSource::TrainReport);
+        apply_pushport_platforms(&mut reported, std::slice::from_ref(&confirmed));
+        apply_platform_basis(&mut reported);
+        assert_eq!(reported[0].platform.as_deref(), Some("6"));
+
+        let mut forming = vec![york()];
+        forming[0].platform_evidence =
+            evidence("6", PlatformEvidenceSource::PreviousWorkingArrival);
+        apply_pushport_platforms(&mut forming, std::slice::from_ref(&confirmed));
+        apply_platform_basis(&mut forming);
+        assert_eq!(forming[0].platform.as_deref(), Some("5"));
+        assert_eq!(forming[0].platform_basis, Some(PlatformBasis::Confirmed));
+    }
+
+    #[test]
+    fn a_suppressed_platform_hides_the_forming_units_but_not_the_trains_own() {
+        let mut hidden = call("YORK", "10:12", Some("5"));
+        hidden.platform_suppressed = true;
+
+        let mut forming = vec![york()];
+        forming[0].platform_evidence =
+            evidence("6", PlatformEvidenceSource::PreviousWorkingArrival);
+        apply_pushport_platforms(&mut forming, std::slice::from_ref(&hidden));
+        apply_platform_basis(&mut forming);
+        assert_eq!(forming[0].platform, None);
+        assert!(forming[0].platform_suppressed);
+
+        let mut reported = vec![york()];
+        reported[0].platform_evidence = evidence("6", PlatformEvidenceSource::TrainReport);
+        apply_pushport_platforms(&mut reported, std::slice::from_ref(&hidden));
+        apply_platform_basis(&mut reported);
+        assert_eq!(reported[0].platform.as_deref(), Some("6"));
     }
 
     #[test]

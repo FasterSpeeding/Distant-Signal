@@ -1607,6 +1607,12 @@ pub struct TrainMovementEventMessage {
     pub actual_timestamp: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variation_status: Option<String>,
+    /// The platform an AUTOMATIC (berth-derived) arrival or departure
+    /// reports, from `trust_schema::schema::movement_reported_platform`
+    /// (DS-180); `None` otherwise. Stored as
+    /// `train_movement_events.platform`. Optional on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
     pub raw_body: serde_json::Value,
 
     // Derived current-state fields, computed by trust-consumer (Tasks
@@ -1669,6 +1675,12 @@ pub struct TrustBacklogEventMessage {
     /// wire both ways, so an older consumer or `api` interoperates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gbtt_timestamp: Option<DateTime<Utc>>,
+    /// The platform a Movement reports, as on
+    /// [`TrainMovementEventMessage::platform`] (DS-180). Stored as
+    /// `trust_event_backlog.platform` and replayed onto
+    /// `train_movement_events.platform` when the train is matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
 }
 
 /// Response body of `POST /private/trust-event-backlog`, shared by `api`
@@ -1748,9 +1760,10 @@ mod trust_backlog_event_message_tests {
 
 /// One TRUST reason code, the wire shape `trust-backlog-consumer` POSTs in
 /// batches to `api`'s `/private/train-reasons` route (stored in
-/// `train_reasons`, see `api::data::train_reasons`). Sent for a `0002`
-/// Cancellation's `canx_reason_code` and a `0006` Change of Origin's
-/// `reason_code`, and only when the message carries one.
+/// `train_reasons`, see `api::data::train_reasons`). Sent for every `0002`
+/// Cancellation (its `canx_reason_code`), `0005` Reinstatement and `0006`
+/// Change of Origin (its `reason_code`); `reason_code` is empty when the
+/// message carries none, which a `0005` never does (DS-181).
 ///
 /// Deliberately its own type and route, not a field on
 /// [`TrustBacklogEventMessage`]: `0006` has no place in the backlog table
@@ -1765,15 +1778,17 @@ pub struct TrainReasonMessage {
     pub train_uid: Option<String>,
     /// Derived exactly as the same message's backlog row's `service_date`.
     pub service_date: NaiveDate,
-    /// `"0002"` or `"0006"`.
+    /// `"0002"`, `"0005"` or `"0006"`.
     pub msg_type: String,
+    /// The delay attribution code, or `""` when there is none.
     pub reason_code: String,
     /// `0002` only: `"AT ORIGIN"`, `"EN ROUTE"`, `"ON CALL"` or `"OUT OF PLAN"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canx_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loc_stanox: Option<String>,
-    /// `canx_timestamp` (`0002`) or `dep_timestamp` (`0006`), corrected.
+    /// `canx_timestamp` (`0002`), `reinstatement_timestamp` (`0005`) or
+    /// `dep_timestamp` (`0006`), corrected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_at: Option<DateTime<Utc>>,
 }
