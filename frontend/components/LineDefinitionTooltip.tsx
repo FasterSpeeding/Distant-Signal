@@ -1,5 +1,3 @@
-'use client';
-
 import { ActionIcon, Stack, Text, Tooltip } from '@mantine/core';
 import { InfoIcon } from './InfoIcon';
 

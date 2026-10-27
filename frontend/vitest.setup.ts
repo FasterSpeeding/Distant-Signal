@@ -14,6 +14,25 @@ function jsdomElementPrototype(): Partial<Pick<Element, 'scrollTo'>> {
   return window.Element.prototype;
 }
 
+// `components/LazyDateFields.tsx` loads `@mantine/dates`' calendar fields on
+// demand, so their first render is a placeholder. Every form test gets the
+// real fields straight away instead (a test file's own `@mantine/dates`
+// mock still applies); `components/LazyDateFields.test.tsx` unmocks this
+// to test the on-demand loading itself.
+// Each field is read at render time, so a file whose `@mantine/dates` mock
+// stubs only the fields it uses still loads.
+vi.mock('@/components/LazyDateFields', async () => {
+  const { createElement } = await import('react');
+  const dates = await import('@mantine/dates');
+  const field = (name: 'DateInput' | 'DatePickerInput' | 'DateTimePicker') => (props: Record<string, unknown>) =>
+    createElement(dates[name] as (p: Record<string, unknown>) => ReturnType<typeof createElement>, props);
+  return {
+    DateInput: field('DateInput'),
+    DatePickerInput: field('DatePickerInput'),
+    DateTimePicker: field('DateTimePicker'),
+  };
+});
+
 // Note on theme parity: this file runs once before test *modules* load, so
 // it can't inject props into a component tree — there's no JSX here to
 // wrap. Each test file wraps its subject in its own local `MantineProvider`

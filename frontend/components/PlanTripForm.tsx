@@ -3,7 +3,8 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { londonToday, nowInLondon } from '@/lib/londonWallClock';
 import { Button, Group, InputLabel, SegmentedControl, Stack, Text, ActionIcon, VisuallyHidden } from '@mantine/core';
-import { DateInput, TimeInput } from '@mantine/dates';
+import { TimeInput } from '@mantine/dates';
+import { DateInput } from '@/components/LazyDateFields';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { getStationNames, searchPlannerLocations } from '@/lib/suggestions';
 import { groupLabels, useStationGroups, withGroupSuggestions } from '@/lib/stationGroups';

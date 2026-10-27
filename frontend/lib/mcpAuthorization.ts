@@ -1,5 +1,5 @@
 import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
-import { auth, type AuthResult } from '@modelcontextprotocol/sdk/client/auth.js';
+import type { AuthResult } from '@modelcontextprotocol/sdk/client/auth.js';
 import { BrowserMcpOAuthProvider } from './mcpOAuthProvider';
 
 export function chatOAuthProvider(): BrowserMcpOAuthProvider {
@@ -19,5 +19,7 @@ export async function startMcpSignIn(
   provider: BrowserMcpOAuthProvider = chatOAuthProvider(),
 ): Promise<AuthResult> {
   provider.invalidateCredentials('all');
+  // Loaded on demand: the MCP SDK stays out of /chat's first load.
+  const { auth } = await import('@modelcontextprotocol/sdk/client/auth.js');
   return auth(provider, { serverUrl: mcpEndpointUrl(mcpServerUrl) });
 }
