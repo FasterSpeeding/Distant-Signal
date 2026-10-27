@@ -588,21 +588,24 @@ pub async fn derive_from_timetable(
     let stored = crate::backlog::reasons::reasons_for_trains(pool, &[trains_id])
         .await?
         .remove(&trains_id);
-    let raw: Vec<crate::trains::types::RawCallingPoint> = match calling_points {
+    let calling_points_raw: Vec<crate::trains::types::RawCallingPoint> = match calling_points {
         Some(json) => serde_json::from_value(json).unwrap_or_else(|err| {
             tracing::warn!(trains_id, error = %err, "stored calling points do not parse");
             Vec::new()
         }),
         None => Vec::new(),
     };
-    if raw.is_empty() {
+    if calling_points_raw.is_empty() {
         return Ok(derive(status.as_deref(), stored.as_ref(), None));
     }
-    let mut tiplocs: Vec<String> = raw.iter().map(|cp| tiploc_key(&cp.tiploc)).collect();
+    let mut tiplocs: Vec<String> = calling_points_raw
+        .iter()
+        .map(|cp| tiploc_key(&cp.tiploc))
+        .collect();
     tiplocs.sort();
     tiplocs.dedup();
     let crs_by_tiploc = crate::reference::crs_for_tiplocs_batch(pool, &tiplocs).await?;
-    let mut stops: Vec<JourneyStop> = raw
+    let mut stops: Vec<JourneyStop> = calling_points_raw
         .iter()
         .map(|cp| {
             let crs = crs_by_tiploc
