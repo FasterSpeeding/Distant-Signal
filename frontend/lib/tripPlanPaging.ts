@@ -46,6 +46,11 @@ function legKey(leg: TripPlanLeg): string {
   if (leg.kind === 'transfer') {
     return `${leg.mode}:${leg.originCrs ?? ''}>${leg.destinationCrs ?? ''}`;
   }
+  if (leg.kind === 'transit') {
+    // A tram has no UID: its line, stops and timetabled departure.
+    const departure = `${leg.scheduledDeparture}+${leg.departureDayOffset}`;
+    return `${leg.network}:${leg.line?.id ?? leg.serviceMode}@${leg.serviceDate}:${leg.originStop.id}>${leg.destinationStop.id}@${departure}`;
+  }
   // The timetabled departure, never the live one: a delay that changes
   // between two pages must not make the same train look new.
   const departure = `${leg.scheduledDeparture}+${leg.departureDayOffset ?? 0}`;

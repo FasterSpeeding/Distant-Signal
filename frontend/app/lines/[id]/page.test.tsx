@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, vi, beforeEach } from 'vitest';
 import { act, cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import LineDetailPage, { generateMetadata } from './page';
@@ -153,6 +153,12 @@ async function renderPage(id = 'custom-my-commute', search: Record<string, strin
   // before the findBy* calls give up.
   return act(() => Promise.resolve(renderWithMantine(element)));
 }
+
+// TrendsCharts loads its Recharts half on demand (next/dynamic); load it once
+// up front so the first chart assertion isn't timed against a cold import.
+beforeAll(async () => {
+  await import('@/app/lines/[id]/history/TrendsChartParts');
+});
 
 describe('LineDetailPage Edit/Delete visibility', () => {
   beforeEach(() => {

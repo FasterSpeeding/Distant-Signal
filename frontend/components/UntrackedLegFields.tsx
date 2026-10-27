@@ -1,7 +1,7 @@
 'use client';
 
 import { Autocomplete, Group, Select, Stack, Text, TextInput } from '@mantine/core';
-import { DateInput } from '@mantine/dates';
+import { DateInput } from '@/components/LazyDateFields';
 import dayjs from 'dayjs';
 import { useCallback } from 'react';
 import { TimeFilterInput } from './TimeFilterInput';

@@ -127,7 +127,10 @@ describe('ChatCallback', () => {
       mockAuth.mockReturnValueOnce(new Promise(() => {}));
       act(() => reconnect.click());
       expect(localStorage.getItem('ds-mcp-oauth:client-information')).toBeNull();
-      expect(mockAuth).toHaveBeenLastCalledWith(expect.anything(), { serverUrl: 'https://mcp.example.com/mcp' });
+      // startMcpSignIn loads the SDK's auth() on demand, so the call lands a tick later.
+      await waitFor(() =>
+        expect(mockAuth).toHaveBeenLastCalledWith(expect.anything(), { serverUrl: 'https://mcp.example.com/mcp' }),
+      );
     });
 
     it('offers Reconnect when the state could not be verified', async () => {
