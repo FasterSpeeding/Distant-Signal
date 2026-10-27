@@ -26,7 +26,9 @@
 //! The backward scan yields only the departure time. The journey itself is
 //! then produced by the ordinary FORWARD search from that time (over the
 //! connections departing by the deadline), so an arrive-by itinerary is
-//! built by the same code, with the same legs, as a depart-after one. If
+//! built by the same code, with the same legs, as a depart-after one,
+//! ranking the journeys arriving by the deadline fewest changes first, then
+//! earliest arrival (`csa::Goal::FewestChangesBy`, 2026-10-26). If
 //! the forward search ever disagreed (it should not; the unit tests below
 //! check it against a brute-force search), [`scan_connections_arrive_by`]
 //! falls back to Skye's `train-mcp` approach (`src/tools/plan-journey.ts`,
@@ -49,7 +51,7 @@ use schedule_query::{
     sibling_tiplocs,
 };
 
-use crate::csa::{Journey, ScanOptions, scan_connections_restricted};
+use crate::csa::{Goal, Journey, ScanOptions, scan};
 use crate::overlay::ConnectionOverlay;
 use crate::raptor::{RaptorJourney, RaptorOptions, raptor_search_restricted};
 use crate::restrictions::{self, Restrictions};
@@ -553,9 +555,10 @@ fn latest_by_bisection<T>(deadline: u32, probe: impl Fn(u32) -> Option<T>) -> Op
     Some(best)
 }
 
-/// The arrive-by counterpart of [`scan_connections_restricted`]: the
-/// latest-departing journey arriving by `options.arrive_by_min` (and, among
-/// those departing then, the earliest-arriving one). `None` when no journey
+/// The arrive-by counterpart of [`crate::scan_connections_restricted`]: the
+/// latest-departing journey arriving by `options.arrive_by_min` -- among
+/// those departing then, the one with the fewest changes, then the
+/// earliest-arriving one (then the least walking). `None` when no journey
 /// arrives in time.
 #[expect(
     clippy::needless_pass_by_value,
@@ -570,8 +573,8 @@ pub fn scan_connections_arrive_by(
     let departure = latest_departure(&options, overlay, restrictions)?;
     let connections = base_by(options.connections, deadline);
     let forward = |departure_min: u32| {
-        scan_connections_restricted(
-            ScanOptions {
+        scan(
+            &ScanOptions {
                 connections,
                 interchange: options.interchange,
                 from_tiplocs: options.from_tiplocs,
@@ -581,6 +584,7 @@ pub fn scan_connections_arrive_by(
             },
             overlay,
             restrictions,
+            Goal::FewestChangesBy(deadline),
         )
         .filter(|journey| journey.arrival_min <= deadline)
     };
@@ -735,6 +739,7 @@ pub fn raptor_arrive_by(
 mod tests {
     use super::*;
     use crate::JourneyLeg;
+    use crate::csa::scan_connections_restricted;
     use schedule_query::FixedLink;
 
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
@@ -1056,6 +1061,46 @@ mod tests {
         assert_eq!(uids(&journey), vec!["U1"]);
     }
 
+    /// Two routes leaving on S at 480 and arriving at 600 on F from M: one
+    /// with four changes reaching M first, one with two reaching it later
+    /// (as `csa`'s `two_and_four_change_network`).
+    #[test]
+    fn of_two_journeys_leaving_together_the_one_with_fewer_changes_wins() {
+        let connections = sorted(vec![
+            conn("S", "O", "P", 480, 490),
+            conn("T2", "P", "B", 495, 505),
+            conn("U2", "P", "M", 500, 532),
+            conn("T3", "B", "C", 510, 515),
+            conn("T4", "C", "M", 520, 525),
+            conn("F", "M", "Z", 540, 600),
+        ]);
+        let ic = interchange(&[]);
+        let (from, to) = (s("O"), s("Z"));
+        let journey =
+            scan_connections_arrive_by(arrive_by(&connections, &ic, &from, &to, 600), None, None)
+                .unwrap();
+        assert_eq!((journey.departure_min, journey.arrival_min), (480, 600));
+        assert_eq!(uids(&journey), ["S", "U2", "F"]);
+    }
+
+    #[test]
+    fn arrive_by_takes_fewer_changes_over_an_earlier_arrival_on_the_same_departure() {
+        // Both leave on S at 480: changing at P arrives 560, staying on S
+        // arrives 600. Both are in time for 610; the direct one wins.
+        let connections = sorted(vec![
+            conn("S", "O", "P", 480, 490),
+            conn("C", "P", "Z", 500, 560),
+            conn("S", "P", "Z", 491, 600),
+        ]);
+        let ic = interchange(&[]);
+        let (from, to) = (s("O"), s("Z"));
+        let journey =
+            scan_connections_arrive_by(arrive_by(&connections, &ic, &from, &to, 610), None, None)
+                .unwrap();
+        assert_eq!((journey.departure_min, journey.arrival_min), (480, 600));
+        assert_eq!(uids(&journey), ["S"]);
+    }
+
     /// Brute force: the latest departure minute whose forward earliest
     /// arrival is in time, over a small pseudo-random network, must equal
     /// the backward scan's answer -- with and without restrictions. Some
@@ -1141,14 +1186,32 @@ mod tests {
                     let backward = latest_departure(&options, None, restricted);
                     assert_eq!(backward, brute, "case {case}, deadline {deadline}");
                     let journey = scan_connections_arrive_by(options, None, restricted);
-                    assert_eq!(journey.map(|j| j.departure_min), brute);
+                    assert_eq!(journey.as_ref().map(|j| j.departure_min), brute);
                     total += 1;
                     found += usize::from(brute.is_some());
 
                     // Per number of trains, against forward RAPTOR.
                     let options = arrive_by(&connections, &ic, &from, &to, deadline);
-                    let by_trips = latest_departures_by_trips(&options, None, restricted, 4);
-                    for (index, backward) in by_trips.iter().enumerate() {
+                    let by_trips = latest_departures_by_trips(&options, None, restricted, 8);
+                    // Fewest changes among the latest departures: the first
+                    // round to reach that departure.
+                    if let Some(journey) = &journey {
+                        let fewest = by_trips
+                            .iter()
+                            .position(|d| *d == Some(journey.departure_min))
+                            .expect("some round reaches the latest departure");
+                        let trains = journey
+                            .legs
+                            .iter()
+                            .filter(|leg| matches!(leg, JourneyLeg::Train(_)))
+                            .count();
+                        assert_eq!(
+                            trains.saturating_sub(1),
+                            fewest,
+                            "case {case}, deadline {deadline}: fewest changes"
+                        );
+                    }
+                    for (index, backward) in by_trips.iter().take(4).enumerate() {
                         let trains = index as u32 + 1;
                         let brute = candidates
                             .iter()
