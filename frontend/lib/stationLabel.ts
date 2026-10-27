@@ -1,3 +1,5 @@
+import { isTransitStopCode } from './transitStops';
+
 /** `"London Kings Cross (KGX)"`, or the bare code when no name resolved.
  *
  * `Name (CRS)` rather than name-only: this is already what
@@ -81,7 +83,8 @@ export function codeStationLabel(crs: string, name: string | null | undefined): 
   // reader, and its name already says what it is ("Keswick (bus)").
   // Nor does a station group's `group:` code; its name is its label.
   // Nor does a TfL stop's id (`940GZZLUUXB`); its name says `(Tube)`.
-  if (isTiplocCode(crs) || isGroupCode(crs) || isTflStopCode(crs)) return name ?? crs;
+  // Nor a tram station's (`9400ZZMAPIC`); its name says `(Metrolink)`.
+  if (isTiplocCode(crs) || isGroupCode(crs) || isTflStopCode(crs) || isTransitStopCode(crs)) return name ?? crs;
   return name ? `${crs} · ${name}` : crs;
 }
 
@@ -172,8 +175,9 @@ export function codeRouteLabel(
   if (originName && destinationName) {
     return `${codeStationLabel(originCrs, originName)} to ${codeStationLabel(destinationCrs, destinationName)}`;
   }
-  // A TfL stop's id means nothing to a reader: its name, even beside a
-  // bare station code (DS-135).
-  const bare = (code: string, name: string | null | undefined) => (isTflStopCode(code) && name ? name : code);
+  // A TfL stop's or tram station's id means nothing to a reader: its
+  // name, even beside a bare station code (DS-135).
+  const bare = (code: string, name: string | null | undefined) =>
+    (isTflStopCode(code) || isTransitStopCode(code)) && name ? name : code;
   return `${bare(originCrs, originName)} to ${bare(destinationCrs, destinationName)}`;
 }

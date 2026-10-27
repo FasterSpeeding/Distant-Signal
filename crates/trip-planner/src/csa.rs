@@ -8,6 +8,26 @@
 //! shape becomes a struct with `&mut self` methods here (Judgment Call 2),
 //! and why the sibling's own per-lookup memoization caches are not ported
 //! (Judgment Call 3).
+//!
+//! Fewest changes on a tie (2026-10-26). Of the journeys arriving
+//! earliest, the one with the fewest trains is returned, then the one
+//! leaving latest, then the one walking least. A single earliest arrival
+//! per stop cannot find it: the fewest-changes journey to the destination
+//! may reach some stop on the way later than another route does, and
+//! still make the same onward train. So each stop keeps a small Pareto
+//! set of labels over (arrival, arrival plus the bus or ferry buffer,
+//! trains ridden), as multi-criteria Connection Scan does, and a train
+//! already boarded is boarded again further along when that takes fewer
+//! trains. Departure and walking only break ties between otherwise equal
+//! labels, greedily, so they are a preference, not a guarantee. The
+//! earliest arrival itself is never later than the single-label scan's:
+//! the label that one kept is never dominated. Labels arriving after the
+//! best destination arrival found so far are dropped, as the plain scan
+//! stops at it, which keeps the sets small.
+//!
+//! The arrive-by search's forward half ([`Goal::FewestChangesBy`]) ranks
+//! the other way round: of the journeys arriving by a deadline, fewest
+//! changes first, then the earliest arrival (see [`crate::reverse`]).
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -99,26 +119,182 @@ pub struct ScanOptions<'a> {
     pub date: NaiveDate,
 }
 
-/// How a stop's earliest-arrival entry was produced.
-#[derive(Debug, Clone)]
-enum ArrivalSource {
+/// Which of the journeys reaching the destination a scan returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Goal {
+    /// Depart-after: the earliest arrival; among those, the fewest changes,
+    /// then the latest departure, then the least walking.
+    EarliestArrival,
+    /// The forward half of arrive-by, run from the latest departure: of the
+    /// journeys arriving by this deadline, the fewest changes, then the
+    /// earliest arrival, then the latest departure, then the least walking.
+    FewestChangesBy(u32),
+}
+
+/// How a label was produced.
+#[derive(Debug, Clone, Copy)]
+enum ArrivalSource<'a> {
     /// The connection that arrived, and the ride it was part of (an index
-    /// into `Scan::boardings`). The ride is recorded here, not looked up by
-    /// UID afterwards: with restrictions a train can be left (a blocked
-    /// connection) and boarded again further on, and an arrival made on the
-    /// first ride must still reconstruct from the first boarding.
-    Train(Connection, usize),
+    /// into `Scan::rides`). The ride is recorded here, not looked up by UID
+    /// afterwards: with restrictions a train can be left (a blocked
+    /// connection) and boarded again further on, a train can be boarded
+    /// again for fewer changes, and an arrival made on the first ride must
+    /// still reconstruct from the first boarding.
+    Train(&'a Connection, usize),
+    /// A fixed link from `from_tiploc`, started from the label `from`
+    /// (`None`: from the origin itself, at the requested departure time).
     Link {
-        from_tiploc: String,
-        mode: String,
+        from: Option<usize>,
+        from_tiploc: &'a str,
+        mode: &'a str,
         minutes: i32,
     },
 }
 
-struct ReadySource {
+/// One way of standing at a stop: an entry in that stop's Pareto set.
+/// Labels live in `Scan::labels` and are never moved or changed, apart from
+/// `live`, so rides and later labels can point back at them by index.
+#[derive(Debug, Clone)]
+struct Label<'a> {
+    /// Normalized.
+    tiploc: &'a str,
+    /// Arrival.
     time: u32,
-    from: String,
+    /// When a fresh boarding or a walk on may start, before the next
+    /// stop's own change time: `time` plus the bus or ferry buffer owed
+    /// for getting off (see [`alighting_buffer`]).
+    ready: u32,
+    /// Trains ridden so far.
+    trains: u32,
+    /// The journey's departure (its first leg's).
+    departure: u32,
+    /// Fixed-link minutes so far.
+    walk: u32,
+    via: ArrivalSource<'a>,
+    /// Still in its stop's Pareto set. A dominated label is dropped from
+    /// the set but kept here, for whatever already points at it.
+    live: bool,
 }
+
+impl Label<'_> {
+    /// Ties between labels equal on every Pareto criterion: the later
+    /// departure, then the shorter walk.
+    fn tie_key(&self) -> (Reverse<u32>, u32) {
+        (Reverse(self.departure), self.walk)
+    }
+
+    /// At least as good as `other` on (arrival, ready, trains), and on the
+    /// tie key too if equal on all three: `other` adds nothing.
+    fn covers(&self, other: &Label<'_>) -> bool {
+        if self.time > other.time || self.ready > other.ready || self.trains > other.trains {
+            return false;
+        }
+        (self.time, self.ready, self.trains) != (other.time, other.ready, other.trains)
+            || self.tie_key() <= other.tie_key()
+    }
+
+    fn changes(&self) -> u32 {
+        self.trains.saturating_sub(1)
+    }
+}
+
+/// One ride on a train: where it was boarded, and the journey so far.
+struct Ride<'a> {
+    boarded: &'a Connection,
+    /// The label whose arrival made the boarding possible (`None`: the
+    /// origin).
+    from: Option<usize>,
+    /// Trains ridden, this one included.
+    trains: u32,
+    departure: u32,
+    walk: u32,
+}
+
+/// A possible fresh boarding, as [`Ride`]'s fields.
+struct ReadySource {
+    from: Option<usize>,
+    trains: u32,
+    departure: u32,
+    walk: u32,
+}
+
+/// Lower is better: fewer trains, then a later departure, then less walking.
+type RideKey = (u32, Reverse<u32>, u32);
+
+fn ride_key(trains: u32, departure: u32, walk: u32) -> RideKey {
+    (trains, Reverse(departure), walk)
+}
+
+/// `FxHash`, as rustc uses: far cheaper than the default `SipHash` for the
+/// short TIPLOC and UID keys of a scan's own per-query maps, which are
+/// looked up for nearly every connection. Not resistant to collision
+/// attacks, which is fine: the keys are timetable identifiers, not request
+/// input.
+#[derive(Default, Clone, Copy)]
+struct FxHasher(u64);
+
+impl FxHasher {
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl std::hash::Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let (words, rest) = bytes.as_chunks::<8>();
+        for word in words {
+            self.add(u64::from_le_bytes(*word));
+        }
+        if !rest.is_empty() {
+            let mut word = [0u8; 8];
+            word[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u8(&mut self, byte: u8) {
+        self.add(u64::from(byte));
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type FxMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<FxHasher>>;
+
+/// What a scan knows about one stop: its labels, and everything a boarding
+/// there needs, looked up from the interchange data once per scan rather
+/// than once per connection.
+struct Stop<'a> {
+    /// Its live labels: a Pareto set, usually of one or two.
+    bag: Vec<usize>,
+    origin: bool,
+    destination: bool,
+    /// Not avoided (`avoidChange` and stricter): may be alighted at or
+    /// walked into, and boarded at fresh.
+    allows_interchange: bool,
+    /// What a fresh boarding here costs before any bus or ferry buffer:
+    /// `minimum_change_time`, `None` for a `NoInterchange` sentinel (the
+    /// nine real coach-stand stations, see `schedule_query::ChangeTime`'s
+    /// own doc) or an avoided station.
+    change_time: Option<u32>,
+    /// Every other TIPLOC sharing its CRS (`schedule_query::sibling_tiplocs`).
+    siblings: Vec<&'a str>,
+}
+
+/// Where fixed links are expanded from: a label, or the origin.
+struct Walker<'a> {
+    from: Option<usize>,
+    /// Normalized.
+    tiploc: &'a str,
+    at_min: u32,
+    trains: u32,
+    departure: u32,
+    walk: u32,
+}
+
+type LinkQueue = BinaryHeap<Reverse<(u32, usize)>>;
 
 /// All of `scanConnections`'s TypeScript closures' captured mutable state,
 /// as struct fields -- see this plan's Judgment Call 2.
@@ -126,209 +302,282 @@ struct Scan<'a> {
     interchange: &'a InterchangeData,
     restrictions: Option<&'a Restrictions>,
     date: NaiveDate,
-    origin: HashSet<String>,
-    destinations: HashSet<String>,
+    goal: Goal,
+    origin: HashSet<&'a str>,
+    destinations: HashSet<&'a str>,
     departure_min: u32,
 
-    earliest_arrival: HashMap<String, u32>,
-    arrived_via: HashMap<String, ArrivalSource>,
-    /// UID -> the ride (index into `boardings`) the traveller is on.
-    reachable_trip: HashMap<String, usize>,
-    /// Every ride: the connection boarded, and the TIPLOC whose readiness
-    /// allowed it.
-    boardings: Vec<(Connection, String)>,
-
-    best_dest_arrival: u32,
-    best_dest_tiploc: Option<String>,
+    /// Every label ever recorded (see [`Label`]).
+    labels: Vec<Label<'a>>,
+    /// Normalized TIPLOC -> index into `stops`.
+    stop_ids: FxMap<&'a str, usize>,
+    stops: Vec<Stop<'a>>,
+    /// UID -> the ride (index into `rides`) the traveller is on.
+    reachable_trip: FxMap<&'a str, usize>,
+    rides: Vec<Ride<'a>>,
+    /// The best label at a destination so far, by `goal`.
+    best: Option<usize>,
 }
 
 impl<'a> Scan<'a> {
-    /// The time a NEW boarding becomes possible at `tiploc`. The origin
-    /// needs no interchange time. Every other stop folds in
-    /// `minimum_change_time`, which can be `ChangeTime::NoInterchange` at
-    /// the nine real coach-stand sentinel stations -- correctly forbidding
-    /// a fresh board there without a special case (see
-    /// `schedule_query::ChangeTime::allows`'s own doc). Also checks every
-    /// CRS-sibling TIPLOC's own earlier arrival (a different platform group
-    /// of the same physical station), charged at `tiploc`'s OWN minimum
-    /// change time -- the same figure a same-TIPLOC change already pays.
-    /// `None` when no candidate (neither `tiploc` itself nor any sibling)
-    /// has any recorded arrival, or `tiploc`'s own change time is
-    /// `NoInterchange` regardless of arrival -- direct translation of
-    /// `csa.ts`'s own `Infinity` return, just as `Option::None` instead of
-    /// a float sentinel.
-    ///
-    /// A change onto or off a bus or ferry also owes
-    /// `interchange.modal_change` (see `schedule_query::ModalChangeBuffer`):
-    /// `boarding_uid`'s side here, and the arriving service's side read off
-    /// `arrived_via`.
-    fn ready_source_at(&self, tiploc: &str, boarding_uid: &str) -> Option<ReadySource> {
+    /// No label arriving later than this can lead to a better answer: the
+    /// best destination arrival so far (the plain scan's stopping rule), or
+    /// the arrive-by deadline.
+    fn bound(&self) -> u32 {
+        match self.goal {
+            Goal::EarliestArrival => self.best.map_or(u32::MAX, |best| self.labels[best].time),
+            Goal::FewestChangesBy(deadline) => deadline,
+        }
+    }
+
+    /// `tiploc`'s (normalized) index into `stops`, added on first sight.
+    fn stop_id(&mut self, tiploc: &'a str) -> usize {
+        if let Some(&id) = self.stop_ids.get(tiploc) {
+            return id;
+        }
+        let allows_interchange = restrictions::allows_interchange(self.restrictions, tiploc);
+        let change_time = match minimum_change_time(self.interchange, tiploc) {
+            ChangeTime::Finite(minutes) if allows_interchange => Some(minutes),
+            _ => None,
+        };
+        self.stops.push(Stop {
+            bag: Vec::new(),
+            origin: self.origin.contains(tiploc),
+            destination: self.destinations.contains(tiploc),
+            allows_interchange,
+            change_time,
+            siblings: sibling_tiplocs(self.interchange, tiploc),
+        });
+        let id = self.stops.len() - 1;
+        self.stop_ids.insert(tiploc, id);
+        id
+    }
+
+    /// `a` is a better answer than `b`, by `goal`.
+    fn better_answer(&self, a: &Label<'_>, b: &Label<'_>) -> bool {
+        let rest = |l: &Label<'_>| (Reverse(l.departure), l.walk);
+        match self.goal {
+            Goal::EarliestArrival => {
+                (a.time, a.changes(), rest(a)) < (b.time, b.changes(), rest(b))
+            }
+            Goal::FewestChangesBy(_) => {
+                (a.changes(), a.time, rest(a)) < (b.changes(), b.time, rest(b))
+            }
+        }
+    }
+
+    /// The best fresh boarding of `connection` at its departure stop, if
+    /// any: from the origin (no interchange time), or from a label there
+    /// or at a CRS sibling (a different platform group of the same
+    /// physical station) ready in time. A non-origin stop folds in
+    /// `minimum_change_time` -- `ChangeTime::NoInterchange` at the nine
+    /// real coach-stand sentinel stations, forbidding a fresh board there
+    /// without a special case (see `schedule_query::ChangeTime::allows`'s
+    /// own doc) -- charged at the boarding stop's own figure for a sibling
+    /// too, plus the bus or ferry buffer on both sides of the change
+    /// (`interchange.modal_change`, see `schedule_query::ModalChangeBuffer`):
+    /// the boarding service's here, the arriving one's in the label's
+    /// `ready`. Of the labels ready in time, the one with the fewest
+    /// trains, then the latest departure, then the least walking.
+    fn ready_source_at(&mut self, connection: &'a Connection) -> Option<ReadySource> {
         // Normalize defensively at this module's own boundary, matching
         // `schedule_query::interchange`'s own "callers should still
         // normalize, but correctness must not depend on their remembering
-        // to" defense -- `tiploc` here may be a raw, still-padded
-        // `Connection::from_tiploc`, while `origin` and `earliest_arrival`
-        // are keyed on the normalized form (see Finding 2 of the
-        // whole-branch review).
-        let tiploc = normalize_tiploc(tiploc);
-        if self.origin.contains(tiploc) {
+        // to" defense -- a raw `Connection::from_tiploc` may still be
+        // padded, while `origin` and `bags` are keyed on the normalized form
+        // (see Finding 2 of the whole-branch review).
+        let id = self.stop_id(normalize_tiploc(&connection.from_tiploc));
+        let stop = &self.stops[id];
+        if stop.origin {
             return Some(ReadySource {
-                time: self.departure_min,
-                from: tiploc.to_string(),
+                from: None,
+                trains: 1,
+                departure: connection.departure_min,
+                walk: 0,
             });
         }
-        // An avoided station (`avoidChange` and stricter): no fresh boarding.
-        if !restrictions::allows_interchange(self.restrictions, tiploc) {
-            return None;
-        }
-        let ChangeTime::Finite(change_time) = minimum_change_time(self.interchange, tiploc) else {
-            return None;
-        };
-        let change_time = change_time + self.interchange.modal_change.extra_for(boarding_uid);
-        let alighting_extra = |at: &str| match self.arrived_via.get(at) {
-            Some(ArrivalSource::Train(connection, _)) => {
-                self.interchange.modal_change.extra_for(&connection.uid)
-            }
-            _ => 0,
-        };
+        // An avoided station or a sentinel: no fresh boarding.
+        let change_time =
+            stop.change_time? + self.interchange.modal_change.extra_for(&connection.uid);
+        let latest_ready = connection.departure_min.checked_sub(change_time)?;
 
-        let mut best: Option<ReadySource> = None;
-        if let Some(&arrival) = self.earliest_arrival.get(tiploc) {
-            best = Some(ReadySource {
-                time: arrival + change_time + alighting_extra(tiploc),
-                from: tiploc.to_string(),
-            });
-        }
-        for sibling in sibling_tiplocs(self.interchange, tiploc) {
-            let Some(&sibling_arrival) = self.earliest_arrival.get(sibling) else {
-                continue;
-            };
-            let candidate = sibling_arrival + change_time + alighting_extra(sibling);
-            if best.as_ref().is_none_or(|b| candidate < b.time) {
-                best = Some(ReadySource {
-                    time: candidate,
-                    from: sibling.to_string(),
-                });
+        let mut best: Option<(usize, RideKey)> = None;
+        let siblings = stop
+            .siblings
+            .iter()
+            .filter_map(|sibling| self.stop_ids.get(sibling))
+            .map(|&sibling| &self.stops[sibling]);
+        for at in std::iter::once(stop).chain(siblings) {
+            for &index in &at.bag {
+                let label = &self.labels[index];
+                if label.ready > latest_ready {
+                    continue;
+                }
+                let key = ride_key(label.trains + 1, label.departure, label.walk);
+                if best.is_none_or(|(_, known)| key < known) {
+                    best = Some((index, key));
+                }
             }
         }
-        best
+        best.map(|(index, (trains, Reverse(departure), walk))| ReadySource {
+            from: Some(index),
+            trains,
+            departure,
+            walk,
+        })
     }
 
-    /// Improves `tiploc`'s earliest arrival to `arrival_min`, if it
-    /// genuinely is one -- records how it was reached, checks whether a
-    /// destination was just reached, and relaxes every fixed link
-    /// reachable from this stop at this new, better time. A no-op when
-    /// `arrival_min` does not improve on what's already known, which is
-    /// what makes `relax_fixed_links` terminate (every link has strictly
-    /// positive `minutes`, and there are finitely many CRS codes -- after
-    /// `csa.ts:306-318`).
-    fn relax(&mut self, tiploc: &str, arrival_min: u32, via: ArrivalSource) {
-        // Normalize before this becomes an `earliest_arrival`/`arrived_via`
-        // key or a `destinations` containment check -- `tiploc` may come
-        // straight off a `Connection::to_tiploc`, potentially still padded
-        // (Finding 2 of the whole-branch review).
-        let tiploc = normalize_tiploc(tiploc);
-        if let Some(walk_from) = self.record_arrival(tiploc, arrival_min, via) {
-            self.relax_fixed_links(tiploc, walk_from);
+    /// Starts a ride on `connection` from `source`.
+    fn board(&mut self, connection: &'a Connection, source: &ReadySource) -> usize {
+        self.rides.push(Ride {
+            boarded: connection,
+            from: source.from,
+            trains: source.trains,
+            departure: source.departure,
+            walk: source.walk,
+        });
+        let ride = self.rides.len() - 1;
+        self.reachable_trip.insert(connection.uid.as_str(), ride);
+        ride
+    }
+
+    /// Records `label` if it is not dominated at its stop, then relaxes
+    /// every fixed link from it (see [`Self::relax_fixed_links`]).
+    fn relax(&mut self, label: Label<'a>) {
+        if let Some(index) = self.record_arrival(label) {
+            self.relax_fixed_links(index);
         }
     }
 
-    /// The bookkeeping half of [`Self::relax`]: records `arrival_min` at
-    /// `tiploc` (normalized) if it improves on the earliest known, and
-    /// returns the time fixed links may be started from there. `None` when
-    /// it is no improvement or `tiploc` is avoided.
-    fn record_arrival(
-        &mut self,
-        tiploc: &str,
-        arrival_min: u32,
-        via: ArrivalSource,
-    ) -> Option<u32> {
+    /// The bookkeeping half of [`Self::relax`]: adds `label` to its stop's
+    /// Pareto set unless a label there already covers it (dropping any it
+    /// covers), and notes a better answer at a destination. Returns the new
+    /// label's index, or `None` when it was not recorded.
+    fn record_arrival(&mut self, label: Label<'a>) -> Option<usize> {
+        if label.time > self.bound() {
+            return None;
+        }
+        // Arrive-by: no better than an answer already found, and nothing
+        // after this label can arrive earlier or take a change back.
+        if matches!(self.goal, Goal::FewestChangesBy(_))
+            && self.best.is_some_and(|best| {
+                let best = &self.labels[best];
+                label.changes() > best.changes()
+                    || (label.changes() == best.changes() && label.time >= best.time)
+            })
+        {
+            return None;
+        }
+        let id = self.stop_id(label.tiploc);
         // Never alight at (or walk into) an avoided station; a train that
         // calls there simply carries on.
-        if !restrictions::allows_interchange(self.restrictions, tiploc) {
+        if !self.stops[id].allows_interchange {
             return None;
         }
-        let current_best = self
-            .earliest_arrival
-            .get(tiploc)
-            .copied()
-            .unwrap_or(u32::MAX);
-        if arrival_min >= current_best {
+        let labels = &mut self.labels;
+        let bag = &mut self.stops[id].bag;
+        if bag.iter().any(|&known| labels[known].covers(&label)) {
             return None;
         }
-        let walk_from = arrival_min + alighting_buffer(self.interchange, &via);
-        self.earliest_arrival
-            .insert(tiploc.to_string(), arrival_min);
-        self.arrived_via.insert(tiploc.to_string(), via);
-        if self.destinations.contains(tiploc) && arrival_min < self.best_dest_arrival {
-            self.best_dest_arrival = arrival_min;
-            self.best_dest_tiploc = Some(tiploc.to_string());
+        bag.retain(|&known| {
+            let dominated = label.covers(&labels[known]);
+            if dominated {
+                labels[known].live = false;
+            }
+            !dominated
+        });
+        let index = labels.len();
+        bag.push(index);
+        labels.push(label);
+        let label = &self.labels[index];
+        if self.stops[id].destination
+            && self
+                .best
+                .is_none_or(|best| self.better_answer(label, &self.labels[best]))
+        {
+            self.best = Some(index);
         }
-        Some(walk_from)
+        Some(index)
     }
 
-    /// Connection Scan WITH footpaths: after a stop's arrival improves,
-    /// also relax every stop reachable from it by a fixed link, so the
-    /// search recognises that two platforms a short walk apart are
-    /// effectively the same station. Started from `from_tiploc` at
-    /// `at_min`, and on through further links from every stop it improves.
+    /// Connection Scan WITH footpaths: after a label is recorded, also
+    /// record every stop reachable from it by a fixed link, so the search
+    /// recognises that two platforms a short walk apart are effectively the
+    /// same station. Started from the label `start`, and on through further
+    /// links from every label that records.
     ///
     /// Earliest-first (a min-heap on the time the next links start), so a
-    /// stop is expanded once per call at its best time. The depth-first
-    /// recursion of `csa.ts:343-359` re-expanded a stop each time another
-    /// route improved it, and with every fixed link usable both ways
+    /// label is expanded once. The depth-first recursion of
+    /// `csa.ts:343-359` re-expanded a stop each time another route improved
+    /// it, and with every fixed link usable both ways
     /// (`schedule_query::index_fixed_links_both_ways`) London's links are
     /// one dense component, where that multiplied the work.
-    fn relax_fixed_links(&mut self, from_tiploc: &str, at_min: u32) {
-        let mut queue: BinaryHeap<Reverse<(u32, u32, String)>> = BinaryHeap::new();
-        self.expand_fixed_links(from_tiploc, at_min, &mut queue);
-        while let Some(Reverse((walk_from, arrival_min, tiploc))) = queue.pop() {
-            // Superseded by an earlier arrival found since it was queued.
-            if self.earliest_arrival.get(&tiploc) != Some(&arrival_min) {
-                continue;
+    fn relax_fixed_links(&mut self, start: usize) {
+        let mut queue = LinkQueue::new();
+        self.expand_label(start, &mut queue);
+        self.drain_links(&mut queue);
+    }
+
+    /// Expands the queued labels' fixed links, earliest first.
+    fn drain_links(&mut self, queue: &mut LinkQueue) {
+        while let Some(Reverse((_, index))) = queue.pop() {
+            // Dominated by a label recorded since it was queued.
+            if self.labels[index].live {
+                self.expand_label(index, queue);
             }
-            self.expand_fixed_links(&tiploc, walk_from, &mut queue);
         }
+    }
+
+    fn expand_label(&mut self, index: usize, queue: &mut LinkQueue) {
+        let label = &self.labels[index];
+        let from = Walker {
+            from: Some(index),
+            tiploc: label.tiploc,
+            at_min: label.ready,
+            trains: label.trains,
+            departure: label.departure,
+            walk: label.walk,
+        };
+        self.expand_fixed_links(&from, queue);
     }
 
     /// One step of [`Self::relax_fixed_links`]: records every stop one
-    /// fixed link from `from_tiploc`, started at `at_min`, that this
-    /// improves, and queues it to be expanded in turn.
+    /// fixed link from `from`, and queues each label recorded to be
+    /// expanded in turn.
     #[expect(
         clippy::cast_sign_loss,
         reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
     )]
-    fn expand_fixed_links(
-        &mut self,
-        from_tiploc: &str,
-        at_min: u32,
-        queue: &mut BinaryHeap<Reverse<(u32, u32, String)>>,
-    ) {
-        // Normalize before the `tiploc_to_crs` lookup (keyed on the bare
-        // form) and before this value is stored as an `ArrivalSource::Link`
-        // endpoint that `reconstruct_legs` later walks back through and
-        // compares against `origin` (Finding 2 of the whole-branch review).
-        let from_tiploc = normalize_tiploc(from_tiploc);
+    fn expand_fixed_links(&mut self, from: &Walker<'a>, queue: &mut LinkQueue) {
         // The interchange data outlives `self`'s borrow: read links and
         // TIPLOCs from it without copying while recording updates `self`.
         let interchange: &'a InterchangeData = self.interchange;
-        let Some(crs) = interchange.tiploc_to_crs.get(from_tiploc) else {
+        let Some(crs) = interchange.tiploc_to_crs.get(from.tiploc) else {
             return;
         };
-        for link in fixed_links_from(interchange, crs, self.date, at_min) {
-            let candidate = at_min + link.minutes as u32;
+        for link in fixed_links_from(interchange, crs, self.date, from.at_min) {
+            let arrival = from.at_min + link.minutes as u32;
             let Some(destination_tiplocs) = interchange.crs_to_tiplocs.get(&link.to_crs) else {
                 continue;
             };
             for to_tiploc in destination_tiplocs {
-                let to_tiploc = normalize_tiploc(to_tiploc);
-                let via = ArrivalSource::Link {
-                    from_tiploc: from_tiploc.to_string(),
-                    mode: link.mode.clone(),
-                    minutes: link.minutes,
+                let label = Label {
+                    tiploc: normalize_tiploc(to_tiploc),
+                    time: arrival,
+                    ready: arrival,
+                    trains: from.trains,
+                    departure: from.departure,
+                    walk: from.walk + link.minutes as u32,
+                    via: ArrivalSource::Link {
+                        from: from.from,
+                        from_tiploc: from.tiploc,
+                        mode: &link.mode,
+                        minutes: link.minutes,
+                    },
+                    live: true,
                 };
-                if let Some(walk_from) = self.record_arrival(to_tiploc, candidate, via) {
-                    queue.push(Reverse((walk_from, candidate, to_tiploc.to_string())));
+                if let Some(index) = self.record_arrival(label) {
+                    queue.push(Reverse((arrival, index)));
                 }
             }
         }
@@ -336,22 +585,20 @@ impl<'a> Scan<'a> {
 }
 
 /// The bus or ferry buffer owed before walking on from a stop reached by
-/// `via` (`schedule_query::ModalChangeBuffer`): a walk to another station
-/// or stop is a change off that bus or ferry, just as a fresh boarding at
-/// the same stop is (`Scan::ready_source_at`), and the arrive-by search
-/// charges it there too (`reverse`'s alighting side). Nothing after a
+/// `connection` (`schedule_query::ModalChangeBuffer`): a walk to another
+/// station or stop is a change off that bus or ferry, just as a fresh
+/// boarding at the same stop is (`Scan::ready_source_at`), and the arrive-by
+/// search charges it there too (`reverse`'s alighting side). Nothing after a
 /// train or a walk. RAPTOR's `relax_in_round` does the same.
-fn alighting_buffer(interchange: &InterchangeData, via: &ArrivalSource) -> u32 {
-    match via {
-        ArrivalSource::Train(connection, _) => interchange.modal_change.extra_for(&connection.uid),
-        ArrivalSource::Link { .. } => 0,
-    }
+fn alighting_buffer(interchange: &InterchangeData, connection: &Connection) -> u32 {
+    interchange.modal_change.extra_for(&connection.uid)
 }
 
 /// Connection Scan: the earliest-arrival journey from any of
 /// `options.from_tiplocs` to any of `options.to_tiplocs`, departing no
-/// earlier than `options.departure_min`. `None` when no connection reaches
-/// the destination at all.
+/// earlier than `options.departure_min` -- of those, the one with the fewest
+/// changes, then the latest departure, then the least walking (see the
+/// module doc). `None` when no connection reaches the destination at all.
 pub fn scan_connections(options: ScanOptions<'_>) -> Option<Journey> {
     scan_connections_with_overlay(options, None)
 }
@@ -376,6 +623,16 @@ pub fn scan_connections_restricted(
     overlay: Option<&crate::overlay::ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
 ) -> Option<Journey> {
+    scan(&options, overlay, restrictions, Goal::EarliestArrival)
+}
+
+/// The scan behind [`scan_connections_restricted`], answering `goal`.
+pub(crate) fn scan<'a>(
+    options: &ScanOptions<'a>,
+    overlay: Option<&'a crate::overlay::ConnectionOverlay>,
+    restrictions: Option<&'a Restrictions>,
+    goal: Goal,
+) -> Option<Journey> {
     // Normalized at this module's own boundary, same defense-in-depth
     // `schedule_query::interchange` already applies at its own boundary --
     // every other TIPLOC-keyed lookup and containment check in this file
@@ -383,140 +640,169 @@ pub fn scan_connections_restricted(
     // comparing against these sets, so they must be normalized too, or a
     // padded caller-supplied TIPLOC would never match (Finding 2 of the
     // whole-branch review).
-    let origin: HashSet<String> = options
+    let origin: HashSet<&'a str> = options
         .from_tiplocs
         .iter()
-        .map(|tiploc| normalize_tiploc(tiploc).to_string())
+        .map(|tiploc| normalize_tiploc(tiploc))
         .collect();
-    let destinations: HashSet<String> = options
+    let destinations: HashSet<&'a str> = options
         .to_tiplocs
         .iter()
-        .map(|tiploc| normalize_tiploc(tiploc).to_string())
+        .map(|tiploc| normalize_tiploc(tiploc))
         .collect();
 
     let mut scan = Scan {
         interchange: options.interchange,
         restrictions,
         date: options.date,
+        goal,
         origin: origin.clone(),
         destinations,
         departure_min: options.departure_min,
-        earliest_arrival: HashMap::new(),
-        arrived_via: HashMap::new(),
-        reachable_trip: HashMap::new(),
-        boardings: Vec::new(),
-        best_dest_arrival: u32::MAX,
-        best_dest_tiploc: None,
+        labels: Vec::new(),
+        stop_ids: FxMap::default(),
+        stops: Vec::new(),
+        reachable_trip: FxMap::default(),
+        rides: Vec::new(),
+        best: None,
     };
 
     // Seed fixed-link relaxation from every origin TIPLOC at departure_min
     // -- a passenger may need to walk before ever boarding a first train.
-    // Deliberately does not call relax() for the origin TIPLOCs themselves
-    // -- ready_source_at's own origin branch must stay authoritative for
+    // Deliberately records no label at the origin TIPLOCs themselves --
+    // ready_source_at's own origin branch must stay authoritative for
     // them (csa.ts:361-370).
-    for tiploc in &origin {
-        scan.relax_fixed_links(tiploc, options.departure_min);
+    for tiploc in origin {
+        let mut queue = LinkQueue::new();
+        let from = Walker {
+            from: None,
+            tiploc,
+            at_min: scan.departure_min,
+            trains: 0,
+            departure: scan.departure_min,
+            walk: 0,
+        };
+        scan.expand_fixed_links(&from, &mut queue);
+        scan.drain_links(&mut queue);
     }
 
     for connection in
         crate::overlay::connections_from(options.connections, overlay, options.departure_min)
     {
-        // No later-departing connection can beat a destination arrival
-        // already found (csa.ts:372-379).
-        if connection.departure_min >= scan.best_dest_arrival {
+        // No later-departing connection can reach the destination by the
+        // best arrival already found (csa.ts:372-379), or by the deadline.
+        // Strictly later: one departing at that minute may still tie it.
+        if connection.departure_min > scan.bound() {
             break;
         }
         // A blocked connection is unusable, and ends any ride on its train
         // (see `crate::restrictions`'s module doc).
         if restrictions::blocks(restrictions, connection) {
-            scan.reachable_trip.remove(&connection.uid);
+            scan.reachable_trip.remove(connection.uid.as_str());
             continue;
         }
 
-        let ride = if let Some(&ride) = scan.reachable_trip.get(&connection.uid) {
-            ride
-        } else {
-            // A set-down-only stop: the train calls, but nobody may get
-            // on here.
-            if !connection.can_board {
-                continue;
+        let ride = match scan.reachable_trip.get(connection.uid.as_str()) {
+            // Aboard already. Boarding again here pays only if it takes
+            // fewer trains (or as few, leaving later): never for a ride
+            // from the origin, nor where nobody may board.
+            Some(&ride) if scan.rides[ride].trains <= 1 || !connection.can_board => ride,
+            Some(&ride) => {
+                let current = &scan.rides[ride];
+                let current = ride_key(current.trains, current.departure, current.walk);
+                match scan.ready_source_at(connection) {
+                    Some(source)
+                        if ride_key(source.trains, source.departure, source.walk) < current =>
+                    {
+                        scan.board(connection, &source)
+                    }
+                    _ => ride,
+                }
             }
-            let Some(source) = scan.ready_source_at(&connection.from_tiploc, &connection.uid)
-            else {
-                continue;
-            };
-            if source.time > connection.departure_min {
-                continue;
+            None => {
+                // A set-down-only stop: the train calls, but nobody may get
+                // on here.
+                if !connection.can_board {
+                    continue;
+                }
+                let Some(source) = scan.ready_source_at(connection) else {
+                    continue;
+                };
+                scan.board(connection, &source)
             }
-            scan.boardings.push((connection.clone(), source.from));
-            let ride = scan.boardings.len() - 1;
-            scan.reachable_trip.insert(connection.uid.clone(), ride);
-            ride
         };
 
         // A pick-up-only stop: stay aboard, but never arrive here.
         if connection.can_alight {
-            scan.relax(
-                &connection.to_tiploc,
-                connection.arrival_min,
-                ArrivalSource::Train(connection.clone(), ride),
-            );
+            let current = &scan.rides[ride];
+            let time = connection.arrival_min;
+            let label = Label {
+                // Normalize before this becomes a `bags` key or a
+                // `destinations` containment check -- it may still be
+                // padded (Finding 2 of the whole-branch review).
+                tiploc: normalize_tiploc(&connection.to_tiploc),
+                time,
+                ready: time + alighting_buffer(scan.interchange, connection),
+                trains: current.trains,
+                departure: current.departure,
+                walk: current.walk,
+                via: ArrivalSource::Train(connection, ride),
+                live: true,
+            };
+            scan.relax(label);
         }
     }
 
-    let best_dest_tiploc = scan.best_dest_tiploc.clone()?;
-    let legs = reconstruct_legs(&best_dest_tiploc, &scan);
+    let best = scan.best?;
+    let legs = reconstruct_legs(best, &scan);
     let first_leg = legs.first()?;
 
     Some(Journey {
         departure_min: first_leg.departure_min(),
         // Not the last leg's own arrival_min: a trailing fixed-link walk
-        // can reach the destination AFTER the last train leg, which
-        // best_dest_arrival already accounts for.
-        arrival_min: scan.best_dest_arrival,
+        // can reach the destination AFTER the last train leg.
+        arrival_min: scan.labels[best].time,
         legs,
     })
 }
 
-/// Walks backward from the stop that reached the destination to the
-/// origin, one leg at a time -- a train leg read off `leg_boarded_at` in
-/// one step (the merge already decided during the sweep), a fixed-link
-/// step producing its own `TransferLeg`.
+/// Walks backward from the label that reached the destination to the
+/// origin, one leg at a time -- a train leg read off its ride in one step
+/// (the merge already decided during the sweep), a fixed-link step
+/// producing its own `TransferLeg`.
 #[expect(
     clippy::cast_sign_loss,
     reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
 )]
-fn reconstruct_legs(end_tiploc: &str, scan: &Scan<'_>) -> Vec<JourneyLeg> {
+fn reconstruct_legs(end: usize, scan: &Scan<'_>) -> Vec<JourneyLeg> {
     let mut legs = Vec::new();
-    let mut stop = end_tiploc.to_string();
+    let mut at = Some(end);
 
-    while !scan.origin.contains(&stop) {
-        let via = scan.arrived_via.get(&stop).unwrap_or_else(|| {
-            panic!("internal error: stop {stop} was reached but has no recorded arrival source")
-        });
-
-        match via {
+    while let Some(index) = at {
+        let label = &scan.labels[index];
+        if scan.origin.contains(label.tiploc) {
+            break;
+        }
+        match label.via {
             ArrivalSource::Link {
+                from,
                 from_tiploc,
                 mode,
                 minutes,
             } => {
-                let arrival_min = *scan
-                    .earliest_arrival
-                    .get(&stop)
-                    .unwrap_or_else(|| panic!("internal error: stop {stop} reached by a fixed link has no recorded arrival time"));
                 legs.push(JourneyLeg::Transfer(TransferLeg {
-                    mode: mode.clone(),
-                    from_tiploc: from_tiploc.clone(),
-                    to_tiploc: stop.clone(),
-                    departure_min: arrival_min - *minutes as u32,
-                    arrival_min,
-                    minutes: *minutes,
+                    mode: mode.to_string(),
+                    from_tiploc: from_tiploc.to_string(),
+                    to_tiploc: label.tiploc.to_string(),
+                    departure_min: label.time - minutes as u32,
+                    arrival_min: label.time,
+                    minutes,
                 }));
-                stop = from_tiploc.clone();
+                at = from;
             }
             ArrivalSource::Train(connection, ride) => {
-                let (boarded, source) = &scan.boardings[*ride];
+                let ride = &scan.rides[ride];
+                let boarded = ride.boarded;
                 legs.push(JourneyLeg::Train(TrainLeg {
                     uid: boarded.uid.clone(),
                     from_tiploc: boarded.from_tiploc.clone(),
@@ -526,7 +812,7 @@ fn reconstruct_legs(end_tiploc: &str, scan: &Scan<'_>) -> Vec<JourneyLeg> {
                     working_departure_min: boarded.working_departure_min,
                     working_arrival_min: connection.working_arrival_min,
                 }));
-                stop.clone_from(source);
+                at = ride.from;
             }
         }
     }
@@ -887,5 +1173,133 @@ mod tests {
         })
         .expect("the overnight journey exists");
         assert_eq!(journey.arrival_min, 1440 + 6);
+    }
+
+    fn train_uids(journey: &Journey) -> Vec<&str> {
+        journey
+            .legs
+            .iter()
+            .filter_map(|leg| match leg {
+                JourneyLeg::Train(t) => Some(t.uid.as_str()),
+                JourneyLeg::Transfer(_) => None,
+            })
+            .collect()
+    }
+
+    fn o_to_z(connections: &[Connection], interchange: &InterchangeData) -> Journey {
+        scan_connections(ScanOptions {
+            connections,
+            interchange,
+            from_tiplocs: &["O".to_string()],
+            to_tiplocs: &["Z".to_string()],
+            departure_min: 470,
+            date: date(),
+        })
+        .expect("a journey exists")
+    }
+
+    /// Two routes from O to Z arriving at 600, both on the final train F
+    /// from M. The four-change one reaches M first (525, five trains); the
+    /// two-change one later (532, two trains), still in time for F. A
+    /// single earliest arrival per stop kept only the first, and rode F
+    /// with four changes.
+    fn two_and_four_change_network() -> Vec<Connection> {
+        vec![
+            conn("S", "O", "P", 480, 490),
+            conn("T2", "P", "B", 495, 505),
+            conn("U2", "P", "M", 500, 532),
+            conn("T3", "B", "C", 510, 515),
+            conn("T4", "C", "M", 520, 525),
+            conn("F", "M", "Z", 540, 600),
+        ]
+    }
+
+    #[test]
+    fn of_two_journeys_arriving_together_the_one_with_fewer_changes_wins() {
+        let journey = o_to_z(&two_and_four_change_network(), &empty_interchange());
+        assert_eq!(journey.arrival_min, 600);
+        assert_eq!(train_uids(&journey), ["S", "U2", "F"]);
+    }
+
+    #[test]
+    fn a_train_is_boarded_again_further_on_when_that_takes_fewer_changes() {
+        // The four-change route boards F at M1 at 540; the two-change one
+        // reaches M2, F's next call, at 545, in time for F there at 550.
+        let connections = vec![
+            conn("S", "O", "P", 480, 490),
+            conn("T2", "P", "B", 495, 505),
+            conn("U2", "P", "M2", 500, 545),
+            conn("T3", "B", "C", 510, 515),
+            conn("T4", "C", "M1", 520, 525),
+            conn("F", "M1", "M2", 540, 549),
+            conn("F", "M2", "Z", 550, 600),
+        ];
+        let journey = o_to_z(&connections, &empty_interchange());
+        assert_eq!(journey.arrival_min, 600);
+        assert_eq!(train_uids(&journey), ["S", "U2", "F"]);
+        match &journey.legs[2] {
+            JourneyLeg::Train(leg) => assert_eq!(leg.from_tiploc, "M2"),
+            JourneyLeg::Transfer(_) => panic!("expected F as a train leg"),
+        }
+    }
+
+    #[test]
+    fn fewer_changes_never_cost_an_earlier_arrival() {
+        // A three-change route a minute faster than both: it wins.
+        let mut connections = two_and_four_change_network();
+        connections.push(conn("G", "C", "Z", 520, 599));
+        connections.sort_by_key(|c| c.departure_min);
+        let journey = o_to_z(&connections, &empty_interchange());
+        assert_eq!(journey.arrival_min, 599);
+        assert_eq!(train_uids(&journey), ["S", "T2", "T3", "G"]);
+    }
+
+    #[test]
+    fn of_two_direct_trains_arriving_together_the_later_departure_wins() {
+        let connections = vec![
+            conn("EARLY", "O", "Z", 480, 600),
+            conn("LATE", "O", "Z", 500, 600),
+        ];
+        let journey = o_to_z(&connections, &empty_interchange());
+        assert_eq!(journey.departure_min, 500);
+        assert_eq!(train_uids(&journey), ["LATE"]);
+    }
+
+    #[test]
+    fn of_two_equal_routes_the_shorter_walk_wins() {
+        // Both leave on T at 480 and reach Z at 520: by a 20-minute walk
+        // from A, or a 3-minute one from B.
+        let connections = vec![conn("T", "O", "A", 480, 500), conn("T", "A", "B", 501, 517)];
+        let mut interchange = empty_interchange();
+        for (tiploc, crs) in [("A", "AAA"), ("B", "BBB"), ("Z", "ZZZ")] {
+            interchange
+                .tiploc_to_crs
+                .insert(tiploc.to_string(), crs.to_string());
+            interchange
+                .crs_to_tiplocs
+                .insert(crs.to_string(), vec![tiploc.to_string()]);
+        }
+        let link = |minutes: i32| schedule_query::FixedLink {
+            mode: "WALK".to_string(),
+            to_crs: "ZZZ".to_string(),
+            minutes,
+            valid_from: "0000".to_string(),
+            valid_to: "2359".to_string(),
+            days_mask: "1111111".to_string(),
+        };
+        interchange
+            .fixed_links_from_crs
+            .insert("AAA".to_string(), vec![link(20)]);
+        interchange
+            .fixed_links_from_crs
+            .insert("BBB".to_string(), vec![link(3)]);
+        let journey = o_to_z(&connections, &interchange);
+        assert_eq!(journey.arrival_min, 520);
+        match &journey.legs[1] {
+            JourneyLeg::Transfer(leg) => {
+                assert_eq!((leg.from_tiploc.as_str(), leg.minutes), ("B", 3));
+            }
+            JourneyLeg::Train(_) => panic!("expected the walk"),
+        }
     }
 }

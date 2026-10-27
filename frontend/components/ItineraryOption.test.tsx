@@ -2,8 +2,18 @@ import { screen, fireEvent } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithMantine } from '@/test/render';
 import { ItineraryOption } from './ItineraryOption';
-import type { TripPlanItinerary } from '@/lib/types';
+import type { TripPlanItinerary, TripPlanLeg } from '@/lib/types';
 import { byVisibleText } from '@/test/routeText';
+import {
+  RAIL_TRAM_RAIL,
+  REPLACEMENT_BUS_LEG,
+  TRAIN_INTO_MAN,
+  TRAM_LEG,
+  TRAM_ONLY,
+  WALK_TO_TRAM,
+} from '@/test/transitPlanFixtures';
+
+type TrainLeg = Extract<TripPlanLeg, { kind: 'train' }>;
 
 const trainItinerary: TripPlanItinerary = {
   legs: [
@@ -306,7 +316,7 @@ describe('ItineraryOption: station groups (2026-10-07)', () => {
               access: { end: 'origin', basis: 'line', distanceMetres: 11_400 },
             },
             {
-              ...trainItinerary.legs[0]!,
+              ...(trainItinerary.legs[0] as TrainLeg),
               originCrs: 'HOH',
               destinationCrs: 'MYB',
             },
@@ -334,7 +344,7 @@ describe('ItineraryOption: station groups (2026-10-07)', () => {
       <ItineraryOption
         itinerary={{
           legs: [
-            { ...trainItinerary.legs[0]!, destinationCrs: 'WRU' },
+            { ...(trainItinerary.legs[0] as TrainLeg), destinationCrs: 'WRU' },
             {
               kind: 'transfer',
               mode: 'WALK',
@@ -354,5 +364,87 @@ describe('ItineraryOption: station groups (2026-10-07)', () => {
     );
     expect(screen.getByText(byVisibleText(/Walk WRU to Ruislip \(Tube\), 12 min/))).toBeInTheDocument();
     expect(screen.getByText('Estimated walk: the station is about 0.7 km away')).toBeInTheDocument();
+  });
+
+  describe('a tram leg', () => {
+    function renderPlan(itinerary: TripPlanItinerary, stationNames = new Map<string, string>()) {
+      return renderWithMantine(
+        <ItineraryOption itinerary={itinerary} selected={false} onSelect={vi.fn()} stationNames={stationNames} />,
+      );
+    }
+
+    it('reads "08:14 Tram (Blue Line) Piccadilly to Victoria 08:22" in the line colour, with how often trams run', () => {
+      const { container } = renderPlan(RAIL_TRAM_RAIL);
+      expect(
+        screen.getByText(byVisibleText('08:14 Tram (Blue Line) Piccadilly to Victoria 08:22')),
+      ).toBeInTheDocument();
+      expect(screen.getByText('About every 6 min')).toBeInTheDocument();
+      expect(container.querySelector('[data-line-swatch]')).not.toBeNull();
+      expect(container.querySelector('[data-service-mode="tram"]')?.textContent).toBe('Tram');
+      // Never a live word.
+      expect(container.textContent).not.toMatch(/on time|late|expected|cancelled/i);
+    });
+
+    it('says the times are scheduled, not live, only when the itinerary is scheduled only', () => {
+      const { unmount } = renderPlan(RAIL_TRAM_RAIL);
+      expect(screen.getByText('Scheduled times, not live')).toBeInTheDocument();
+      unmount();
+      renderPlan(trainItinerary);
+      expect(screen.queryByText('Scheduled times, not live')).not.toBeInTheDocument();
+    });
+
+    it('leaves out the frequency when the api has too few trams to say', () => {
+      const { headwayMinutes: _omitted, ...withoutHeadway } = TRAM_LEG;
+      renderPlan({ ...RAIL_TRAM_RAIL, legs: [TRAIN_INTO_MAN, WALK_TO_TRAM, withoutHeadway] });
+      expect(screen.queryByText(/About every/)).not.toBeInTheDocument();
+    });
+
+    it('names a replacement bus, which has no line', () => {
+      const { container } = renderPlan({
+        ...RAIL_TRAM_RAIL,
+        legs: [TRAIN_INTO_MAN, WALK_TO_TRAM, REPLACEMENT_BUS_LEG],
+      });
+      expect(screen.getByText('08:15 Replacement bus Piccadilly to Victoria 08:31')).toBeInTheDocument();
+      expect(container.querySelector('[data-service-mode="replacementBus"]')?.textContent).toBe('Replacement bus');
+      expect(container.querySelector('[data-line-swatch]')).toBeNull();
+    });
+
+    it("shows a disruption on the leg's line under it", () => {
+      const disrupted = {
+        ...TRAM_LEG,
+        notices: [
+          {
+            kind: 'disruption' as const,
+            lineId: 'metrolink:blue',
+            severity: 9,
+            description: 'Minor Delays',
+            message: 'Disruption reported on the Blue Line',
+            reason: 'A fault with the overhead wires at Market Street',
+          },
+        ],
+      };
+      const { container } = renderPlan({ ...RAIL_TRAM_RAIL, legs: [TRAIN_INTO_MAN, WALK_TO_TRAM, disrupted] });
+      const notice = container.querySelector('[data-transit-leg-notice]');
+      expect(notice?.textContent).toContain('Disruption reported on the Blue Line');
+      expect(notice?.textContent).toContain('A fault with the overhead wires at Market Street');
+      expect(notice?.querySelector('[data-status-badge]')).not.toBeNull();
+    });
+
+    it('names the tram stop on a walk to or from it, with the estimate', () => {
+      renderPlan(RAIL_TRAM_RAIL, new Map([['MAN', 'Manchester Piccadilly']]));
+      expect(screen.getByText('Walk to Piccadilly tram stop, 6 min')).toBeInTheDocument();
+      expect(screen.getByText('About 4 min walk, estimated')).toBeInTheDocument();
+      expect(screen.getByText('Walk from Victoria tram stop, 5 min')).toBeInTheDocument();
+      expect(screen.getByText('About 3 min walk, estimated')).toBeInTheDocument();
+    });
+
+    it('a route with trains and a tram can be picked; a tram-only one cannot', () => {
+      const { unmount } = renderPlan(RAIL_TRAM_RAIL);
+      expect(screen.getByRole('radio')).not.toBeDisabled();
+      unmount();
+      renderPlan(TRAM_ONLY);
+      expect(screen.getByRole('radio')).toBeDisabled();
+      expect(screen.getByText('This route needs no train, so there is nothing to track.')).toBeInTheDocument();
+    });
   });
 });

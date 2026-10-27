@@ -1,4 +1,4 @@
-import type { ServiceMode, ServiceModeFields } from './types';
+import type { ServiceMode, ServiceModeFields, TripPlanTransitServiceMode } from './types';
 
 /** What a schedule's vehicle is, for the passenger. The CIF timetable
  * carries buses and ferries alongside trains (9% of weekday schedules, a
@@ -16,6 +16,20 @@ export const SERVICE_MODE_LABELS: Record<Exclude<ServiceMode, 'train'>, string> 
   bus: 'Bus service',
   ferry: 'Ferry',
 };
+
+/** A planned transit leg's vehicle (transit trip planning §11.3): a tram,
+ * or a bus standing in for one. Not "Rail replacement bus": it replaces a
+ * tram, not a train. */
+export const TRANSIT_SERVICE_MODE_LABELS: Record<TripPlanTransitServiceMode, string> = {
+  tram: 'Tram',
+  replacementBus: 'Replacement bus',
+};
+
+/** `mode` is a wire value: `null` for one this bundle has no label for. */
+export function transitServiceModeLabel(mode: TripPlanTransitServiceMode): string | null {
+  const labels: Partial<Record<string, string>> = TRANSIT_SERVICE_MODE_LABELS;
+  return labels[mode] ?? null;
+}
 
 /** The copy shown wherever live progress would be. */
 export const TIMETABLE_ONLY_MESSAGE = "Timetabled only. Buses and ferries aren't tracked live";
