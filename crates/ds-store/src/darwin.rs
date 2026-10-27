@@ -1,5 +1,5 @@
 //! The Darwin Push Port tables (DS-152, migration
-//! `20261026110000_darwin_pushport.sql`): [`apply`] writes one
+//! `20261027090000_darwin_pushport.sql`): [`apply`] writes one
 //! `darwin-pushport/1` batch ([`common::darwin::Batch`]) for ingest-writer,
 //! and [`calls_for_trains`] reads a set of trains' per-location platforms
 //! for the api.
