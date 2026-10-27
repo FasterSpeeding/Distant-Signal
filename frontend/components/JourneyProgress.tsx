@@ -180,8 +180,14 @@ type NodeState = 'reached' | 'marker' | 'not-reached' | 'cancelled-remaining';
  * than needing a special case, including for a cancelled journey with no
  * confirmed movement at all: every stop is already `'cancelled-remaining'`
  * there too. */
-function nodeState(index: number, lastIndex: number, status: JourneyStatus | null): NodeState {
+function nodeState(index: number, lastIndex: number, status: JourneyStatus | null, stop: JourneyStop): NodeState {
+  // A backend that marks each stop (DS-181) says exactly which calls are
+  // cancelled: a terminated-short train keeps the stops it still serves,
+  // and a section cancelled between two stations shows even before a
+  // later reached stop. An older one only has the train-wide status.
+  if (stop.cancelled === true) return 'cancelled-remaining';
   if (lastIndex === -1 || index > lastIndex) {
+    if (stop.cancelled === false) return 'not-reached';
     return status === 'cancelled' ? 'cancelled-remaining' : 'not-reached';
   }
   if (index === lastIndex) return 'marker';
@@ -561,7 +567,7 @@ function JourneyProgressNode({
   nodeRef: (el: HTMLDivElement | null) => void;
 }) {
   const diameter = nodeDiameter(stop.kind);
-  const state = nodeState(index, lastIndex, status);
+  const state = nodeState(index, lastIndex, status, stop);
   const delay = delayState(stop.delayMinutes);
   const endpoint = isEndpoint(stop.kind);
   const label = journeyStopLabel(stop, index, total, endpointNames);
@@ -618,7 +624,7 @@ function JourneyProgressNode({
       // some platforms paint as a full-colour emoji that ignores the theme
       // entirely. Yellow's light-variant text token -- the colour of the
       // "May have arrived" `Alert` it echoes -- clears the 3:1 non-text
-      // floor in both schemes (#a85700: 5.2:1 on white; Mantine's dark
+      // floor in both schemes (#964d00: 6.25:1 on white; Mantine's dark
       // yellow light-color on the dark body well above that). Still
       // `aria-hidden`: the progress group's own `aria-label` already says
       // "may have arrived" in words.

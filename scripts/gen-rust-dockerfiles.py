@@ -91,6 +91,7 @@ SERVICES: Mapping[str, Sequence[str]] = {
     # writer-maintenance: the one-off ingest repairs moved out of the api
     # image (ingest phase 5 prep, Q2).
     "ingest-writer": ("ingest-writer", "writer-maintenance"),
+    "darwin-relay": ("darwin-relay",),
     "movement-relay": ("movement-relay",),
     "notifier": ("notifier",),
     "poller-incidents": ("poller-incidents",),
@@ -232,6 +233,9 @@ RUST_INPUTS = (
     "lines",
     # crates/ds-store/build.rs bakes the grants into the schema gate.
     "charts/distant-signal/files/db-grants.yaml",
+    # ingest-writer's freshness_rls test checks each producer's freshness
+    # sources against the rendered RLS policies.
+    "charts/distant-signal/files/postgres-grants.sql",
     # include_str!: api's DS-124 migration test replays the rollback.
     "scripts/rollback-tracked-trains-as-journeys.sql",
 )

@@ -101,12 +101,17 @@ impl StreamSpec {
 /// The ingest streams (spec §7.1; D1: no `train-events`). Each
 /// island-of-Ireland poller has its own stream, so its ACL user can produce
 /// only its own schemas (2026-10-08 security review, H1).
-pub const STREAMS: [StreamSpec; 9] = [
+pub const STREAMS: [StreamSpec; 11] = [
     StreamSpec {
         name: "station-samples",
         stream: streams::STATION_SAMPLES,
-        // poller-ldbws's tracked-stop lane rides the same stream (DS-127).
-        schemas: &["station-samples", common::TRACKED_STOP_BOARDS_SCHEMA],
+        // poller-ldbws's tracked-stop lane rides the same stream (DS-127),
+        // and its arrivals sub-lane (DS-152).
+        schemas: &[
+            "station-samples",
+            common::TRACKED_STOP_BOARDS_SCHEMA,
+            common::TRACKED_STOP_ARRIVAL_BOARDS_SCHEMA,
+        ],
     },
     StreamSpec {
         name: "full-coverage",
@@ -154,6 +159,23 @@ pub const STREAMS: [StreamSpec; 9] = [
     StreamSpec {
         name: "transit-metrolink",
         stream: streams::TRANSIT_METROLINK,
+        schemas: &[
+            common::transit::schema::TIMETABLE,
+            common::transit::schema::TIMETABLE_COMMIT,
+            common::transit::schema::SITUATIONS,
+        ],
+    },
+    // darwin-relay's Darwin Push Port batches (DS-152), off by default.
+    StreamSpec {
+        name: "darwin",
+        stream: streams::DARWIN,
+        schemas: &[common::darwin::SCHEMA],
+    },
+    // Nottingham Express Transit (NET design §7): the same schemas, so
+    // situations need no writer change if a source ever appears.
+    StreamSpec {
+        name: "transit-net",
+        stream: streams::TRANSIT_NET,
         schemas: &[
             common::transit::schema::TIMETABLE,
             common::transit::schema::TIMETABLE_COMMIT,
@@ -523,7 +545,7 @@ mod tests {
         assert_eq!(modes, StreamModes::default());
         assert_eq!(
             modes.to_string(),
-            "station-samples:off,full-coverage:off,tfl:off,tfl-stops:off,reference:off,ioi-gtfs:off,ioi-nir:off,ioi-live:off,transit-metrolink:off"
+            "station-samples:off,full-coverage:off,tfl:off,tfl-stops:off,reference:off,ioi-gtfs:off,ioi-nir:off,ioi-live:off,transit-metrolink:off,darwin:off,transit-net:off"
         );
 
         let modes: StreamModes = " station-samples:apply, full-coverage : apply,tfl:off"
@@ -586,7 +608,7 @@ mod tests {
         let modes: StreamModes = "tfl:apply".parse().unwrap();
         assert_eq!(modes.uncovered(&Registry::new()), ["tfl: tfl-line-status"]);
         // Plans 3a.6 and 3c.1: every stream is covered.
-        let modes: StreamModes = "station-samples:apply,full-coverage:apply,tfl:apply,tfl-stops:apply,reference:apply,ioi-gtfs:apply,ioi-nir:apply,ioi-live:apply,transit-metrolink:apply"
+        let modes: StreamModes = "station-samples:apply,full-coverage:apply,tfl:apply,tfl-stops:apply,reference:apply,ioi-gtfs:apply,ioi-nir:apply,ioi-live:apply,transit-metrolink:apply,transit-net:apply"
             .parse()
             .unwrap();
         assert!(modes.uncovered(&crate::handlers::registry()).is_empty());
@@ -632,6 +654,15 @@ mod tests {
                 .unwrap()
                 .mode("transit-metrolink"),
             Mode::Apply
+        );
+        let net = StreamSpec::by_stream(streams::TRANSIT_NET).unwrap();
+        assert_eq!(net.name, "transit-net");
+        assert_eq!(net.schemas, transit.schemas);
+        assert_eq!(
+            crate::handlers::transit::stream_network(net.stream)
+                .unwrap()
+                .as_str(),
+            "net"
         );
     }
 

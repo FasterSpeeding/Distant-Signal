@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ActionIcon, Group, Text, Tooltip } from '@mantine/core';
+import { ActionIcon, Group, Switch, Text, Tooltip } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import type { Preferences } from '@/lib/types';
@@ -76,6 +76,10 @@ export function PinToggle({
   // below, reset at the start of every fresh attempt -- see the `catch`
   // block in `toggle()` for why this exists.
   const [error, setError] = useState<string | null>(null);
+  // A line just pinned asks whether to alert about it too (DS-153), on by
+  // default: pinning and alerting are separate. `null` until it asks.
+  const [alerts, setAlerts] = useState<boolean | null>(null);
+  const [alertsBusy, setAlertsBusy] = useState(false);
 
   /** Known tradeoff: this is a full read-modify-write against the whole
    * pinned list, not a per-item mutation. Each toggle re-fetches
@@ -113,7 +117,7 @@ export function PinToggle({
         return;
       }
       const prefs = (await prefsResponse.json()) as Preferences;
-      let key: keyof Preferences;
+      let key: 'pinnedLines' | 'pinnedStations' | 'pinnedOperators';
       let endpoint: string;
       if (kind === 'line') {
         key = 'pinnedLines';
@@ -139,6 +143,7 @@ export function PinToggle({
         return;
       }
       setPinned(!pinned);
+      setAlerts(kind === 'line' && !pinned ? true : null);
       router.refresh();
     } catch {
       // Bug: this used to be a bare `try`/`finally` with no `catch` -- a
@@ -151,6 +156,31 @@ export function PinToggle({
       setError(TOGGLE_ERROR_MESSAGE);
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** "Alert me about this line": its status pushes on or off, separately
+   * from the pin (`PUT /preferences/pinned-lines/{id}/alerts`). A failed
+   * save puts the switch back. */
+  async function changeAlerts(next: boolean) {
+    setAlerts(next);
+    setAlertsBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/preferences/pinned-lines/${encodeURIComponent(id)}/alerts`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notify: next }),
+      });
+      if (!response.ok) {
+        setAlerts(!next);
+        setError(TOGGLE_ERROR_MESSAGE);
+      }
+    } catch {
+      setAlerts(!next);
+      setError(TOGGLE_ERROR_MESSAGE);
+    } finally {
+      setAlertsBusy(false);
     }
   }
 
@@ -189,6 +219,15 @@ export function PinToggle({
           <StarIcon filled={pinned} />
         </ActionIcon>
       </Tooltip>
+      {pinned && alerts !== null && (
+        <Switch
+          size="xs"
+          label="Alert me about this line"
+          checked={alerts}
+          disabled={alertsBusy}
+          onChange={(event) => void changeAlerts(event.currentTarget.checked)}
+        />
+      )}
       {error && (
         <Text size="xs" c="var(--ds-color-error-text)">
           {error}

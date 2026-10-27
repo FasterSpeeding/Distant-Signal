@@ -775,6 +775,9 @@ jobs:
       # The seed's tram network (frontend/e2e/fixtures/seed.sql), for the
       # /transit pages' specs and screenshots. Off in every other setting.
       API_TRANSIT_NETWORKS: metrolink
+      # Metrolink trams in /Trips/plan (DS-164): plan.spec.ts's rail, tram,
+      # rail route and the transit stop page's "Plan a journey from here".
+      API_TRIP_PLAN_TRANSIT_NETWORKS: metrolink
       # The api's live TfL arrivals (/tfl/stops/{id}) come from
       # scripts/tfl-arrivals-stub.py, started below, never from TfL: a fixed
       # board for the seed's King's Cross St. Pancras and a 503 for every
@@ -1071,6 +1074,13 @@ jobs:
       - name: schedulefeed chart sources
         run: uv run --no-sync scripts/check-schedulefeed-chart.py
 
+      # charts/distant-signal's darwin-relay (DS-152): off renders nothing,
+      # on reads every Kafka value from the Push Port Secret's own keys, has
+      # its own Redis user, egress, PodMonitor and alerts, and a missing
+      # prerequisite refuses to render.
+      - name: darwin-relay chart
+        run: uv run --no-sync scripts/check-darwin-chart.py
+
       # Ingest architecture phase 0 (postgresql.roles.perService and
       # redis.acl): both off by default and rendering nothing then; each
       # switch changes only what it should; the role-limit budget; the
@@ -1295,7 +1305,7 @@ jobs:
           grep -q 'name: INTERNAL_OAUTH_GROUP_MCP$' <<<"${api}" || fail "the api must keep INTERNAL_OAUTH_GROUP_MCP"
           dep=$(doc Deployment distant-signal-ingest-writer <<<"${out}")
           env_is "${dep}" INGEST_WRITER_STREAMS \
-            "full-coverage:apply,ioi-gtfs:off,ioi-live:off,ioi-nir:off,reference:apply,station-samples:apply,tfl:apply,tfl-stops:off,transit-metrolink:off" ingest-writer
+            "darwin:off,full-coverage:apply,ioi-gtfs:off,ioi-live:off,ioi-nir:off,reference:apply,station-samples:apply,tfl:apply,tfl-stops:off,transit-metrolink:off,transit-net:off" ingest-writer
 
           # The writer's removed shadow mode fails, naming it.
           kv=ingestWriter.streams.tfl=shadow
@@ -2811,12 +2821,16 @@ jobs:
             --set redis.acl.clients.pollerNirStations=true
             --set redis.acl.clients.pollerTransitMetrolink=true
             --set ingestWriter.streams.transit-metrolink=apply
+            --set redis.acl.clients.pollerTransitNet=true
+            --set ingestWriter.streams.transit-net=apply
+            --set pollerTransitSchedule.networks.net.txcCredentials.existingSecret=tnds-login
           )
           pollers=$(render -f charts/distant-signal/values-example.yaml "${ioi[@]}" \
             --set pollerIrishRailGtfs.enabled=true \
             --set pollerIrishRailLive.enabled=true \
             --set pollerNirStations.enabled=true \
             --set pollerTransitSchedule.networks.metrolink.enabled=true \
+            --set pollerTransitSchedule.networks.net.enabled=true \
             --show-only templates/poller-deployments.yaml \
             --show-only templates/poller-irish-rail-gtfs-deployment.yaml \
             --show-only templates/poller-irish-rail-live-deployment.yaml \
@@ -2824,7 +2838,7 @@ jobs:
             --show-only templates/poller-transit-schedule-deployment.yaml)
           deployments=$(grep -c '^kind: Deployment' <<<"${pollers}")
           probes=$(grep -c 'path: /livez' <<<"${pollers}")
-          [[ "${deployments}" -ge 5 ]] || fail "expected the pollers to render, got ${deployments}"
+          [[ "${deployments}" -ge 6 ]] || fail "expected the pollers to render, got ${deployments}"
           [[ "${probes}" -eq "${deployments}" ]] \
             || fail "every poller needs a /livez liveness probe (${probes} of ${deployments})"
 
@@ -3009,6 +3023,24 @@ jobs:
           grep -A1 'name: HOURLY_REQUEST_BUDGET$' <<<"${on}" | grep -q 'value: "5000"'
           grep -A1 'name: SAMPLE_PINNED_LINES_ONLY$' <<<"${on}" | grep -q 'value: "true"'
           grep -A1 'name: SAMPLE_MAX_STATIONS$' <<<"${on}" | grep -q 'value: "150"'
+          # DS-152: the arrivals sub-lane is off by default (no env, no
+          # Secret reference); on, it reads the arrivals product's url and
+          # consumer key from the existing Secret's exact keys.
+          if grep -nE 'name: (TRACKED_STOP_ARRIVALS_ENABLED|LDBWS_ARRIVALS_URL|LDBWS_ARRIVALS_CONSUMER_KEY)$' <<<"${off}" \
+            || grep -n 'distant-signal-ldbws-arrivals' <<<"${off}"; then
+            echo "the arrivals sub-lane is off by default but its env rendered" >&2; exit 1
+          fi
+          arrivals=$(helm template distant-signal charts/distant-signal "${base[@]}" \
+            --set pollers.ldbws.trackedStopArrivals.enabled=true \
+            --show-only templates/poller-deployments.yaml)
+          grep -A1 'name: TRACKED_STOP_ARRIVALS_ENABLED$' <<<"${arrivals}" | grep -q 'value: "true"'
+          grep -A1 'name: TRACKED_STOP_ARRIVALS_MAX_REQUESTS_PER_CYCLE$' <<<"${arrivals}" | grep -q 'value: "6"'
+          for pair in LDBWS_ARRIVALS_URL:url LDBWS_ARRIVALS_CONSUMER_KEY:consumer-key \
+            LDBWS_ARRIVALS_CONSUMER_SECRET:consumer-secret; do
+            env="${pair%%:*}" key="${pair#*:}"
+            grep -A5 "name: ${env}\$" <<<"${arrivals}" | grep -q 'name: "distant-signal-ldbws-arrivals"'
+            grep -A5 "name: ${env}\$" <<<"${arrivals}" | grep -q "key: \"${key}\""
+          done
 
       # The PodMonitor must select every workload that serves a port named
       # "metrics". trust-backlog-consumer was missing (INF-6), so the
@@ -3084,7 +3116,7 @@ jobs:
           env_is "${dep}" INGEST_WRITER_LOOPS true
           env_is "${dep}" RECONCILIATION_SWEEP_INTERVAL_SECS 300
           env_is "${dep}" DATABASE_MAX_CONNECTIONS 6
-          env_is "${dep}" INGEST_WRITER_STREAMS "full-coverage:apply,ioi-gtfs:off,ioi-live:off,ioi-nir:off,reference:apply,station-samples:apply,tfl:apply,tfl-stops:off,transit-metrolink:off"
+          env_is "${dep}" INGEST_WRITER_STREAMS "darwin:off,full-coverage:apply,ioi-gtfs:off,ioi-live:off,ioi-nir:off,reference:apply,station-samples:apply,tfl:apply,tfl-stops:off,transit-metrolink:off,transit-net:off"
 
           # Plan 3a.3: a stream not off brings Redis (env, user, egress, admission),
           # as its own narrow Redis user (security review H3; the guards
@@ -3261,11 +3293,15 @@ jobs:
             --set redis.acl.clients.pollerNirStations=true
             --set redis.acl.clients.pollerTransitMetrolink=true
             --set ingestWriter.streams.transit-metrolink=apply
+            --set redis.acl.clients.pollerTransitNet=true
+            --set ingestWriter.streams.transit-net=apply
+            --set pollerTransitSchedule.networks.net.txcCredentials.existingSecret=tnds-login
           )
           all=$(render "${ioi[@]}" --set pollerIrishRailGtfs.enabled=true \
             --set pollerIrishRailLive.enabled=true \
             --set pollerNirStations.enabled=true \
             --set pollerTransitSchedule.networks.metrolink.enabled=true \
+            --set pollerTransitSchedule.networks.net.enabled=true \
             --show-only templates/networkpolicy.yaml)
           for c in aggregator:8090 enricher:8090 notifier:8090 trust-consumer:8081 \
               trust-backlog-consumer:8083 full-coverage-consumer:8082 movement-relay:8083 \

@@ -1,14 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
-import { DateInput } from '@mantine/dates';
+import { Button, Group, Stack, Text } from '@mantine/core';
+import { DateInput } from '@/components/LazyDateFields';
 import { TimeFilterInput } from './TimeFilterInput';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { legSearchDraftFromLeg, legSearchFromDraft, type LegSearch, type LegSearchDraft } from '@/lib/legSearch';
-import { resolveStationCode, suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
-import { searchStations } from '@/lib/suggestions';
-import { useSuggestions } from '@/lib/useSuggestions';
+import { resolveStationCode } from '@/lib/suggestionAutocomplete';
+import { StationField } from './StationField';
 import type { JourneyLegDetail } from '@/lib/types';
 
 type TimeField = 'departAfter' | 'departBefore' | 'arriveAfter' | 'arriveBefore';
@@ -57,20 +56,15 @@ export function LegSearchForm({
     arriveBefore: false,
   });
   const [touched, setTouched] = useState({ origin: false, destination: false });
-  const { suggestions: originSuggestions, loading: originLoading } = useSuggestions(draft.origin, searchStations);
-  const { suggestions: destinationSuggestions, loading: destinationLoading } = useSuggestions(
-    draft.destination,
-    searchStations,
-  );
-  const origin = resolveStationCode(draft.origin, originSuggestions);
-  const destination = resolveStationCode(draft.destination, destinationSuggestions);
+  // A picked station, or a typed name the field matched on blur, is its
+  // code already (`StationField`).
+  const origin = resolveStationCode(draft.origin, []);
+  const destination = resolveStationCode(draft.destination, []);
   const search = Object.values(incomplete).some(Boolean) ? null : legSearchFromDraft(draft, { origin, destination });
 
   const set = (patch: Partial<LegSearchDraft>) => setDraft((current) => ({ ...current, ...patch }));
-  const stationError = (field: 'origin' | 'destination', code: string | null, loading: boolean) =>
-    touched[field] && draft[field].trim() !== '' && code === null && !loading
-      ? 'Must be a 3-letter station code'
-      : null;
+  const stationError = (field: 'origin' | 'destination', code: string | null) =>
+    touched[field] && draft[field].trim() !== '' && code === null ? 'Must be a 3-letter station code' : null;
   const time = (field: TimeField, label: string, description: string, clockHint = false) => (
     <TimeFilterInput
       clockHint={clockHint}
@@ -87,31 +81,21 @@ export function LegSearchForm({
   return (
     <Stack gap="sm">
       <Group grow align="flex-start">
-        <Autocomplete
+        <StationField
           label="From station"
           placeholder="e.g. Woking or WOK"
           value={draft.origin}
           onChange={(value) => set({ origin: value })}
           onBlur={() => setTouched((current) => ({ ...current, origin: true }))}
-          {...suggestionAutocompleteProps(originSuggestions, {
-            query: draft.origin,
-            loading: originLoading,
-            noMatchMessage: 'No matching stations',
-          })}
-          error={stationError('origin', origin, originLoading)}
+          error={stationError('origin', origin)}
         />
-        <Autocomplete
+        <StationField
           label="To station"
           placeholder="e.g. London Waterloo or WAT"
           value={draft.destination}
           onChange={(value) => set({ destination: value })}
           onBlur={() => setTouched((current) => ({ ...current, destination: true }))}
-          {...suggestionAutocompleteProps(destinationSuggestions, {
-            query: draft.destination,
-            loading: destinationLoading,
-            noMatchMessage: 'No matching stations',
-          })}
-          error={stationError('destination', destination, destinationLoading)}
+          error={stationError('destination', destination)}
         />
       </Group>
       <DateInput

@@ -200,6 +200,10 @@ pub(crate) struct LiveSummary {
     pub delay_minutes: Option<i32>,
     pub delay_provisional: bool,
     pub cancelled: bool,
+    /// The cancellation's TRUST glossary text while `cancelled` (DS-181;
+    /// `PublicTrainState::cancel_reason`), `null` without one. These rows
+    /// have no calling points to place a partial cancellation on.
+    pub cancel_reason: Option<String>,
     pub last_reported_location: Option<String>,
 }
 
@@ -210,6 +214,7 @@ impl From<&trains::PublicTrainState> for LiveSummary {
             delay_minutes: s.delay_minutes,
             delay_provisional: s.delay_provisional,
             cancelled: s.cancelled,
+            cancel_reason: s.cancel_reason.clone(),
             last_reported_location: s.last_reported_location.clone(),
         }
     }
@@ -847,6 +852,7 @@ mod tests {
             delay_minutes: delay,
             delay_provisional: false,
             cancelled,
+            cancel_reason: None,
             last_reported_location: None,
         };
         assert!(is_running(600, 700, 650, None));

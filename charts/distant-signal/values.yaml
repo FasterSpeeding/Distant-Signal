@@ -1355,6 +1355,46 @@ pollers:
       # -- The lane's own budget: at most this many requests a cycle,
       # soonest departure first (TRACKED_STOP_MAX_REQUESTS_PER_CYCLE).
       maxRequestsPerCycle: 20
+    # Pre-departure prediction phase 3 (DS-152): the tracked-stop lane's
+    # arrivals sub-lane. Departure boards never list a stop where the train
+    # terminates or only sets down (usually the user's destination), so it
+    # also asks the LDBWS arrivals product (GetArrBoardWithDetails, its own
+    # RDM subscription) for each tracked train's alighting stops with a
+    # booked arrival, narrowed to that arrival, on the same cadence. The
+    # api then shows the arrival board's platform there (platformBasis
+    # board). Independent of trackedStops.enabled. Off by default: it adds
+    # requests on the arrivals product. Needs
+    # ingestWriter.streams.station-samples: apply (its boards ride that
+    # stream as tracked-stop-arrival-boards/1). The product's URL and
+    # consumer key come from an existing Secret (never from values): url is
+    # the product's base (up to /LDBWS/api/20220120; the poller appends
+    # /GetArrBoardWithDetails/{crs}), an operation URL (ending in
+    # /Get...; the poller appends /{crs}) or a URL with a {crs}
+    # placeholder. Its host is reached by the internet egress rule on 443
+    # (networkPolicy.egress.internetPorts); a URL on another port needs
+    # networkPolicy.components.poller-ldbws.internetPorts.
+    trackedStopArrivals:
+      # -- Poll tracked trains' alighting stops' arrival boards
+      # (TRACKED_STOP_ARRIVALS_ENABLED).
+      enabled: false
+      # -- The sub-lane's own budget: at most this many requests a cycle,
+      # soonest arrival first (TRACKED_STOP_ARRIVALS_MAX_REQUESTS_PER_CYCLE).
+      # It also has 3 s of the cycle, taken from the departure lane's 10 s,
+      # so the 45 s station rotation and both lanes stay under the 60 s
+      # interval: raise this only with that in mind.
+      maxRequestsPerCycle: 6
+      # -- The existing Secret holding the arrivals product's credentials
+      # (created out of band; the chart never renders it).
+      secretName: distant-signal-ldbws-arrivals
+      # -- Its key with the product URL (LDBWS_ARRIVALS_URL).
+      urlKey: url
+      # -- Its key with the consumer key, sent as x-apikey
+      # (LDBWS_ARRIVALS_CONSUMER_KEY).
+      consumerKeyKey: consumer-key
+      # -- Its key with the consumer secret (LDBWS_ARRIVALS_CONSUMER_SECRET).
+      # Wired but not sent: RDM API products authenticate with the consumer
+      # key alone.
+      consumerSecretKey: consumer-secret
     # Ingest architecture plan 4.5/4.7: the station list is computed by the
     # poller from the line catalogue in its image and the views
     # `ingest_custom_line_stations` and `ingest_sample_station_pins`, as the
@@ -1613,10 +1653,10 @@ api:
     # (the Authentik provider's issuer and client_id; both must differ from
     # every other client id and issuer the api trusts, or it refuses to
     # start), `maxScopes` (any of journeys:read, journeys:write,
-    # journeys:delete), `enabled` (default true; false is the kill switch:
-    # every token for the client gets 401 at once) and `serviceGroup` (the
-    # internal-OAuth group whose token may call POST /delegated-grants/revoke
-    # for this client). For example:
+    # journeys:delete, preferences:read), `enabled` (default true; false is
+    # the kill switch: every token for the client gets 401 at once) and
+    # `serviceGroup` (the internal-OAuth group whose token may call
+    # POST /delegated-grants/revoke for this client). For example:
     #   - name: ds-mcp
     #     displayName: Distant Signal assistant
     #     issuerUrl: https://sso.cursed.solutions/application/o/distant-signal-api/
@@ -1659,7 +1699,7 @@ api:
   # transit networks spec §11). Empty by default: every `/public/transit`
   # route answers 404 and the frontend hides its pages. List a network only
   # after its timetable has been applied for a day (spec §15.1), e.g.
-  # `[metrolink]`.
+  # `[metrolink]` or `[metrolink, net]`.
   transitNetworks: []
   # The embedded chatbot (/chat) is open to every logged-in user. The former
   # chatbotAccess and chatbotAccessGroup keys were removed on 2026-10-14;
@@ -1768,10 +1808,24 @@ api:
   # berth is further from the platforms than the station's own minimum
   # change time assumes.
   tripPlanRoadWaterChangeMinutes: 5
+  # -- Transit networks whose trams /Trips/plan plans with
+  # (API_TRIP_PLAN_TRANSIT_NETWORKS; docs/superpowers/specs/2026-10-24-
+  # transit-trip-planning-design.md). Empty by default: the graph, its cache
+  # key and every response are as before. Listed, the network's tram trips
+  # join each cached day graph (about 6 MB a date for Metrolink), and a
+  # request plans with them when it sends `transit=true` or names a tram
+  # stop. Only `metrolink` is accepted; the render fails on anything else.
+  # Rollout: docs/transit-networks.md, "Trip planning".
+  tripPlanTransitNetworks: []
+  # -- Extra minutes /Trips/plan adds on the tram side of a rail-to-tram or
+  # tram-to-rail change (TRIP_PLAN_TRANSIT_CHANGE_MINUTES, 0-15; values
+  # outside are clamped). A change between two trams owes none; the tram
+  # stop's own platform change time covers it.
+  tripPlanTransitChangeMinutes: 2
   # -- Largest `results=options` /Trips/plan search allowed:
   # (waypoints + 1) * (2 * vias + 1) * (maxChanges + 2) must not exceed it
   # (a 400 otherwise). 252 is twice what 20 waypoints at maxChanges=4 cost;
-  # values outside 8-504 are clamped. `fastest` is not limited by it.
+  # values outside 14-504 are clamped. `fastest` is not limited by it.
   tripPlanMaxOptionsSearchSize: 252
   # -- /Trips/plan live overlay
   # (docs/superpowers/specs/2026-09-28-trips-plan-live-overlay-design.md):
@@ -2233,6 +2287,16 @@ ingestWriter:
     # `apply` needs postgresql.roles.perService.writer.connect, as tfl
     # does (the writer's ingest_freshness row policy binds its own role).
     transit-metrolink: "off"
+    # darwin-relay's Darwin Push Port batches (DS-152; off by default):
+    # ds:ingest:darwin (darwin-pushport). `apply` needs
+    # postgresql.roles.perService.writer.connect, as tfl does (the writer's
+    # ingest_freshness row policy binds its own role), and darwinRelay
+    # needs it on `apply`.
+    darwin: "off"
+    # ds:ingest:transit-net (pollerTransitSchedule's net network,
+    # Nottingham Express Transit: its timetable only; NET design §7). The
+    # same `apply` prerequisite.
+    transit-net: "off"
   # -- Changed rows only (INGEST_WRITER_CHANGED_ROWS_ONLY; plan 3a.9, spec
   # §7.8): the `station-full-coverage-samples/1` handler stops advancing
   # `resolved_at` on rows whose stats are unchanged (about 2,400 of 2,700
@@ -2936,6 +3000,18 @@ redis:
       # `poller-transit-metrolink-password` key of `existingSecret`, only
       # while this is on. Turning it on restarts Redis once.
       pollerTransitMetrolink: false
+      # -- darwin-relay (off by default; DS-152), as user `darwin-relay`
+      # (`~ds:ingest:darwin +xadd +xrevrange`). An `optional` user, like
+      # pollerTransitMetrolink: it needs the `darwin-relay-password` key of
+      # `existingSecret` only while this is on, and turning it on restarts
+      # Redis once.
+      darwinRelay: false
+      # -- poller-transit-schedule for network net (Nottingham Express
+      # Transit; off by default), as user `poller-transit-net`
+      # (`~ds:ingest:transit-net +xadd +xrevrange`). An `optional` user, as
+      # pollerTransitMetrolink: needs the `poller-transit-net-password` key
+      # of `existingSecret` while on; turning it on restarts Redis once.
+      pollerTransitNet: false
   image:
     # -- Valkey (BSD-licensed, wire- and data-compatible with Redis 7.2),
     # in place of `redis` 7.4.11 since DS-174. The Redis-named commands,
@@ -3928,6 +4004,91 @@ movementRelay:
   podSecurityContext: {}
 
 # ---------------------------------------------------------------------------
+# darwinRelay -- the Darwin Push Port relay (DS-152; docs/darwin-pushport.md;
+# docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md phase
+# 3). Reads the Rail Data Marketplace's Push Port JSON topic and produces
+# the parts DS keeps (schedules, train status platforms with their confirmed
+# and suppressed flags, forecasts, associations, cancellations) on
+# ds:ingest:darwin, which the ingest-writer applies to the darwin_* tables.
+# The api then serves `platformBasis: confirmed`, platforms at every stop
+# (terminating ones too), and the notifier/api late-start prediction prefers
+# Darwin's live next-working links.
+#
+# Off by default. Switching on (docs/darwin-pushport.md): the ingest-writer
+# must apply the stream (`ingestWriter.streams.darwin: apply`, which needs
+# `postgresql.roles.perService.writer.connect`), and the relay needs its
+# own Redis user (`redis.acl.clients.darwinRelay`, an `optional` ACL user:
+# the `darwin-relay-password` key of `redis.acl.existingSecret`; turning it
+# on restarts Redis once). The render fails otherwise.
+# ---------------------------------------------------------------------------
+darwinRelay:
+  # -- Deploy darwin-relay.
+  enabled: false
+  image:
+    repository: ghcr.io/fasterspeeding/distant-signal/darwin-relay
+    tag: ""
+    # -- Content digest override (see api.image.digest).
+    digest: ""
+    pullPolicy: IfNotPresent
+  kafka:
+    # -- The Secret with the Push Port's Kafka connection, one key per
+    # setting (deployed by Ranma; never rendered by this chart).
+    existingSecret: distant-signal-darwin-pushport
+    # -- That Secret's key names. Every value comes from the Secret:
+    # bootstrap server(s), topic (the Push Port JSON topic), the RDM-issued
+    # consumer group, SASL user name, password and mechanism, security
+    # protocol, and the Java client's JAAS line (`saslConfig`; optional,
+    # only a fallback source of the user name and password).
+    keys:
+      bootstrapServer: kafka-bootstrap-server
+      topic: kafka-topic
+      consumerGroup: consumer-group
+      username: username
+      password: password
+      saslMechanism: sasl-mechanism
+      securityProtocol: security-protocol
+      saslConfig: sasl-config
+    # -- Where to start when the group has no committed offset
+    # (KAFKA_AUTO_OFFSET_RESET). `latest` (default): the Push Port is
+    # current state, and `earliest` would replay the topic's whole
+    # retention into the writer on the first start.
+    autoOffsetReset: latest
+    # -- The bootstrap server's TCP port(s). The broker address is only in
+    # the Secret, so with `networkPolicy.egress.internetPorts` set the
+    # egress policy cannot read its port: list it here.
+    brokerPorts: [9092]
+  # -- A batch is published this many seconds after its first record
+  # (BATCH_MAX_SECS). At least minBatchMaxSecs: ds:ingest:darwin's MAXLEN
+  # (crates/ingest-stream/src/budget.rs) is budgeted for one batch that
+  # often, covering a two-hour writer outage.
+  batchMaxSecs: 30
+  # -- The budget's batch interval (ingest_stream::budget::DARWIN_BATCH_SECS);
+  # the render refuses a smaller batchMaxSecs.
+  minBatchMaxSecs: 30
+  # -- ... or once it holds this many Kafka records (BATCH_MAX_RECORDS).
+  batchMaxRecords: 5000
+  healthPort: 8083
+  # -- Liveness watchdog (PROGRESS_STALL_SECS); waiting on Kafka or on a
+  # Redis outage never counts.
+  progressStallSecs: 900
+  metricsPort: 9095
+  logLevel: info
+  extraEnv: []
+  # One batch (a few thousand rows) in memory plus librdkafka's fetch
+  # buffers; the topic is far busier than Train Movements.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 384Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  podSecurityContext: {}
+
+# ---------------------------------------------------------------------------
 # pollerIrishRailGtfs (crates/poller-irish-rail-gtfs/src/config.rs: Config)
 # -- Tier A of docs/superpowers/specs/2026-09-05-ireland-rail-support-design.md.
 # Gets its own bespoke Deployment template, not a new entry in the generic
@@ -4099,14 +4260,15 @@ pollerNirStations:
 # ---------------------------------------------------------------------------
 # pollerTransitSchedule (crates/poller-transit-schedule/src/config.rs:
 # Config) -- transit networks that are neither National Rail nor TfL,
-# Manchester Metrolink first (docs/superpowers/specs/2026-10-09-transit-
-# networks-design.md). One Deployment per enabled network
+# Manchester Metrolink and Nottingham Express Transit
+# (docs/superpowers/specs/2026-10-09-transit-networks-design.md,
+# 2026-10-24-nottingham-net-design.md). One Deployment per enabled network
 # (`<release>-poller-transit-schedule-<network>`), from one image. Each
-# reads its network's public BODS timetable (GTFS) and disruptions
-# (SIRI-SX) and NaPTAN, and XADDs them to its own stream,
-# `ds:ingest:transit-<network>`, as its own Redis user
-# (`redis.acl.clients.pollerTransit<Network>`). No database, no api, no
-# secret beyond the Redis password: the BODS downloads need no key.
+# reads its network's timetable (BODS GTFS, or TNDS TransXChange for NET),
+# BODS disruptions (SIRI-SX) where there are any, and NaPTAN, and XADDs
+# them to its own stream, `ds:ingest:transit-<network>`, as its own Redis
+# user (`redis.acl.clients.pollerTransit<Network>`). No database, no api;
+# no secret beyond the Redis password except NET's TNDS login.
 # ---------------------------------------------------------------------------
 pollerTransitSchedule:
   image:
@@ -4170,6 +4332,75 @@ pollerTransitSchedule:
       # -- The /work emptyDir the GTFS zip is downloaded to.
       workDirSizeLimit: 512Mi
       # The parse streams: 48 MiB peak RSS on the whole North West file.
+      resources:
+        requests:
+          cpu: 100m
+          memory: 192Mi
+        limits:
+          memory: 768Mi
+      extraEnv: []
+      nodeSelector: {}
+      tolerations: []
+      affinity: {}
+      podAnnotations: {}
+      podSecurityContext: {}
+    net:
+      # -- Nottingham Express Transit (NET design). Off by default. NET is
+      # in no BODS feed, so its timetable is the Traveline National Dataset
+      # (TNDS) East Midlands TransXChange, over FTP with a Traveline login
+      # (txcCredentials). Turning it on needs
+      # `redis.acl.clients.pollerTransitNet: true` (with the
+      # `poller-transit-net-password` Secret key),
+      # `ingestWriter.streams.transit-net: apply` and the login Secret; the
+      # pages stay hidden until `api.transitNetworks` lists `net`. Rollout:
+      # docs/transit-networks.md.
+      enabled: false
+      # -- The timetable source adapter (TRANSIT_ADAPTER): txc, as the
+      # network file says.
+      adapter: txc
+      # -- The TransXChange zip (TRANSIT_TXC_URL): TNDS's East Midlands
+      # region (OGL), filtered to NOC NEXT. `ftp://` needs
+      # txcCredentials; an `https://` zip of TXC documents needs none.
+      txcUrl: "ftp://ftp.tnds.co.uk/EM.zip"
+      # -- The TXC download's byte cap (TRANSIT_TXC_MAX_BYTES; 400 MiB).
+      txcMaxBytes: 419430400
+      txcCredentials:
+        # -- A Secret holding the TNDS (Traveline) FTP login, as
+        # TRANSIT_TXC_USERNAME and TRANSIT_TXC_PASSWORD. Required while
+        # enabled with an `ftp://` txcUrl (the chart refuses otherwise).
+        # Plain FTP sends it in clear; it is a free registration that
+        # guards nothing else.
+        existingSecret: ""
+        # -- The Secret's key for the login name.
+        usernameKey: username
+        # -- The Secret's key for the password.
+        passwordKey: password
+      # -- The BODS SIRI-SX bulk archive. Unused while situationsEnabled is
+      # off: BODS has no Nottingham participant (NET design §2.3).
+      situationsUrl: "https://data.bus-data.dft.gov.uk/disruptions/download/bulk_archive"
+      # -- NaPTAN access nodes; `{area}` is the network file's naptan_area.
+      naptanUrl: "https://naptan.api.dft.gov.uk/v1/access-nodes?atcoAreaCodes={area}&dataFormat=csv"
+      # -- Seconds between timetable fetches (TNDS updates Monday to
+      # Thursday; a daily fetch re-sends an unchanged feed, which keeps its
+      # freshness moving).
+      timetableIntervalSecs: 86400
+      # -- Seconds between SIRI-SX fetches (unused while off).
+      situationsIntervalSecs: 300
+      # -- Must stay off: the producer refuses to start with it on, as NET's
+      # network file names no SIRI-SX participant (no source publishes NET's
+      # disruptions). Its stream is budgeted for the timetable only.
+      situationsEnabled: false
+      # -- Days of service dates stored after today (Q8).
+      horizonDays: 60
+      # -- Sharp-drop guard, as metrolink's.
+      feedMaxDropFraction: 0.3
+      # -- One-shot timetable refresh token, as metrolink's
+      # (docs/transit-networks.md).
+      timetableRefresh: ""
+      # -- The /work emptyDir the TXC zip is downloaded to.
+      workDirSizeLimit: 512Mi
+      # One TXC document is held at a time while it is parsed; NET's are
+      # small.
       resources:
         requests:
           cpu: 100m
@@ -5278,6 +5509,8 @@ metrics:
         "ds:ingest:ioi-nir": 500
         "ds:ingest:ioi-live": 1000
         "ds:ingest:transit-metrolink": 320
+        "ds:ingest:darwin": 240
+        "ds:ingest:transit-net": 24
     # DistantSignalIngestStreamStalled (critical): producers' XADDs to a
     # stream succeeded within its stallAfterSecs, but the writer has
     # applied nothing from it for longer, for `for`. stallAfterSecs is
@@ -5285,7 +5518,9 @@ metrics:
     # gauges): station-samples 1/min, full-coverage 3/min, tfl 1/5 min,
     # tfl-stops daily (poller-tfl's stops job; off by default),
     # reference daily, ioi-live 1/5 min, ioi-gtfs and ioi-nir daily,
-    # transit-metrolink 1/5 min (its situations; off by default).
+    # transit-metrolink 1/5 min (its situations; off by default),
+    # transit-net daily (its timetable only; off by default), darwin
+    # 2/min (darwin-relay; off by default).
     ingestStreamStalled:
       enabled: true
       for: 5m
@@ -5300,6 +5535,8 @@ metrics:
         "ds:ingest:ioi-nir": 259200
         "ds:ingest:ioi-live": 900
         "ds:ingest:transit-metrolink": 900
+        "ds:ingest:darwin": 180
+        "ds:ingest:transit-net": 259200
     # DistantSignalIngestDeadLetters: any entry dead-lettered within
     # `window`.
     ingestDeadLetters:
@@ -5436,6 +5673,11 @@ metrics:
         # situations every 5 minutes (written from batch 4).
         transit-metrolink-timetable: 129600
         transit-metrolink-situations: 1800
+        # The Darwin Push Port (DS-152): batches every 30 s, and Darwin
+        # sends something every few seconds all day.
+        darwin-pushport: 900
+        # NET: the timetable only (no situations source; NET design §8).
+        transit-net-timetable: 129600
       whileStreamApplies:
         station-samples: "ds:ingest:station-samples"
         full-coverage-stats: "ds:ingest:full-coverage"
@@ -5447,8 +5689,34 @@ metrics:
         island_of_ireland_lines_nir: "ds:ingest:ioi-nir"
         transit-metrolink-timetable: "ds:ingest:transit-metrolink"
         transit-metrolink-situations: "ds:ingest:transit-metrolink"
+        darwin-pushport: "ds:ingest:darwin"
+        transit-net-timetable: "ds:ingest:transit-net"
       for: 10m
       severity: warning
+    # darwin-relay (DS-152), rendered only with darwinRelay.enabled.
+    # Runbooks: docs/alerts.md.
+    #
+    # DistantSignalDarwinPushPortStale: the newest Darwin message the relay
+    # relayed (distant_signal_darwin_relay_last_message_timestamp_seconds,
+    # Darwin's own `ts`) is older than maxAgeSeconds for `for`, or the gauge
+    # is absent for `for`: the topic, the credentials or the relay is down,
+    # and platforms and associations are going stale. Darwin sends messages
+    # every few seconds all day.
+    #
+    # DistantSignalDarwinConsumerLagHigh: the relay is more than
+    # maxMessages behind the topic's newest message on some partition
+    # (distant_signal_darwin_relay_consumer_lag, from librdkafka every
+    # 30 s) for `for`: it, Redis or the writer cannot keep up.
+    darwinRelay:
+      enabled: true
+      stale:
+        maxAgeSeconds: 600
+        for: 10m
+        severity: warning
+      consumerLag:
+        maxMessages: 50000
+        for: 15m
+        severity: warning
     # DistantSignalDbPoolAcquireTimeouts: a component's Postgres pool timed
     # out handing out a connection (distant_signal_db_pool_acquire_timeouts_total,
     # ds_store::pool) within `window`. Counted only for acquires through

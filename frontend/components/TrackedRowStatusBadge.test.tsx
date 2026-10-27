@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { TrackedRowStatusBadge } from './TrackedRowStatusBadge';
+import { JourneyStatusGroupBadge, TrackedRowStatusBadge } from './TrackedRowStatusBadge';
 import type { TrackedRowStatus, TrackedRowStatusKind } from '@/lib/trackedRowStatus';
+import type { ListCancellation } from '@/lib/types';
 
 function status(kind: TrackedRowStatusKind, overrides: Partial<TrackedRowStatus> = {}): TrackedRowStatus {
   return { kind, finished: false, delayMinutes: null, delayProvisional: false, serviceMode: null, ...overrides };
@@ -59,5 +60,97 @@ describe('TrackedRowStatusBadge', () => {
     renderWithMantine(<TrackedRowStatusBadge status={status('timetableOnly', { serviceMode: 'bus' })} />);
     expect(screen.getByText('Bus service')).toBeInTheDocument();
     expect(toneOf('Timetabled only')).toBe('neutral');
+  });
+});
+
+describe('TrackedRowStatusBadge: a train cancelled in whole or part (DS-181)', () => {
+  const york = { crs: 'YRK', name: 'York' };
+  const reason = { code: 'JP', text: 'Failure to maintain vegetation', source: 'trust' } as const;
+  function cancellation(overrides: Partial<ListCancellation> = {}): ListCancellation {
+    return { kind: 'partial', startsFrom: null, terminatesAt: null, reason: null, ...overrides };
+  }
+
+  /** The visible badge's text and tone, the dimmed reason line, and what a
+   * screen reader hears for the group. */
+  function rendered(rowStatus: TrackedRowStatus) {
+    const { container } = renderWithMantine(<TrackedRowStatusBadge status={rowStatus} />);
+    const badge = container.querySelector('[data-state-badge="critical"]');
+    const group = container.querySelector('[data-row-cancellation]');
+    return {
+      badge: badge?.textContent ?? null,
+      badgeHidden: badge?.getAttribute('aria-hidden') ?? null,
+      reason: container.querySelector('[data-row-cancellation-reason]')?.textContent ?? null,
+      kind: group?.getAttribute('data-row-cancellation') ?? null,
+    };
+  }
+
+  it('says where a part-cancelled train terminates, with the reason under it', () => {
+    const view = rendered(
+      status('partCancelled', { cancellation: cancellation({ terminatesAt: york, reason }), delayMinutes: 0 }),
+    );
+    expect(view).toEqual({
+      badge: 'Terminates at York',
+      badgeHidden: 'true',
+      reason: 'Failure to maintain vegetation',
+      kind: 'partial',
+    });
+    expect(
+      screen.getByText('This train terminates at York. Reason: Failure to maintain vegetation.'),
+    ).toBeInTheDocument();
+    // The final delay still sits beside it, and stays readable.
+    expect(screen.getByText('On time')).toBeInTheDocument();
+    expect(screen.queryByText('Part cancelled')).not.toBeInTheDocument();
+  });
+
+  it('says where a part-cancelled train starts from, with no reason line when none is given', () => {
+    const view = rendered(status('partCancelled', { cancellation: cancellation({ startsFrom: york }) }));
+    expect(view).toMatchObject({ badge: 'Starts from York', reason: null });
+    expect(screen.getByText('This train starts from York.')).toBeInTheDocument();
+  });
+
+  it('a cancelled middle section reads "Part cancelled"', () => {
+    const view = rendered(status('partCancelled', { cancellation: cancellation({ reason }) }));
+    expect(view).toMatchObject({ badge: 'Part cancelled', reason: 'Failure to maintain vegetation' });
+    expect(
+      screen.getByText('This train is part cancelled. Reason: Failure to maintain vegetation.'),
+    ).toBeInTheDocument();
+  });
+
+  it('a wholly cancelled train keeps "Cancelled" and adds the reason', () => {
+    const view = rendered(status('severe', { cancellation: cancellation({ kind: 'full', reason }) }));
+    expect(view).toEqual({
+      badge: 'Cancelled',
+      badgeHidden: 'true',
+      reason: 'Failure to maintain vegetation',
+      kind: 'full',
+    });
+    expect(screen.getByText('This train is cancelled. Reason: Failure to maintain vegetation.')).toBeInTheDocument();
+  });
+
+  it('without a cancellation, "Cancelled" and "Part cancelled" render as before', () => {
+    for (const kind of ['severe', 'partCancelled'] as const) {
+      const { container, unmount } = renderWithMantine(
+        <TrackedRowStatusBadge status={status(kind, { cancellation: null })} />,
+      );
+      expect(container.querySelector('[data-row-cancellation]')).toBeNull();
+      expect(container.querySelector('[aria-hidden="true"]')).toBeNull();
+      unmount();
+    }
+  });
+
+  it('a cancellation never rewords a row that is not cancelled', () => {
+    renderWithMantine(
+      <TrackedRowStatusBadge status={status('good', { cancellation: cancellation(), delayMinutes: 0 })} />,
+    );
+    expect(screen.getByText('On time')).toBeInTheDocument();
+    expect(screen.queryByText('Part cancelled')).not.toBeInTheDocument();
+  });
+
+  it('the home page group badge words a cancellation the same way', () => {
+    renderWithMantine(
+      <JourneyStatusGroupBadge group="partCancelled" cancellation={cancellation({ terminatesAt: york })} />,
+    );
+    expect(screen.getByText('Terminates at York')).toBeInTheDocument();
+    expect(screen.getByText('This train terminates at York.')).toBeInTheDocument();
   });
 });

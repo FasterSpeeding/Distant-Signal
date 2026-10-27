@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, vi, beforeEach } from 'vitest';
 import { act, cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import LineDetailPage, { generateMetadata } from './page';
@@ -153,6 +153,12 @@ async function renderPage(id = 'custom-my-commute', search: Record<string, strin
   // before the findBy* calls give up.
   return act(() => Promise.resolve(renderWithMantine(element)));
 }
+
+// TrendsCharts loads its Recharts half on demand (next/dynamic); load it once
+// up front so the first chart assertion isn't timed against a cold import.
+beforeAll(async () => {
+  await import('@/app/lines/[id]/history/TrendsChartParts');
+});
 
 describe('LineDetailPage Edit/Delete visibility', () => {
   beforeEach(() => {
@@ -712,7 +718,7 @@ describe('generateMetadata', () => {
     __resetStaleCacheForTests();
   });
 
-  it('titles the page with the line name and describes its worst current status', async () => {
+  it('titles the page with the line name, with an evergreen description and canonical', async () => {
     vi.mocked(api.getLineStatus).mockResolvedValue([
       {
         ...report('custom-my-commute', 'My Commute'),
@@ -731,15 +737,19 @@ describe('generateMetadata', () => {
     ]);
     const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
     expect(metadata.title).toBe('My Commute');
-    expect(metadata.description).toBe('My Commute: Severe Delays. Signal failure at Woking');
+    // What the page offers, never today's status: a snippet outlives it.
+    expect(metadata.description).toBe("Live status, disruption, today's trains and recent trends for My Commute.");
+    expect(metadata.alternates).toEqual({ canonical: '/lines/custom-my-commute' });
+    expect(metadata.openGraph).toMatchObject({ url: '/lines/custom-my-commute' });
     expect(metadata.openGraph?.title).toBe('My Commute · Distant Signal');
     expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });
 
-  it('describes a line with no reason text (Good Service)', async () => {
-    vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
-    const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
-    expect(metadata.description).toBe('My Commute: Good Service');
+  it("describes a TfL line without the trains it doesn't show, and never repeats its status", async () => {
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('tfl-northern', 'Northern')]);
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: 'tfl-northern' }) });
+    expect(metadata.description).toBe('Live status, disruption and recent trends for Northern.');
+    expect(metadata.description).not.toMatch(/Good Service/);
   });
 
   // `generateMetadata` runs independently of the page component and its
@@ -767,7 +777,7 @@ describe('generateMetadata', () => {
 
     expect(notFound).not.toHaveBeenCalled();
     expect(metadata.title).toBe('My Commute');
-    expect(metadata.description).toBe('My Commute: no status computed yet');
+    expect(metadata.description).toBe("Live status, disruption, today's trains and recent trends for My Commute.");
     expect(metadata.openGraph?.title).toBe('My Commute · Distant Signal');
   });
 

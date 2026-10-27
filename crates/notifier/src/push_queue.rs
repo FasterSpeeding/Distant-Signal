@@ -146,6 +146,10 @@ pub(crate) enum Delivered {
         tracked_train_id: i64,
         status: String,
         delay_minutes: Option<i32>,
+        /// A cancellation push sent without its reason: its delivery opens
+        /// the window for one follow-up (`cancel_reason`); any other push
+        /// closes it.
+        awaiting_reason: bool,
     },
     /// `journey_leg_notification_state.last_notified_skipped = TRUE`.
     SkippedStop { journey_leg_id: i64 },
@@ -281,6 +285,11 @@ pub(crate) trait PushBackend: Send + Sync + 'static {
         payload: &NotificationPayload,
     ) -> impl Future<Output = SendOutcome> + Send;
     fn delete_subscription(&self, id: i64) -> impl Future<Output = anyhow::Result<()>> + Send;
+    /// Stamps a subscription that a push was just delivered to (the device
+    /// list's "last used", DS-153). Best effort; a no-op by default.
+    fn mark_pushed(&self, _id: i64) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
+    }
     fn record_delivered(
         &self,
         user_id: &str,
@@ -319,6 +328,10 @@ impl PushBackend for PgBackend {
         queries::delete_push_subscription(&self.pool, id).await
     }
 
+    async fn mark_pushed(&self, id: i64) -> anyhow::Result<()> {
+        queries::mark_push_subscription_pushed(&self.pool, id).await
+    }
+
     async fn record_delivered(
         &self,
         user_id: &str,
@@ -334,6 +347,7 @@ impl PushBackend for PgBackend {
                 tracked_train_id,
                 status,
                 delay_minutes,
+                awaiting_reason,
             } => {
                 queries::upsert_train_notification_state(
                     &self.pool,
@@ -342,6 +356,7 @@ impl PushBackend for PgBackend {
                     status,
                     *delay_minutes,
                     at,
+                    awaiting_reason.then(|| at + crate::cancel_reason::FOLLOWUP_WINDOW),
                 )
                 .await
             }
@@ -380,6 +395,9 @@ impl PushBackend for PgBackend {
                         &trigger.status,
                         trigger.delay_minutes,
                         at,
+                        // The notice is the train's push; it is never
+                        // replaced by a plain reason follow-up.
+                        None,
                     )
                     .await?;
                 }
@@ -949,6 +967,7 @@ async fn run_job_inner<B: PushBackend>(shared: &Shared<B>, job: &PushJob) -> Job
                 SendOutcome::Sent => {
                     any_sent = true;
                     lock(&shared.timeouts).remove(&subscription.id);
+                    mark_pushed(backend, subscription.id).await;
                 }
                 SendOutcome::Expired => {
                     lock(&shared.timeouts).remove(&subscription.id);
@@ -1011,6 +1030,18 @@ async fn run_job_inner<B: PushBackend>(shared: &Shared<B>, job: &PushJob) -> Job
         }
     }
     JobResult::BookkeepingFailed
+}
+
+/// [`PushBackend::mark_pushed`], logging a failure: it only feeds the
+/// device list.
+async fn mark_pushed<B: PushBackend>(backend: &B, subscription_id: i64) {
+    if let Err(err) = backend.mark_pushed(subscription_id).await {
+        tracing::warn!(
+            error = ?err,
+            subscription_id,
+            "could not stamp the subscription's last push"
+        );
+    }
 }
 
 async fn prune<B: PushBackend>(
@@ -1327,6 +1358,7 @@ mod tests {
                 tracked_train_id,
                 status: "cancelled".to_string(),
                 delay_minutes: None,
+                awaiting_reason: false,
             },
             decided_at: Utc::now(),
         }

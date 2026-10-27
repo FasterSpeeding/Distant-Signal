@@ -1,4 +1,5 @@
 import { isGroupCode, isTflStopCode, normalizeLocationCode, tflStopPlaceName } from './stationLabel';
+import { isTransitStopCode, transitNetworkName, transitStopPlaceName } from './transitStops';
 import type {
   TripPlanItinerary,
   TripPlanLeg,
@@ -15,7 +16,7 @@ const log = createLogger('lib/tripPlan');
 /** A code a station-name lookup can resolve: not a station group
  * (`group:LON`) nor a choice of several (`KGX|EUS`). */
 function isStationCode(code: string): boolean {
-  return !isGroupCode(code) && !isTflStopCode(code) && !code.includes('|');
+  return !isGroupCode(code) && !isTflStopCode(code) && !isTransitStopCode(code) && !code.includes('|');
 }
 
 /** Every distinct, non-null CRS code a `GET /Trips/plan` response mentions
@@ -55,12 +56,27 @@ export function collectTripPlanStationCodes(response: TripPlanResponse): string[
 }
 
 /** The names of a plan's TfL stop ends (DS-135), by stop id, from its
- * top-level `access` (`Uxbridge (Tube)`): a stop id is not a station code
- * `getStationNames` can resolve. */
+ * top-level `access` (`Uxbridge (Tube)`), and of every tram station its
+ * transit legs and walks name (`Piccadilly (Metrolink)`): a stop id is
+ * not a station code `getStationNames` can resolve. */
 export function tripPlanStopNames(response: TripPlanResponse): Map<string, string> {
   const names = new Map<string, string>();
   for (const end of [response.access?.origin, response.access?.destination]) {
     if (end) names.set(end.stop.id, tflStopPlaceName(end.stop));
+  }
+  const addTransit = (network: string, stop: { id: string; name: string }) =>
+    names.set(stop.id, transitStopPlaceName(stop.name, transitNetworkName(network)));
+  for (const segment of response.segments) {
+    for (const itinerary of segment.itineraries) {
+      for (const leg of itinerary.legs) {
+        if (leg.kind === 'transit') {
+          addTransit(leg.network, leg.originStop);
+          addTransit(leg.network, leg.destinationStop);
+        } else if (leg.kind === 'transfer' && leg.transitWalk) {
+          addTransit(leg.transitWalk.network, leg.transitWalk.stop);
+        }
+      }
+    }
   }
   return names;
 }
@@ -104,8 +120,8 @@ export interface TripPlanQuery {
  * them as a disabled control, not a 400. */
 export const MAX_VIAS = 3;
 export const MAX_AVOIDED = 8;
-export const MAX_CHANGES_LIMIT = 6;
-export const DEFAULT_MAX_CHANGES = 2;
+export const MAX_CHANGES_LIMIT = 12;
+export const DEFAULT_MAX_CHANGES = 4;
 
 /** The advanced options the planner form groups behind its "Advanced"
  * disclosure. */
@@ -140,6 +156,9 @@ export function buildTripPlanQuery(query: TripPlanQuery): string {
     destination: normalizeLocationCode(query.destinationCrs),
     date: query.date,
     results: query.results,
+    // Plans may ride a tram (transit trip planning §11.1): the api sends
+    // `kind: "transit"` legs only to a client that says it reads them.
+    transit: 'true',
   });
   setListParams(params, query);
   if (query.departAfter) {

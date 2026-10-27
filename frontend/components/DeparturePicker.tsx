@@ -9,6 +9,7 @@ import { TextLink } from './TextLink';
 import { CardTitleButton, ClickableCard } from './ClickableCard';
 import { LoadingText } from '@/components/LoadingText';
 import { stationLabel } from '@/lib/stationLabel';
+import { boardCancellationNote } from '@/lib/cancellation';
 import {
   CRS_PATTERN,
   fetchCifPickerRows,
@@ -247,6 +248,7 @@ export function DeparturePicker({
                 destinationName: row.destinationName,
                 operator: row.operator,
                 isCancelled: row.isCancelled,
+                cancelNote: boardCancellationNote(row),
                 delayMinutes: row.delayMinutes,
                 platform: row.platform,
                 plannedPlatform: row.plannedPlatform,

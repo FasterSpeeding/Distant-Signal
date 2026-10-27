@@ -223,8 +223,8 @@ export function PlanTripFlow({
     needsLoginState.reset();
 
     // Every leg across every selected segment, in order: each train leg,
-    // and each Tube, walk, bus or ferry transfer between them as an
-    // untracked leg with its planned times (spec 2026-10-20 §2, follow-up;
+    // and each tram ride and Tube, walk, bus or ferry transfer between them
+    // as an untracked leg with its planned times (spec 2026-10-20 §2, follow-up;
     // until then a transfer was dropped). The itinerary still needs a train.
     const chosen = selections.flatMap((selection) => (selection.itinerary ? [selection.itinerary] : []));
     const trainLegs = trainLegsForTracking(chosen);
@@ -364,6 +364,13 @@ export function PlanTripFlow({
         </Text>
       )}
       {plan && <ProvisionalTimetableNote provisional={plan.provisional} />}
+      {/* A network the plan could not use, such as no tram times for the
+          date: said as the api words it, never as "no trams". */}
+      {plan?.transitNotices?.map((notice) => (
+        <Alert key={`${notice.network}:${notice.reason}`} color="grape" variant="light" data-transit-notice>
+          <Text size="sm">{notice.message}</Text>
+        </Alert>
+      ))}
       {list && (
         <PageControl
           direction="earlier"

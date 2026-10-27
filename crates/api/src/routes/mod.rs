@@ -23,6 +23,12 @@ pub mod island_of_ireland;
     reason = "test code: scenario tests read top to bottom"
 )]
 mod journey_follows_db_tests;
+#[cfg(test)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: scenario tests read top to bottom"
+)]
+mod journey_history_order_db_tests;
 pub mod journey_itinerary;
 pub mod journey_replan;
 pub mod journey_templates;
@@ -33,6 +39,8 @@ pub mod line_status;
 pub mod line_timetable;
 pub mod line_trains_summary;
 pub mod lines;
+#[cfg(test)]
+mod notification_settings_db_tests;
 pub mod notifications;
 pub mod operator_history;
 pub mod operators;

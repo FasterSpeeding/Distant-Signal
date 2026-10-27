@@ -15,8 +15,17 @@ vi.mock('@/lib/suggestions', () => ({
     { code: 'tiploc:STAFBUS', name: 'Stafford Bus Station (bus)' },
   ],
   searchTocs: async () => [],
-  getStationNames: async (codes: string[]) =>
-    new Map(codes.filter((code) => code === 'CRE').map((code) => [code, 'Crewe'] as [string, string])),
+  getStationNames: async (codes: string[]) => {
+    const known: Record<string, string> = {
+      CRE: 'Crewe',
+      EUS: 'London Euston',
+      GLA: 'Glasgow Central',
+      PRE: 'Preston',
+    };
+    return new Map(
+      codes.filter((code) => known[code] !== undefined).map((code) => [code, known[code]!] as [string, string]),
+    );
+  },
 }));
 
 // The panel opens through a transition, so its fields appear a tick later
@@ -149,6 +158,23 @@ describe('PlanTripForm advanced options', () => {
     );
   });
 
+  it('offers the default of 4 and every cap from 0 to 12', async () => {
+    const onSubmit = vi.fn();
+    renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
+    fillEnds();
+    await openAdvanced();
+    const control = screen.getByLabelText(/Most changes/);
+    const options = within(control).getAllByRole('option');
+    expect(options.map((option) => option.textContent)).toEqual([
+      'Default (4)',
+      '0 (direct trains only)',
+      ...Array.from({ length: 12 }, (_, n) => String(n + 1)),
+    ]);
+    fireEvent.change(control, { target: { value: '12' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ maxChanges: 12 }));
+  });
+
   it('sends no advanced options by default', () => {
     const onSubmit = vi.fn();
     renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
@@ -183,11 +209,11 @@ describe('PlanTripForm advanced options', () => {
       expect.stringContaining('also in "Avoid completely"'),
     );
     expect(screen.getByRole('combobox', { name: 'Avoid completely' })).toHaveAccessibleDescription(
-      expect.stringContaining("GLA is where you finish, so it can't be avoided"),
+      expect.stringContaining("GLA · Glasgow Central is where you finish, so it can't be avoided"),
     );
   });
 
-  it('restores the whole form from initial values', () => {
+  it('restores the whole form from initial values', async () => {
     renderWithMantine(
       <PlanTripForm
         onSubmit={vi.fn()}
@@ -200,9 +226,10 @@ describe('PlanTripForm advanced options', () => {
         }}
       />,
     );
-    expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('EUS');
-    expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('GLA');
-    expect(screen.getByRole('combobox', { name: /Call at/ })).toHaveValue('PRE');
+    // Each station by name once looked up.
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('London Euston (EUS)'));
+    expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('Glasgow Central (GLA)');
+    expect(screen.getByRole('combobox', { name: /Call at/ })).toHaveValue('Preston (PRE)');
     expect(screen.getByLabelText('Time (optional)')).toHaveValue('09:15');
     expect(screen.getByRole('radio', { name: 'Compare options' })).toBeChecked();
   });
@@ -254,8 +281,8 @@ describe('PlanTripForm station groups (2026-10-07)', () => {
     const callAt = screen.getByRole('combobox', { name: /Call at/ });
     fireEvent.change(callAt, { target: { value: 'london' } });
     fireEvent.click(await screen.findByRole('option', { name: label, hidden: true }));
-    await waitFor(() => expect(callAt).toHaveValue('group:LON'));
-    expect(callAt).toHaveAccessibleDescription(expect.stringContaining(label));
+    // The group's label, not its code.
+    await waitFor(() => expect(callAt).toHaveValue(label));
 
     fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
     expect(onSubmit).toHaveBeenCalledWith(

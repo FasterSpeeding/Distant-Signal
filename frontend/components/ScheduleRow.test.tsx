@@ -88,6 +88,15 @@ describe('ScheduleRow', () => {
     expect(screen.getByText('(cancelled)', { exact: false })).toBeInTheDocument();
   });
 
+  it('says what is cancelled and why in words under the row (DS-181)', () => {
+    renderWithMantine(
+      <ScheduleRow
+        row={row({ isCancelled: true, cancelNote: 'Cancelled: a broken down train', scheduled: '14:40' })}
+      />,
+    );
+    expect(screen.getByText('Cancelled: a broken down train')).toHaveAttribute('data-cancel-note');
+  });
+
   it('does not strike through or mark a running service as cancelled', () => {
     renderWithMantine(<ScheduleRow row={row({ scheduled: '14:40' })} />);
     expect(document.querySelector('s')).toBeNull();

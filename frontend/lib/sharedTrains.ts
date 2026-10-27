@@ -1,4 +1,4 @@
-import type { SharedGroupJourney, SharedGroupTrain } from './types';
+import type { SharedGroupTrain } from './types';
 
 /** One row of the Journeys page's shared-train half: the shared train itself,
  * plus EVERY group the caller can see it through. */
@@ -40,37 +40,6 @@ export function mergeSharedTrains(
     const existing = merged.get(row.trainSubscriptionId);
     if (!existing) {
       merged.set(row.trainSubscriptionId, { train: row, groupNames: [row.groupName] });
-      continue;
-    }
-    if (!existing.groupNames.includes(row.groupName)) {
-      existing.groupNames.push(row.groupName);
-    }
-  }
-  return [...merged.values()];
-}
-
-/** One row of the Journeys page's shared-journey half: the journey, plus
- * every group the caller can see it through (DS-124: a tracked train is
- * shared as its one-leg journey). */
-export interface MergedSharedJourney {
-  journey: SharedGroupJourney;
-  /** Never empty, de-duplicated, in the order the API returned them. */
-  groupNames: string[];
-}
-
-/** `mergeSharedTrains` for `GET /public/groups/shared-journeys`: one row
- * per journey, with every group name it arrived through. `ownJourneyIds`
- * drops the caller's own journeys, which the backend already excludes. */
-export function mergeSharedJourneys(
-  rows: SharedGroupJourney[],
-  ownJourneyIds: ReadonlySet<number> = new Set(),
-): MergedSharedJourney[] {
-  const merged = new Map<number, MergedSharedJourney>();
-  for (const row of rows) {
-    if (ownJourneyIds.has(row.journeyId)) continue;
-    const existing = merged.get(row.journeyId);
-    if (!existing) {
-      merged.set(row.journeyId, { journey: row, groupNames: [row.groupName] });
       continue;
     }
     if (!existing.groupNames.includes(row.groupName)) {

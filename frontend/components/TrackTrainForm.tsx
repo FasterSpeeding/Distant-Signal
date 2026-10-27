@@ -2,18 +2,8 @@
 
 import { useId, useState, type SubmitEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  Alert,
-  Autocomplete,
-  Button,
-  Group,
-  SegmentedControl,
-  SimpleGrid,
-  Stack,
-  Text,
-  VisuallyHidden,
-} from '@mantine/core';
-import { DateTimePicker, DatePickerInput } from '@mantine/dates';
+import { Alert, Button, Group, SegmentedControl, SimpleGrid, Stack, Text, VisuallyHidden } from '@mantine/core';
+import { DateTimePicker, DatePickerInput } from '@/components/LazyDateFields';
 import { PICKER_DATE_FORMAT, PICKER_DATE_TIME_FORMAT } from '@/lib/dateFormat';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -21,11 +11,10 @@ import { LoginPromptModal } from './LoginPromptModal';
 import { DeparturePicker, useDeparturePicker } from './DeparturePicker';
 import { TrackDestinationModal } from './TrackDestinationModal';
 import { TimeFilterInput } from './TimeFilterInput';
-import { searchStations, searchTocs } from '@/lib/suggestions';
-import { useSuggestions } from '@/lib/useSuggestions';
 import { useGroupSummaries } from '@/lib/useGroupSummaries';
 import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
-import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { StationField } from './StationField';
+import { OperatorField } from './OperatorField';
 import { nowInLondon, londonWallClockToUtc } from '@/lib/londonWallClock';
 import type { CreateJourneyResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
@@ -200,18 +189,6 @@ export function TrackTrainForm({
   const { groups } = useGroupSummaries();
   const [destinationPromptOpened, setDestinationPromptOpened] = useState(false);
 
-  const { suggestions: originSuggestions, loading: originSuggestionsLoading } = useSuggestions(
-    originCrs,
-    searchStations,
-  );
-  const { suggestions: destinationSuggestions, loading: destinationSuggestionsLoading } = useSuggestions(
-    destinationCrs,
-    searchStations,
-  );
-  const { suggestions: operatorSuggestions, loading: operatorSuggestionsLoading } = useSuggestions(
-    operator,
-    searchTocs,
-  );
   const [originTouched, setOriginTouched] = useState(false);
 
   const originValid = CRS_PATTERN.test(originCrs.trim());
@@ -657,17 +634,12 @@ export function TrackTrainForm({
         </Text>
       )}
       <Stack gap="md" component="form" onSubmit={handleSubmit} maw={640}>
-        <Autocomplete
+        <StationField
           label="Origin station"
           placeholder="e.g. Woking or WOK"
           value={originCrs}
           onChange={setOriginCrs}
           onBlur={() => setOriginTouched(true)}
-          {...suggestionAutocompleteProps(originSuggestions, {
-            query: originCrs,
-            loading: originSuggestionsLoading,
-            noMatchMessage: 'No matching stations',
-          })}
           error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter station code' : null}
           // NOT the native `required` attribute (Task 3.6.14): an empty
           // origin is now validated by `handleSubmit` itself, which sets
@@ -722,7 +694,7 @@ export function TrackTrainForm({
         </VisuallyHidden>
         {mode === 'window' ? (
           <>
-            <Autocomplete
+            <StationField
               label="Destination station"
               placeholder="e.g. Reading or RDG"
               // `destinationCrs`/`setDestinationCrs`/`destinationSuggestions`
@@ -733,11 +705,6 @@ export function TrackTrainForm({
               // switching back to "I know the train" mode, and vice versa.
               value={destinationCrs}
               onChange={setDestinationCrs}
-              {...suggestionAutocompleteProps(destinationSuggestions, {
-                query: destinationCrs,
-                loading: destinationSuggestionsLoading,
-                noMatchMessage: 'No matching stations',
-              })}
               error={destinationCrs.length > 0 && !destinationValid ? 'Must be a 3-letter station code' : null}
               // NOT the native `required` attribute -- same reasoning as the
               // Origin field's own comment above: a native `required` field
@@ -877,28 +844,13 @@ export function TrackTrainForm({
                 Now
               </Button>
             </Group>
-            <Autocomplete
+            <StationField
               label="Destination station (optional)"
               placeholder="e.g. Woking or WOK"
               value={destinationCrs}
               onChange={setDestinationCrs}
-              {...suggestionAutocompleteProps(destinationSuggestions, {
-                query: destinationCrs,
-                loading: destinationSuggestionsLoading,
-                noMatchMessage: 'No matching stations',
-              })}
             />
-            <Autocomplete
-              label="Operator (optional)"
-              placeholder="e.g. SW"
-              value={operator}
-              onChange={setOperator}
-              {...suggestionAutocompleteProps(operatorSuggestions, {
-                query: operator,
-                loading: operatorSuggestionsLoading,
-                noMatchMessage: 'No matching operators',
-              })}
-            />
+            <OperatorField label="Operator (optional)" placeholder="e.g. SW" value={operator} onChange={setOperator} />
             {/* Always present -- never absent from the DOM, per
               docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
               Decision 4. `mih={72}` blunts the size jump between the

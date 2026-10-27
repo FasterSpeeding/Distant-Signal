@@ -31,6 +31,10 @@ type RawSearchParams = Record<string, string | string[] | undefined>;
 
 const CRS = /^[A-Za-z]{3}$/;
 const TIPLOC_CODE = /^tiploc:[A-Za-z0-9]{1,7}$/i;
+/** A NaPTAN stop as From or To (transit trip planning §5.2): a tram
+ * station's access-node code (`9400ZZMAPIC`) or a stop area
+ * (`940GZZCRWMB`, a London tram or other TfL stop). */
+const NAPTAN_CODE = /^940[0G][A-Z0-9]{4,16}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -39,11 +43,18 @@ function first(value: string | string[] | undefined): string | undefined {
 }
 
 /** A station's CRS, or (`allowStops`) a bus stop's or ferry terminal's
- * `tiploc:` code, or (`allowGroups`) a station group's `group:` code,
- * normalized; `null` for anything else. */
-function locationCode(raw: string | undefined, allowStops: boolean, allowGroups = false): string | null {
+ * `tiploc:` code, or (`allowGroups`) a station group's `group:` code, or
+ * (`allowNaptan`, From and To only) a NaPTAN stop code, normalized; `null`
+ * for anything else. */
+function locationCode(
+  raw: string | undefined,
+  allowStops: boolean,
+  allowGroups = false,
+  allowNaptan = false,
+): string | null {
   const code = raw?.trim() ?? '';
   if (CRS.test(code)) return code.toUpperCase();
+  if (allowNaptan && NAPTAN_CODE.test(code)) return code.toUpperCase();
   if (allowStops && TIPLOC_CODE.test(code) && isTiplocCode(code)) return normalizeLocationCode(code);
   if (allowGroups) return parseGroupCode(code);
   return null;
@@ -76,9 +87,9 @@ function viaList(raw: string | undefined): string[] {
 /** Reads a `/plan` URL back into the form's starting values. */
 export function parsePlanSearchParams(raw: RawSearchParams): PlanFormInitial {
   const initial: PlanFormInitial = {};
-  const origin = locationCode(first(raw.origin), true);
+  const origin = locationCode(first(raw.origin), true, false, true);
   if (origin) initial.originCrs = origin;
-  const destination = locationCode(first(raw.destination), true);
+  const destination = locationCode(first(raw.destination), true, false, true);
   if (destination) initial.destinationCrs = destination;
   const date = first(raw.date);
   if (date && DATE.test(date)) initial.date = date;
@@ -101,7 +112,7 @@ export function parsePlanSearchParams(raw: RawSearchParams): PlanFormInitial {
   const avoidChange = codeList(first(raw.avoidChange), { allowStops: true, max: MAX_AVOIDED });
   if (avoidChange.length > 0) initial.avoidChangeCrs = avoidChange;
   const maxChanges = first(raw.maxChanges);
-  if (maxChanges && /^\d$/.test(maxChanges) && Number(maxChanges) <= MAX_CHANGES_LIMIT) {
+  if (maxChanges && /^\d{1,2}$/.test(maxChanges) && Number(maxChanges) <= MAX_CHANGES_LIMIT) {
     initial.maxChanges = Number(maxChanges);
   }
   return initial;

@@ -237,6 +237,7 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   ['/groups (anonymous login prompt)', '/groups'],
   ['/chat (anonymous login prompt)', '/chat'],
   ['/account/preferences', '/account/preferences'],
+  ['/account/notifications (anonymous login prompt)', '/account/notifications'],
   ['/attribution', '/attribution'],
   // The draft legal pages 404 unless the server has LEGAL_PAGES_PREVIEW or
   // LEGAL_PAGES_PUBLISHED on (frontend/lib/legal.ts). CI sets
@@ -333,7 +334,16 @@ test.describe('accessibility: data freshness panel open', () => {
           await page.keyboard.press('Tab');
         }
         await expect(trigger).toBeFocused();
-        await expect(page.locator('.mantine-Tooltip-tooltip').filter({ hasText: 'Stations' })).toBeVisible();
+        const panel = page.locator('.mantine-Tooltip-tooltip').filter({ hasText: 'Stations' });
+        await expect(panel).toBeVisible();
+        // Announced, not just shown: the panel is a `role="tooltip"` and the
+        // focused trigger names it in `aria-describedby`, so a screen reader
+        // reads the freshness rows after the button's name.
+        await expect(panel).toHaveRole('tooltip');
+        const panelId = await panel.getAttribute('id');
+        expect(panelId).toBeTruthy();
+        await expect(trigger).toHaveAttribute('aria-describedby', panelId!);
+        await expect(trigger).toHaveAccessibleDescription(/Stations/);
         // `region` only, as for the account menu: Mantine portals the open
         // tooltip under <body>, outside every landmark. `color-contrast`
         // stays live, and is the rule this test is for.
@@ -360,6 +370,7 @@ test.describe('accessibility: logged in', () => {
     ['/track/mine/add-ticket', '/track/mine/add-ticket'],
     ['/groups', '/groups'],
     ['/chat', '/chat'],
+    ['/account/notifications', '/account/notifications'],
   ] as const) {
     test(name, async ({ page }) => {
       // Next's error shell is itself accessible, so without this a route that
@@ -447,6 +458,19 @@ test.describe('accessibility: /train/[uid]/[date]', () => {
     await expectNoViolations(owned);
     await context.close();
   });
+
+  // A train cut short (DS-181, the seed's W81181): the red notice, and the
+  // struck-through call with its "Cancelled" badge, in both schemes.
+  for (const colorScheme of ['light', 'dark'] as const) {
+    test.describe(`part cancelled, ${colorScheme} scheme`, () => {
+      test.use({ colorScheme });
+      test('anonymous', async ({ page }) => {
+        await page.goto('/train/W81181/2026-12-03');
+        await expect(page.getByRole('alert').filter({ hasText: 'Terminates at York' })).toBeVisible();
+        await expectNoViolations(page);
+      });
+    });
+  }
 });
 
 // The states below do not exist in any page's first-paint DOM, so a
@@ -517,6 +541,19 @@ test.describe('accessibility: interactive sub-states', () => {
     // whole row, which is how a `filled` badge -- already AA-safe at full
     // strength -- ended up composited below AA.
     await page.goto(`/track?origin=${REAL_STATION_CRS}`);
+    await expectNoViolations(page);
+  });
+
+  test('/track, a station picked in a station field', async ({ page }) => {
+    // The field shows the station by name with its clear button, and its
+    // live region says what was picked.
+    await page.goto('/track');
+    const origin = page.getByRole('combobox', { name: 'Origin station' });
+    await origin.fill(REAL_STATION_CRS);
+    await origin.press('Tab');
+    await expect(origin).toHaveValue(new RegExp(`\\(${REAL_STATION_CRS}\\)$`));
+    await expect(page.getByRole('button', { name: 'Clear Origin station' })).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: 'Origin station set to' })).toBeAttached();
     await expectNoViolations(page);
   });
 
@@ -711,7 +748,7 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
     await page.goto('/lines');
     await page
       .locator('nav[aria-label="Main"]')
-      .getByRole('button', { name: /^Account menu for/ })
+      .getByRole('button', { name: /, account menu for / })
       .click();
     await expect(page.getByRole('menu')).toBeVisible();
     await expectNoViolations(page, MENU_PORTAL_WAIVERS);

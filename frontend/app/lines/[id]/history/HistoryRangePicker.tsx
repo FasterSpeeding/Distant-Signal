@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { DatePickerInput } from '@mantine/dates';
+import { DatePickerInput } from '@/components/LazyDateFields';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { Button, Group, SegmentedControl, Stack, Text } from '@mantine/core';
 import type { RangePreset } from '@/lib/history';

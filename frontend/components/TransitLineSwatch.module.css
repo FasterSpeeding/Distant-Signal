@@ -1,0 +1,8 @@
+/* A line's colour swatch set in running text (`TransitLineSwatch inline`),
+   such as a planned tram leg's "Tram (Blue Line)". */
+
+.inline {
+  display: inline-block;
+  vertical-align: -1px;
+  margin-inline-end: 4px;
+}

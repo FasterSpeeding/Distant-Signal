@@ -1523,6 +1523,7 @@ fn process_message(
                     gbtt_timestamp: gbtt,
                     actual_timestamp: actual,
                     variation_status: movement.variation_status.clone(),
+                    platform: trust_schema::schema::movement_reported_platform(movement),
                     raw_body: serde_json::json!({}),
                     status: derived.status.clone(),
                     last_reported_location: derived.last_reported_location.clone(),
@@ -1635,6 +1636,7 @@ fn process_message(
                     next_calling_point: derived.next_calling_point.clone(),
                     eta_next: None,
                     eta_source: None,
+                    platform: None,
                 })
                 .collect()
         }
@@ -1723,6 +1725,7 @@ fn process_message(
                     next_calling_point: derived.next_calling_point.clone(),
                     eta_next: None,
                     eta_source: None,
+                    platform: None,
                 })
                 .collect()
         }
@@ -1806,6 +1809,7 @@ fn passthrough_event(
             next_calling_point: derived.next_calling_point.clone(),
             eta_next: None,
             eta_source: None,
+            platform: None,
         })
         .collect()
 }
@@ -2006,6 +2010,7 @@ mod tests {
             // 2026-09-27 01:59:30, raw TRUST epoch millis.
             dep_timestamp: Some("1790474370000".to_string()),
             reinstatement_timestamp: None,
+            loc_stanox: None,
         });
         let reference = reference_with_one_pending(1, "WAT", "2026-09-27T01:00:00Z");
         let mut state = ProcessorState::default();
@@ -2049,6 +2054,7 @@ mod tests {
                 train_id: "221832406".to_string(),
                 dep_timestamp: Some("1790836380000".to_string()),
                 reinstatement_timestamp: Some(at.to_string()),
+                loc_stanox: None,
             })
         };
         let reference = reference_with_one_pending(1, "WAT", "2026-09-27T01:00:00Z");
@@ -2195,6 +2201,36 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(events[0].gbtt_timestamp, None);
+    }
+
+    /// DS-180: an automatic report's platform reaches the event, trimmed;
+    /// a manual report's does not.
+    #[tokio::test]
+    async fn an_automatic_reports_platform_is_carried_and_a_manual_ones_is_not() {
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        for (source, expected) in [("AUTOMATIC", Some("5")), ("MANUAL", None)] {
+            let body = format!(
+                r#"[{{"header":{{"msg_type":"0003"}},"body":{{
+                "train_id":"221832406","event_type":"DEPARTURE",
+                "planned_timestamp":"1787945520000","actual_timestamp":"1787945520000",
+                "loc_stanox":"87212","variation_status":"ON TIME",
+                "platform":" 5","event_source":"{source}"
+            }}}}]"#
+            );
+            let mut feed = FakeMovementFeed::new(vec![vec![body]]);
+            let mut state = ProcessorState::default();
+            let events = run_once(
+                &mut feed,
+                &reference,
+                &mut state,
+                &TEST_STANOX_CRS,
+                test_received_at(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].platform.as_deref(), expected, "{source}");
+        }
     }
 
     #[tokio::test]
@@ -4094,6 +4130,7 @@ mod tests {
                 next_calling_point: None,
                 eta_next: None,
                 eta_source: None,
+                platform: None,
             },
             common::TrainMovementEventMessage {
                 tracked_train_id: 2, // no trains_id known for this one
@@ -4117,6 +4154,7 @@ mod tests {
                 next_calling_point: None,
                 eta_next: None,
                 eta_source: None,
+                platform: None,
             },
         ];
 
@@ -4502,6 +4540,7 @@ mod tests {
                 next_calling_point: None,
                 eta_next: None,
                 eta_source: None,
+                platform: None,
             }
         }
 

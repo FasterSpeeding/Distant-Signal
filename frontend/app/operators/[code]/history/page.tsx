@@ -73,7 +73,9 @@ async function resolveRetention(): Promise<{
 
 export async function generateMetadata({ params }: { params: Promise<{ code: string }> }): Promise<Metadata> {
   const name = await resolveOperatorName((await params).code);
-  return pageMetadata(`${name} history`, `Delays and cancellations across ${name}'s lines over time.`);
+  return pageMetadata(`${name} history`, `Delays and cancellations across ${name}'s lines over time.`, {
+    noindex: true,
+  });
 }
 
 export default async function OperatorHistoryPage({

@@ -614,11 +614,10 @@ describe('JourneyLegCandidates', () => {
         const option = await screen.findByRole('option', { name: 'GW · Great Western Railway', hidden: true });
         fireEvent.click(option);
 
-        // Selecting the option writes just the bare code into the field --
-        // `Autocomplete` writes `data`'s `label`, not the dropdown-only
-        // `renderOption` text, into the input. Same assertion
-        // `TrackTrainForm.test.tsx`'s analogous test makes.
-        expect(input).toHaveValue('GW');
+        // Selecting the option shows the operator by name and code
+        // (`OperatorField`); the filter itself gets the bare code. Same
+        // assertion `TrackTrainForm.test.tsx`'s analogous test makes.
+        expect(input).toHaveValue('Great Western Railway (GW)');
       } finally {
         vi.useRealTimers();
       }

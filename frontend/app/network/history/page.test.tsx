@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import NetworkHistoryPage from './page';
+import NetworkHistoryPage, { metadata } from './page';
 import * as api from '@/lib/api';
 import type { HistoryRetention } from '@/lib/types';
 
@@ -69,5 +69,11 @@ describe('NetworkHistoryPage', () => {
     const status = await screen.findByRole('status');
     expect(status).toHaveTextContent('Loading trends');
     expect(status).toHaveAttribute('aria-busy', 'true');
+  });
+});
+
+describe('metadata', () => {
+  it('is crawlable but never indexed: a date-range view', () => {
+    expect(metadata.robots).toEqual({ index: false, follow: true });
   });
 });

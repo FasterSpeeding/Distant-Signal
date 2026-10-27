@@ -1,9 +1,13 @@
 # Transit networks: runbook
 
 Transit networks are tram and light-rail networks that are neither National
-Rail nor TfL. Manchester Metrolink is the first. Design:
-[the transit networks spec](superpowers/specs/2026-10-09-transit-networks-design.md);
+Rail nor TfL: Manchester Metrolink (`metrolink`) and Nottingham Express
+Transit (`net`). Design:
+[the transit networks spec](superpowers/specs/2026-10-09-transit-networks-design.md)
+and [the NET addendum](superpowers/specs/2026-10-24-nottingham-net-design.md);
 plan: [the transit networks plan](superpowers/plans/2026-10-09-transit-networks-plan.md).
+This runbook is written for Metrolink; NET's differences, and its own
+rollout, are in [Nottingham Express Transit](#nottingham-express-transit-net).
 
 One producer per network, `poller-transit-schedule` (Deployment
 `<fullname>-poller-transit-schedule-<network>`, `Recreate`), downloads the
@@ -14,7 +18,8 @@ ingest-writer applies that stream to the `transit_*` tables and to
 `/public/transit/...` for the networks in `API_TRANSIT_NETWORKS`, and the
 frontend shows its pages only while that list is not empty.
 
-Everything ships off. These are the switches, all in Ranma-Config:
+Everything ships off. These are Metrolink's switches, all in Ranma-Config
+(NET's are [below](#nottingham-express-transit-net)):
 
 | Value | Default | What it does |
 | --- | --- | --- |
@@ -117,6 +122,193 @@ Each step is its own Ranma-Config change. Wait for each to settle.
    Secret key removed.
 4. To remove the data too, see "Turning a network off for good".
 
+## Trip planning
+
+`/Trips/plan` can ride a network's trams anywhere in a journey (rail into
+Piccadilly, the tram to Victoria, rail on). Design:
+[the transit trip planning spec](superpowers/specs/2026-10-24-transit-trip-planning-design.md);
+code: `crates/api/src/data/transit_planning.rs`. Off by default:
+
+| Value | Default | What it does |
+| --- | --- | --- |
+| `api.tripPlanTransitNetworks` (`API_TRIP_PLAN_TRANSIT_NETWORKS`) | `[]` | The networks whose trams join the planner's day graph. Empty: the graph, its cache key and every response are as before. Only `metrolink` (the chart and the api refuse anything else). |
+| `api.tripPlanTransitChangeMinutes` (`TRIP_PLAN_TRANSIT_CHANGE_MINUTES`) | `2` | Extra minutes on the tram side of a rail-to-tram or tram-to-rail change (0-15). |
+
+With the list set, a request plans with trams only when it sends
+`transit=true` or names a tram stop (`9400ZZMAPIC`) as its origin or
+destination; any other request gets a byte-identical response. The
+frontend sends `transit=true` from phase M3 on, and offers Metrolink stops
+as ends only for networks `/public/transit/networks` marks `tripPlanning`,
+so `api.transitNetworks` must list the network too.
+
+Deploy notes: no migration, no grant change (the api role already reads
+`transit_*`, `stations` and `line_status`). The api restarts for the new
+values. Each cached date grows by the network's day (about 6 MB for a
+Metrolink weekday); the cache keeps 2.
+
+### Measuring before the rollout (phase M4)
+
+Run on a copy of production, never on production: a local Postgres
+restored from a recent backup, or a fresh clone. Build the api in release
+mode (`cargo build --release -p api`) and, with the same environment both
+times except the switch:
+
+```sh
+# 1. Off.
+API_TRIP_PLAN_TRANSIT_NETWORKS= ./target/release/api &
+uv run scripts/measure-transit-trip-planning.py measure \
+  --api http://127.0.0.1:8080 --date <a weekday within the feed's horizon> \
+  --label off --out off.json --pid $!
+kill %1
+
+# 2. On (a fresh process, so the RSS is comparable).
+API_TRIP_PLAN_TRANSIT_NETWORKS=metrolink ./target/release/api &
+uv run scripts/measure-transit-trip-planning.py measure \
+  --api http://127.0.0.1:8080 --date <the same weekday> \
+  --label on --transit --out on.json --pid $!
+kill %1
+
+# 3. The budget (spec §10): RSS at most +25 MB, searches at most +10%,
+#    and every response without transit=true byte-identical.
+uv run scripts/measure-transit-trip-planning.py compare off.json on.json
+```
+
+Also look at `api_trip_plan_transit_connections{network="metrolink"}` on
+the api's metrics port (about 27,600 on a weekday, spec §3.1) and the
+`options` worst case against `api.tripPlanMaxOptionsSearchSize`. Put only
+the figures in the PR or the card, never feed rows or responses. The
+in-repo benchmark on hand-made data is
+`cargo test --release -p api --test transit_planning_budget -- --ignored --nocapture --test-threads=1`.
+
+### Rollout (Metrolink)
+
+1. Merge M1 and M2 (dark). The list is empty, so nothing changes; the
+   golden test pins that.
+2. With the measurement above within budget, set
+   `api.tripPlanTransitNetworks: [metrolink]` in Ranma-Config (and keep
+   `api.transitNetworks: [metrolink]`). The api restarts. No client opts in
+   yet, so nothing visible changes.
+3. Check, read-only:
+   - `api_trip_plan_graph_cache_total{result="miss"}`: once per date, and
+     once more after a new tram feed activates (the cache key moves);
+   - `api_trip_plan_transit_connections{network="metrolink"}` about 27k on
+     a weekday;
+   - `api_trip_plan_transit_networks_skipped_total` flat on dates inside
+     the horizon (`reason` `outside_horizon` is expected past 60 days,
+     `no_service_day` on a feed gap, `error` never);
+   - the api's RSS within the budget.
+
+   Then make one request by hand with `transit=true` (rail into
+   Piccadilly, the tram to Victoria):
+   `/Trips/plan?origin=SPT&destination=LDS&date=<today>&departAfter=08:00&transit=true`.
+4. Merge M3 (the frontend sends `transit=true`). After a day of use with
+   no errors, Metrolink trams are in public plans.
+5. **Rollback:** `api.tripPlanTransitNetworks: []`. The api restarts with
+   the old graph and every response is as before. Saved untracked tram
+   legs stay valid (plain untracked legs).
+
+## Nottingham Express Transit (net)
+
+NET is in no BODS feed (measured 2026-10-24, NET design §2), so its
+timetable comes from the **Traveline National Dataset (TNDS)** East
+Midlands region in TransXChange (TXC), over FTP with a Traveline login,
+filtered to NOC `NEXT`. The producer's TXC adapter (`TRANSIT_ADAPTER=txc`)
+turns it into the same tables as Metrolink's. No source publishes NET's
+disruptions (BODS SIRI-SX has no Nottingham participant), so NET runs the
+timetable loop only: its lines show no status, and the producer refuses
+to start with `situationsEnabled` on. Rail links: Nottingham, Bulwell and
+Hucknall (`reference-data/transit/net-rail-links.csv`).
+
+| Value | Default | What it does |
+| --- | --- | --- |
+| `redis.acl.clients.pollerTransitNet` | `false` | Renders the producer's Redis user `poller-transit-net` (`optional`). Needs the `poller-transit-net-password` key in the users Secret. |
+| `ingestWriter.streams.transit-net` | `off` | `apply` makes the writer consume `ds:ingest:transit-net`. Needs `postgresql.roles.perService.writer.connect`. |
+| `pollerTransitSchedule.networks.net.enabled` | `false` | Runs the producer. The chart refuses it unless the stream is `apply`, and, with the default `ftp://` `txcUrl`, unless `txcCredentials.existingSecret` is set. |
+| `pollerTransitSchedule.networks.net.txcCredentials.existingSecret` | `""` | The Secret with the TNDS login (keys `username`, `password`). |
+| `pollerTransitSchedule.networks.net.txcUrl` | `ftp://ftp.tnds.co.uk/EM.zip` | The TXC zip. |
+| `api.transitNetworks` | `[]` | List `net` to make it public. |
+
+### Before NET's rollout: the TNDS login
+
+TNDS is free and under the Open Government Licence, but its FTP needs a
+login Traveline issues on request:
+
+1. **The user registers** with the form on Traveline's TNDS page
+   (`https://www.travelinedata.org.uk/traveline-open-data/traveline-national-dataset/`),
+   as a named contact. Traveline emails the FTP login after a few working
+   days.
+2. **Ranma seals a Secret** in the DS namespace, say `distant-signal-tnds`,
+   with keys `username` and `password`, each byte-exact from a file
+   (`kubectl create secret generic distant-signal-tnds
+   --from-file=username=./u --from-file=password=./p --dry-run=client -o yaml
+   | kubeseal ...`; check the lengths, no trailing newline).
+3. **Ranma adds `poller-transit-net-password`** (letters and digits) to the
+   Redis users SealedSecret.
+
+The login crosses the network in clear (TNDS offers plain FTP). It is a
+free registration that guards nothing else; do not reuse a password.
+
+**NetworkPolicy.** Passive FTP opens its data connection to a port the
+server picks. With the chart's default (no `networkPolicy.egress.internetPorts`)
+nothing is needed. If production limits `internetPorts`, also set
+`networkPolicy.components.poller-transit-schedule.internetPorts: []` (every
+port, still minus the private ranges) before step 2 below.
+
+### NET's rollout
+
+Each step its own Ranma-Config change, after the login above exists.
+
+1. **The Redis user.** `redis.acl.clients.pollerTransitNet: true` (with
+   the Secret key from step 3 above in the same change). Redis restarts
+   once. Check `$REDIS ACL USERS | grep poller-transit-net`.
+2. **The writer and the producer**, in one change:
+
+   ```yaml
+   ingestWriter:
+     streams:
+       transit-net: apply
+   pollerTransitSchedule:
+     networks:
+       net:
+         enabled: true
+         txcCredentials:
+           existingSecret: distant-signal-tnds
+   ```
+
+   Leave `situationsEnabled` off (the producer refuses it for NET). The
+   producer logs in to TNDS and downloads `EM.zip` (the whole East
+   Midlands region; its size was not measured, the cap is 400 MiB).
+3. **Check the timetable, with nothing public**, as Metrolink's step 3
+   with `transit-net` and `network = 'net'`:
+   - `$REDIS XREVRANGE ds:ingest:transit-net + - COUNT 1` is a
+     `transit-timetable-commit/1`; `$REDIS XLEN ds:dlq:transit-net` is 0.
+   - `transit_feed_versions` for `net` has one `active` version: 2 lines,
+     about 50 stations and 100 platforms, a few thousand trips, a 60-day
+     horizon; `transit-net-timetable` is fresh.
+   - **`transit_feed_refused_total{network="net", reason="unmapped_route"}`**:
+     the network file's `txc_line_names` are the likely spellings of NET's
+     two line names, not observed ones (TNDS was never downloaded while
+     writing it). The producer's log names the real `LineName`; add it to
+     the line's `txc_line_names` in
+     `crates/poller-transit-schedule/networks/net.toml` and release.
+   - `reason="malformed"` saying "no document with an operator of NOC
+     NEXT": TNDS's file did not name NET's NOC; check the NOC in TNDS's
+     NET document and the network file's `nocs`.
+   - Check a few departures against NET's published timetable (one
+     weekday, one Sunday, one past midnight): the adapter's TXC reading
+     was tested on hand-made documents only.
+4. **Public.** After a day with the timetable applied:
+   `api.transitNetworks: [metrolink, net]` (or `[net]`). The footer's Open
+   Government Licence line and NET's `/attribution` section (Traveline
+   National Dataset and NaPTAN) appear with it.
+
+Rollback, refresh and "Turning a network off for good" are Metrolink's
+with `net` and `transit-net` in place of `metrolink` and
+`transit-metrolink`. NET's stream is budgeted for its timetable only
+(`MAXLEN` 24): turning its situations on one day (a source would have to
+appear first) means resizing `crates/ingest-stream/src/budget.rs` and the
+alert maps first (NET design §11).
+
 ## Inspecting the stream and its dead letters
 
 The stream's cap is `MAXLEN ~ 320` (`crates/ingest-stream/src/budget.rs`).
@@ -203,8 +395,10 @@ writer stores with an activated version's source and otherwise ignores.
 `transit_situation_unmapped_line_refs_total{network,ref}`). Situations
 with that ref still apply, but not to a line's status. Add the ref to the
 line's `siri_line_refs` in
-`crates/poller-transit-schedule/networks/metrolink.toml` (compiled in) and
-release. Unit tests check the file at build time.
+`crates/poller-transit-schedule/networks/<network>.toml` (compiled in) and
+release. Unit tests check the file at build time. NET's aliases
+(`1`, `L1`, `NET1`, `Line_1` and the same for line 2) are guesses: no
+NET situation has been published to observe.
 
 ## Switching to TfGM's own GTFS (the fallback)
 
@@ -229,8 +423,11 @@ Each network is compiled in and has its own stream, user and switches.
 For `<n>` (`[a-z0-9-]`):
 
 1. **Network file:** `crates/poller-transit-schedule/networks/<n>.toml`
-   (sources, NOCs, ATCO prefix, SIRI filters and line aliases,
-   attribution), added to `FILES` in `src/network.rs`.
+   (its `adapter`, `gtfs` or `txc`, with the matching `gtfs_route_names`
+   or `txc_line_names`; NOCs, ATCO prefix, name clean-ups, SIRI filters
+   and line aliases, attribution), added to `FILES` in `src/network.rs`;
+   rail links in `reference-data/transit/<n>-rail-links.csv`, added to
+   `src/rail_links.rs`.
 2. **The id:** add it to `common::transit::NETWORKS`. The writer's
    network pinning reads it.
 3. **The stream:** `ingest_stream::streams` gains `TRANSIT_<N>`
@@ -245,7 +442,8 @@ For `<n>` (`[a-z0-9-]`):
    `charts/distant-signal/files/redis-users.acl.tpl`, the
    `pollerTransit<N>` client value, `scripts/render-redis-acl.py` and
    `crates/common/tests/redis_acl.rs`, docs/redis-acl.md.
-5. **Values:** `pollerTransitSchedule.networks.<n>`,
+5. **Values:** `pollerTransitSchedule.networks.<n>` (a `txc` network
+   from TNDS also needs `txcCredentials`),
    `ingestWriter.streams.transit-<n>`, the per-stream backlog and stall
    maps, `ingestSourceStale` entries for `transit-<n>-timetable` (36 h)
    and `transit-<n>-situations` (30 min), and the chart README rows

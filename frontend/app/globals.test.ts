@@ -53,17 +53,37 @@ const RED_4 = '#ff8787'; // `--ds-color-error-text` in the dark scheme
 const RED_FILLED_DARK = '#e03131'; // what a bare `c="red"` resolved to in dark
 // `variant="light"` pairings: `--mantine-color-<c>-light` (shade 1) as the
 // surface, `--mantine-color-<c>-light-color` (shade 9) as the text, and the
-// hand-mixed replacement where shade 9 does not clear AA on it.
-const LIGHT_VARIANT: Record<string, { surface: string; shade9: string; fixed?: string }> = {
-  yellow: { surface: '#fff3bf', shade9: '#e67700', fixed: '#a85700' },
-  orange: { surface: '#ffe8cc', shade9: '#d9480f', fixed: '#bb3e0d' },
-  green: { surface: '#d3f9d8', shade9: '#2b8a3e', fixed: '#267b37' },
-  teal: { surface: '#c3fae8', shade9: '#087f5b', fixed: '#087a57' },
-  red: { surface: '#ffe3e3', shade9: '#c92a2a' },
-  blue: { surface: '#d0ebff', shade9: '#1864ab' },
+// hand-mixed replacement (shade 9 scaled toward black by `scale`%, the
+// smallest whole percentage that clears 5.6:1 on the surface) for every
+// status colour. `was` is the value before the 5.6 cut, kept so the gain
+// is asserted rather than assumed.
+const LIGHT_VARIANT: Record<
+  string,
+  { surface: string; shade9: string; fixed?: { hex: string; scale: number; was: string } }
+> = {
+  yellow: { surface: '#fff3bf', shade9: '#e67700', fixed: { hex: '#964d00', scale: 65, was: '#a85700' } },
+  orange: { surface: '#ffe8cc', shade9: '#d9480f', fixed: { hex: '#a5370b', scale: 76, was: '#bb3e0d' } },
+  green: { surface: '#d3f9d8', shade9: '#2b8a3e', fixed: { hex: '#226c30', scale: 78, was: '#267b37' } },
+  teal: { surface: '#c3fae8', shade9: '#087f5b', fixed: { hex: '#076b4c', scale: 84, was: '#087a57' } },
+  red: { surface: '#ffe3e3', shade9: '#c92a2a', fixed: { hex: '#ad2424', scale: 86, was: '#c92a2a' } },
+  blue: { surface: '#d0ebff', shade9: '#1864ab', fixed: { hex: '#165b9c', scale: 91, was: '#1864ab' } },
   grape: { surface: '#f3d9fa', shade9: '#862e9c' },
   gray: { surface: '#f1f3f5', shade9: '#212529' },
 };
+/** A light-variant pill's floor: AA's 4.5:1 plus a margin, as the filled
+ * severity pill has 5:1. */
+const PILL_TEXT = 5.5;
+
+/** `hex`'s RGB scaled toward black by `percent`%, rounded per channel. */
+function scaleTowardBlack(hex: string, percent: number): string {
+  return `#${[1, 3, 5]
+    .map((i) =>
+      Math.round((parseInt(hex.slice(i, i + 2), 16) * percent) / 100)
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')}`;
+}
 // Mantine's dark ramp, as shipped by the version in node_modules today.
 // DARK_2 is deliberately spelled out rather than trusted from memory: it
 // was #a6a7ab when the grape theme shipped and this file recorded a 6.46:1
@@ -223,6 +243,15 @@ describe('scheme-blind filled colours (gray, blue)', () => {
   it('confirms black still clears AA on gray 6 and blue 6 -- why light mode needs black, not white, unlike dark', () => {
     expect(contrast(GRAY_6, BLACK)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.32:1
   });
+
+  it('confirms pink and indigo split the same way: black on shade 6, white on shade 8', () => {
+    const { pink, indigo } = DEFAULT_THEME.colors;
+    for (const ramp of [pink, indigo]) {
+      expect(contrast(ramp[6], BLACK)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.63, 4.86
+      expect(contrast(ramp[8], BLACK)).toBeLessThan(AA_BODY_TEXT); // 3.71, 3.71
+      expect(contrast(ramp[8], WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.66, 5.67
+    }
+  });
 });
 
 describe('dimmed body text contrast', () => {
@@ -294,6 +323,43 @@ describe('dimmed body text contrast', () => {
 // `light` and the input placeholder were never covered by it -- and a
 // full-ruleset axe sweep of every route, in both schemes, found all three
 // failing. See app/globals.css for the per-colour derivations.
+// DS-181 follow-up: a cancelled list row's reason line
+// (`CancelledRowBadge`, `c="dimmed"` at `xs`) sits under the red badge on a
+// list card. Small text, so it is held to the light-variant pill's 5.5:1
+// rather than AA's 4.5:1, on every surface a card has: resting (white,
+// dark 6), the page body (dark 7) and a clickable card's hover background
+// (gray 0, and dark 5 mixed half and half into dark 6 in dark).
+describe('cancellation reason line contrast', () => {
+  const GRAY_0 = '#f8f9fa';
+  const DARK_5 = '#3b3b3b';
+  /** `color-mix(in srgb, a 50%, b)` for two hex colours. */
+  function mixHalf(a: string, b: string): string {
+    return `#${[1, 3, 5]
+      .map((i) =>
+        Math.round((parseInt(a.slice(i, i + 2), 16) + parseInt(b.slice(i, i + 2), 16)) / 2)
+          .toString(16)
+          .padStart(2, '0'),
+      )
+      .join('')}`;
+  }
+
+  it('resolves dimmed to gray 7 in light and dark 1 in dark', () => {
+    expect(schemeBlock('light')).toContain('--mantine-color-dimmed: var(--mantine-color-gray-7)');
+    expect(schemeBlock('dark')).toContain('--mantine-color-dimmed: var(--mantine-color-dark-1)');
+  });
+
+  it.each([
+    ['light card', GRAY_7, WHITE, 8.18],
+    ['light card hover', GRAY_7, GRAY_0, 7.76],
+    ['dark card', DARK_1, DARK_6, 6.85],
+    ['dark body', DARK_1, DARK_7, 7.83],
+    ['dark card hover', DARK_1, mixHalf(DARK_5, DARK_6), 6.18],
+  ] as const)('clears 5.5:1 on the %s', (_, text, surface, ratio) => {
+    expect(contrast(text, surface)).toBeGreaterThanOrEqual(PILL_TEXT);
+    expect(contrast(text, surface)).toBeCloseTo(ratio, 1);
+  });
+});
+
 describe('non-filled variants and placeholders', () => {
   const lightRule = () => schemeBlock('light');
 
@@ -331,16 +397,45 @@ describe('non-filled variants and placeholders', () => {
   it.each(Object.entries(LIGHT_VARIANT))(
     '%s light-variant text clears AA on its own surface',
     (_name, { surface, shade9, fixed }) => {
-      expect(contrast(fixed ?? shade9, surface)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+      expect(contrast(fixed?.hex ?? shade9, surface)).toBeGreaterThanOrEqual(PILL_TEXT);
     },
   );
 
   it.each(Object.entries(LIGHT_VARIANT))(
     '%s light-variant text also clears AA on plain white, where a light surface may be painted',
     (_name, { surface: _s, shade9, fixed }) => {
-      expect(contrast(fixed ?? shade9, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+      expect(contrast(fixed?.hex ?? shade9, WHITE)).toBeGreaterThanOrEqual(PILL_TEXT);
     },
   );
+
+  const replaced = Object.entries(LIGHT_VARIANT).filter(([, { fixed }]) => fixed !== undefined);
+
+  it.each(replaced)(
+    '%s light-variant text is shade 9 scaled to the smallest whole percentage clearing 5.6:1',
+    (_name, { surface, shade9, fixed }) => {
+      const { hex, scale } = fixed!;
+      expect(scaleTowardBlack(shade9, scale)).toBe(hex);
+      expect(contrast(hex, surface)).toBeGreaterThanOrEqual(5.6);
+      expect(contrast(scaleTowardBlack(shade9, scale + 1), surface)).toBeLessThan(5.6);
+    },
+  );
+
+  it.each(replaced)(
+    '%s light-variant text only gained contrast, on its tint and on white',
+    (_name, { surface, fixed }) => {
+      const { hex, was } = fixed!;
+      expect(contrast(hex, surface)).toBeGreaterThan(contrast(was, surface));
+      expect(contrast(hex, WHITE)).toBeGreaterThan(contrast(was, WHITE));
+    },
+  );
+
+  it('leaves gray and grape on shade 9, which already clear the pill floor', () => {
+    for (const name of ['gray', 'grape']) {
+      const { surface, shade9 } = LIGHT_VARIANT[name]!;
+      expect(contrast(shade9, surface)).toBeGreaterThanOrEqual(PILL_TEXT); // 13.87, 5.59
+      expect(lightRule()).not.toContain(`--mantine-color-${name}-light-color`);
+    }
+  });
 
   it('confirms the four replaced colours genuinely could not be fixed by shade substitution', () => {
     // Shade 9 is the END of each ramp, so "use a darker shade" is not
@@ -355,18 +450,22 @@ describe('non-filled variants and placeholders', () => {
     expect(contrast(LIGHT_VARIANT.orange!.shade9, WHITE)).toBeLessThan(AA_BODY_TEXT); // 4.30:1
   });
 
-  it('leaves red on its palette token, and pins the margin that justified that', () => {
-    // Red is the near-miss: 4.51:1, passing, so it keeps `red-9` rather
-    // than gaining a fifth bespoke hex for 0.15. If a palette re-cut ever
-    // pushes it under, this fails here rather than going unnoticed.
-    expect(contrast(LIGHT_VARIANT.red!.shade9, LIGHT_VARIANT.red!.surface)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
-    expect(lightRule()).not.toContain('--mantine-color-red-light-color');
+  it('moves red and blue off shade 9, which passed AA with next to no margin', () => {
+    // Red used to keep `red-9` because 4.51:1 passed. It passed by 0.01, on
+    // the "Cancelled" pill, and blue 9 (the "Planned" pill) by 0.43. Both
+    // now take a hex by the same rule as the other status colours.
+    for (const name of ['red', 'blue']) {
+      const { surface, shade9, fixed } = LIGHT_VARIANT[name]!;
+      expect(contrast(shade9, surface)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+      expect(contrast(shade9, surface)).toBeLessThan(PILL_TEXT); // 4.51, 4.93
+      expect(lightRule()).toContain(`--mantine-color-${name}-light-color: ${fixed!.hex}`);
+    }
   });
 
   it('writes each replacement into the light scheme block', () => {
     for (const [name, { fixed }] of Object.entries(LIGHT_VARIANT)) {
       if (!fixed) continue;
-      expect(lightRule()).toContain(`--mantine-color-${name}-light-color: ${fixed}`);
+      expect(lightRule()).toContain(`--mantine-color-${name}-light-color: ${fixed.hex}`);
     }
   });
 
@@ -958,10 +1057,70 @@ describe('status pill contrast', () => {
     lightVariantPills.map(([pill, colour]): [string, Scheme, string] => [pill, scheme, colour]),
   );
 
-  it.each(lightVariantCases)('%s (%s scheme) clears 4.5:1', (_pill, scheme, colour) => {
+  // 5.5:1, not just AA's 4.5: these are the most-read labels in the app,
+  // at 11px. Dark gets there with no override (8.35:1 or better).
+  it.each(lightVariantCases)('%s (%s scheme) clears 5.5:1', (_pill, scheme, colour) => {
     const surface = resolveColor(scheme, `var(--mantine-color-${colour}-light)`);
     const text = resolveColor(scheme, `var(--mantine-color-${colour}-light-color)`);
-    expect(contrast(text, surface)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    expect(contrast(text, surface)).toBeGreaterThanOrEqual(PILL_TEXT);
+    if (scheme === 'dark') expect(contrast(text, surface)).toBeGreaterThanOrEqual(8.3); // yellow 8.35 the lowest
+  });
+
+  it("leaves the dark scheme on Mantine's own light-variant text", () => {
+    expect(schemeBlock('dark')).not.toMatch(/--mantine-color-[a-z]+-light-color/);
+  });
+
+  // The other readers of the yellow and green light-variant text, which
+  // darkened with it: only ever a gain.
+  it.each([
+    ['--ds-severity-good-text', '#267b37'],
+    ['--ds-severity-mild-text', '#a85700'],
+    ['--ds-chart-skip', '#a85700'],
+  ])('%s on white gained contrast from the darker light-variant text', (token, was) => {
+    const now = resolveColor('light', `var(${token})`);
+    expect(contrast(now, WHITE)).toBeGreaterThan(contrast(was, WHITE));
+    expect(contrast(now, WHITE)).toBeGreaterThanOrEqual(6); // 6.45, 6.25, 6.25
+  });
+
+  // `ConfirmActionButton`'s confirm, the one filled red in the app:
+  // `lib/theme.ts`'s variantColorResolver points it at these tokens.
+  it.each(SCHEMES)('filled red (%s scheme) is white on red 9, 5:1 and Lc 75 at rest and on hover', (scheme) => {
+    const text = resolveColor(scheme, 'var(--ds-filled-red-text)');
+    expect(text).toBe(WHITE);
+    expect(resolveColor(scheme, 'var(--ds-filled-red-fill)')).toBe(RED_9);
+    for (const token of ['--ds-filled-red-fill', '--ds-filled-red-fill-hover']) {
+      const fill = resolveColor(scheme, `var(${token})`);
+      expect(contrast(text, fill)).toBeGreaterThanOrEqual(5); // 5.46, 6.87
+      expect(Math.abs(apca(text, fill))).toBeGreaterThanOrEqual(75); // 81, 87
+    }
+  });
+
+  it('records the filled-red pairs that were replaced: autoContrast black on red 6 and red 8', () => {
+    expect(contrast(BLACK, RED_6)).toBeCloseTo(6.39, 1); // light
+    expect(apca(BLACK, RED_6)).toBeLessThan(60); // Lc 45
+    expect(contrast(BLACK, RED_8)).toBeCloseTo(4.65, 1); // dark
+    expect(apca(BLACK, RED_8)).toBeLessThan(60); // Lc 34
+  });
+
+  // The destructive `Menu.Item`: its text, and the 12% tint of it Mantine
+  // paints behind a hovered or keyboard-focused item, on the dropdown
+  // (white in light, dark 6 in dark).
+  it.each([
+    ['light', WHITE],
+    ['dark', DARK_6],
+  ] as const)('the destructive menu item (%s scheme) clears 4.5:1 at rest and on hover', (scheme, dropdown) => {
+    const text = resolveColor(scheme, 'var(--ds-menu-danger-text)');
+    const hoverTint = `#${[1, 3, 5]
+      .map((i) =>
+        Math.round(parseInt(text.slice(i, i + 2), 16) * 0.12 + parseInt(dropdown.slice(i, i + 2), 16) * 0.88)
+          .toString(16)
+          .padStart(2, '0'),
+      )
+      .join('')}`;
+    expect(contrast(text, dropdown)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.87, 7.38
+    expect(contrast(text, hoverTint)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.64, 5.70
+    // What `color="red"` gave: red 6 in both schemes (3.28, 4.13).
+    expect(contrast(RED_6, dropdown)).toBeLessThan(AA_BODY_TEXT);
   });
 
   const statusCases = SCHEMES.flatMap((scheme) =>

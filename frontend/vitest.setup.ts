@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { afterAll, vi } from 'vitest';
+import { afterAll, afterEach, vi } from 'vitest';
 import { installTimerLeakGuard } from './test/timerLeakGuard';
 
 // The jsdom APIs polyfilled below, typed as possibly missing: lib.dom.d.ts
@@ -13,6 +13,25 @@ function jsdomHTMLElementPrototype(): Partial<Pick<HTMLElement, 'scrollIntoView'
 function jsdomElementPrototype(): Partial<Pick<Element, 'scrollTo'>> {
   return window.Element.prototype;
 }
+
+// `components/LazyDateFields.tsx` loads `@mantine/dates`' calendar fields on
+// demand, so their first render is a placeholder. Every form test gets the
+// real fields straight away instead (a test file's own `@mantine/dates`
+// mock still applies); `components/LazyDateFields.test.tsx` unmocks this
+// to test the on-demand loading itself.
+// Each field is read at render time, so a file whose `@mantine/dates` mock
+// stubs only the fields it uses still loads.
+vi.mock('@/components/LazyDateFields', async () => {
+  const { createElement } = await import('react');
+  const dates = await import('@mantine/dates');
+  const field = (name: 'DateInput' | 'DatePickerInput' | 'DateTimePicker') => (props: Record<string, unknown>) =>
+    createElement(dates[name] as (p: Record<string, unknown>) => ReturnType<typeof createElement>, props);
+  return {
+    DateInput: field('DateInput'),
+    DatePickerInput: field('DatePickerInput'),
+    DateTimePicker: field('DateTimePicker'),
+  };
+});
 
 // Note on theme parity: this file runs once before test *modules* load, so
 // it can't inject props into a component tree — there's no JSX here to
@@ -144,4 +163,13 @@ const timerLeakGuard = installTimerLeakGuard();
 afterAll(() => {
   if (vi.isFakeTimers()) return;
   timerLeakGuard.cancelPending();
+});
+
+// The code lookup fields' page-wide code -> label caches
+// (`lib/codeLabels.ts`) would otherwise carry one test's picks and lookups
+// into the next. Imported here, not at the top, so a test file's own
+// `vi.mock` of what it imports still applies.
+afterEach(async () => {
+  const { resetCodeLabels } = await import('./lib/codeLabels');
+  resetCodeLabels();
 });

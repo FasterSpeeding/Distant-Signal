@@ -41,26 +41,52 @@ pub use ds_store::backlog::reasons::{
     reasons_for_trains, upsert_reasons,
 };
 
-/// Fills the reason fields and each journey stop's `status` on a
-/// `PublicTrainState`. Call it after `journey_stops` and the final `status`
-/// are known. Best-effort: a DB error leaves the reason codes `None` (but
-/// still sets `cancelled` and the stop statuses) and is logged.
+/// The reason fields and `cancellation` for one train, setting each
+/// journey stop's `cancelled` flag and then its `status` on the way.
+fn derive_for_train(
+    status: Option<&str>,
+    stops: Option<&mut Vec<crate::data::journey::JourneyStop>>,
+    stored: Option<&StoredReasons>,
+) -> (
+    ReasonFields,
+    Option<crate::data::cancellation::Cancellation>,
+) {
+    let fields = reason_fields(status, stored);
+    let mut stops = stops;
+    let cancellation = crate::data::cancellation::derive(
+        status,
+        stored,
+        stops.as_deref_mut().map(Vec::as_mut_slice),
+    );
+    if let Some(stops) = stops {
+        let live = crate::data::stop_live_status::train_has_live_data(status, stops);
+        crate::data::stop_live_status::apply(stops, live);
+    }
+    (fields, cancellation)
+}
+
+/// Fills the reason fields, `cancellation` and each journey stop's
+/// `cancelled` and `status` on a `PublicTrainState`. Call it after
+/// `journey_stops` (with their boards) and the final `status` are known.
+/// Best-effort: a DB error leaves the reason codes `None` (but still sets
+/// `cancelled`, a status-only `cancellation` and the stop statuses) and is
+/// logged.
 pub async fn attach_to_public_state(
     pool: &PgPool,
     mut state: crate::data::trains::PublicTrainState,
 ) -> crate::data::trains::PublicTrainState {
     let stored = fetch_one(pool, Some(state.trains_id)).await;
-    let fields = reason_fields(state.status.as_deref(), stored);
-    if let Some(stops) = state.journey_stops.as_mut() {
-        let live =
-            crate::data::stop_live_status::train_has_live_data(state.status.as_deref(), stops);
-        crate::data::stop_live_status::apply(stops, fields.cancelled, live);
-    }
+    let (fields, cancellation) = derive_for_train(
+        state.status.as_deref(),
+        state.journey_stops.as_mut(),
+        stored.as_ref(),
+    );
     state.cancelled = fields.cancelled;
     state.cancel_reason_code = fields.cancel_reason_code;
     state.cancel_reason = fields.cancel_reason;
     state.change_of_origin_reason_code = fields.change_of_origin_reason_code;
     state.change_of_origin_reason = fields.change_of_origin_reason;
+    state.cancellation = cancellation;
     state
 }
 
@@ -72,7 +98,7 @@ pub async fn attach_to_tracked_state(
     mut state: crate::data::train_tracking::TrackedTrainState,
 ) -> crate::data::train_tracking::TrackedTrainState {
     let stored = fetch_one(pool, state.trains_id).await;
-    apply_to_tracked_state(&mut state, stored);
+    apply_to_tracked_state(&mut state, stored.as_ref());
     state
 }
 
@@ -95,30 +121,31 @@ pub async fn attach_to_tracked_states(
         }
     };
     for state in states.iter_mut() {
-        let own = state.trains_id.and_then(|id| stored.get(&id).cloned());
+        let own = state.trains_id.and_then(|id| stored.get(&id));
         apply_to_tracked_state(state, own);
     }
 }
 
 fn apply_to_tracked_state(
     state: &mut crate::data::train_tracking::TrackedTrainState,
-    stored: Option<StoredReasons>,
+    stored: Option<&StoredReasons>,
 ) {
-    let fields = reason_fields(state.status.as_deref(), stored);
-    if let Some(stops) = state.journey_stops.as_mut() {
-        let live =
-            crate::data::stop_live_status::train_has_live_data(state.status.as_deref(), stops);
-        crate::data::stop_live_status::apply(stops, fields.cancelled, live);
-    }
+    let (fields, cancellation) = derive_for_train(
+        state.status.as_deref(),
+        state.journey_stops.as_mut(),
+        stored,
+    );
     state.cancelled = fields.cancelled;
     state.cancel_reason_code = fields.cancel_reason_code;
     state.cancel_reason = fields.cancel_reason;
     state.change_of_origin_reason_code = fields.change_of_origin_reason_code;
     state.change_of_origin_reason = fields.change_of_origin_reason;
+    state.cancellation = cancellation;
 }
 
-/// Batched form, for `GET /public/lines/{id}/trains` (no journey stops
-/// there).
+/// Batched form, for `GET /public/lines/{id}/trains`. There are no
+/// journey stops there to place a cancellation on, so `cancellation` stays
+/// `null` and only the older fields are filled.
 pub async fn attach_to_public_states(
     pool: &PgPool,
     states: &mut [crate::data::trains::PublicTrainState],
@@ -132,7 +159,10 @@ pub async fn attach_to_public_states(
         }
     };
     for state in states.iter_mut() {
-        let fields = reason_fields(state.status.as_deref(), stored.remove(&state.trains_id));
+        let fields = reason_fields(
+            state.status.as_deref(),
+            stored.remove(&state.trains_id).as_ref(),
+        );
         state.cancelled = fields.cancelled;
         state.cancel_reason_code = fields.cancel_reason_code;
         state.cancel_reason = fields.cancel_reason;
@@ -194,15 +224,19 @@ mod tests {
             platform_status: None,
             booked_platform: None,
             platform_basis: None,
+            platform_suppressed: false,
             display_platform: None,
             live_status: None,
             late_minutes: None,
+            cancelled: false,
             board: None,
             timetable: StopTimetable {
                 working_minute_arrival: at,
                 working_minute_departure: at,
+                public_departure: at,
                 ..StopTimetable::default()
             },
+            platform_evidence: None,
         }
     }
 
@@ -272,6 +306,7 @@ mod tests {
                 cancel_reason: None,
                 change_of_origin_reason_code: None,
                 change_of_origin_reason: None,
+                cancellation: None,
             }
         };
 
@@ -301,6 +336,23 @@ mod tests {
                 Some(LiveStopStatus::Cancelled)
             ]
         );
+        // The stored AT ORIGIN location is unknown here and the train left
+        // its origin, so the cut falls after the last report (DS-181).
+        let cancellation = cancelled.cancellation.as_ref().expect("a cancellation");
+        assert_eq!(
+            cancellation.kind,
+            crate::data::cancellation::CancellationKind::Partial
+        );
+        assert_eq!(
+            cancellation.terminates_at.as_ref().map(|s| s.stop_index),
+            Some(0)
+        );
+        let reason = cancellation.reason.as_ref().expect("a reason");
+        assert_eq!(reason.code.as_deref(), Some("TG"));
+        assert_eq!(
+            reason.source,
+            crate::data::cancellation::ReasonSource::Trust
+        );
 
         let mut running_stops = stops;
         running_stops[1].estimated_departure = Some("2031-05-06T08:14:00Z".parse().unwrap());
@@ -312,11 +364,115 @@ mod tests {
         assert_eq!(stops[1].live_status, Some(LiveStopStatus::Late));
         assert_eq!(stops[1].late_minutes, Some(4));
         assert_eq!(stops[2].live_status, Some(LiveStopStatus::OnTime));
+        assert_eq!(running.cancellation, None, "it ran past the cancellation");
 
         sqlx::query("DELETE FROM trains WHERE train_uid = 'TRSN03'")
             .execute(&pool)
             .await
             .unwrap();
+    }
+
+    /// DS-181 end to end: a `0002` en route at the second call and a later
+    /// `0005` at the fourth, stored by `upsert_reasons` and placed on the
+    /// route through `stanox_crs`, read as "cancelled between" with the
+    /// `0002`'s reason; a `0005` back at the cut reads as running.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                attach_places_a_reinstated_cancellation_on_the_route -- --ignored --test-threads=1`"]
+    async fn attach_places_a_reinstated_cancellation_on_the_route() {
+        use crate::data::cancellation::CancellationKind;
+        use crate::data::stop_live_status::LiveStopStatus;
+        let pool = pool().await;
+        let date: chrono::NaiveDate = "2031-05-06".parse().unwrap();
+        let cleanup = || async {
+            sqlx::query("DELETE FROM trains WHERE train_uid = 'TRSN05'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM stanox_crs WHERE stanox IN ('99851', '99853')")
+                .execute(&pool)
+                .await
+                .unwrap();
+        };
+        cleanup().await;
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) VALUES \
+             ('99851', 'ZZB', 'ZZBTSTB', 'Test B', 0), ('99853', 'ZZD', 'ZZBTSTD', 'Test D', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut cancel = message(Some("TRSN05"), "0002", "IB", "2031-05-06T08:12:00Z");
+        cancel.canx_type = Some("EN ROUTE".to_string());
+        cancel.loc_stanox = Some("99851".to_string());
+        let mut reinstate = message(Some("TRSN05"), "0005", "", "2031-05-06T08:20:00Z");
+        reinstate.loc_stanox = Some("99853".to_string());
+        upsert_reasons(&pool, &[cancel, reinstate.clone()])
+            .await
+            .unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(&pool, "TRSN05", date)
+            .await
+            .unwrap();
+
+        let calls = ["ZZBTSTA", "ZZBTSTB", "ZZBTSTC", "ZZBTSTD"];
+        let mut stops: Vec<_> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, tiploc)| {
+                let mut s = stop(&format!("08:{:02}", i * 10));
+                s.tiploc = Some((*tiploc).to_string());
+                s.crs = Some(format!("ZZ{}", &tiploc[6..]));
+                s
+            })
+            .collect();
+        stops[0].actual_departure = stops[0].timetable.working_minute_departure;
+        stops[1].actual_arrival = stops[1].timetable.working_minute_arrival;
+        let mut state = tracked(
+            1,
+            Some("TRSN05"),
+            date,
+            Some(trains_id),
+            "en_route",
+            Some(stops),
+        );
+        attach_to_tracked_states(&pool, std::slice::from_mut(&mut state)).await;
+        let cancellation = state.cancellation.clone().expect("cancelled between");
+        assert_eq!(cancellation.kind, CancellationKind::Partial);
+        assert_eq!(
+            (
+                cancellation.from.as_ref().and_then(|s| s.crs.as_deref()),
+                cancellation.to.as_ref().and_then(|s| s.crs.as_deref())
+            ),
+            (Some("ZZB"), Some("ZZD"))
+        );
+        assert_eq!(
+            cancellation.reason.and_then(|r| r.code).as_deref(),
+            Some("IB")
+        );
+        let stops = state.journey_stops.clone().unwrap();
+        assert_eq!(
+            stops.iter().map(|s| s.cancelled).collect::<Vec<_>>(),
+            vec![false, false, true, false]
+        );
+        assert_eq!(stops[2].live_status, Some(LiveStopStatus::Cancelled));
+
+        // Reinstated from where it was cancelled: running, nothing cancelled.
+        reinstate.loc_stanox = Some("99851".to_string());
+        reinstate.event_at = Some("2031-05-06T08:25:00Z".parse().unwrap());
+        upsert_reasons(&pool, &[reinstate]).await.unwrap();
+        let mut state = tracked(
+            1,
+            Some("TRSN05"),
+            date,
+            Some(trains_id),
+            "en_route",
+            state.journey_stops,
+        );
+        attach_to_tracked_states(&pool, std::slice::from_mut(&mut state)).await;
+        assert_eq!(state.cancellation, None);
+        assert!(!state.journey_stops.unwrap().iter().any(|s| s.cancelled));
+
+        cleanup().await;
     }
 
     fn tracked(
@@ -359,6 +515,7 @@ mod tests {
             shared_group_count: 0,
             journey_ids: None,
             single_leg_journey_ids: None,
+            notifications_enabled: None,
             trains_id,
             journey_stops: stops,
             may_have_arrived: false,
@@ -370,6 +527,7 @@ mod tests {
             cancel_reason: None,
             change_of_origin_reason_code: None,
             change_of_origin_reason: None,
+            cancellation: None,
             tracking_phase: None,
             first_report_expected_at: None,
         }

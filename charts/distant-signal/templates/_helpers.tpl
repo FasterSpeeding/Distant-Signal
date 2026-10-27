@@ -468,10 +468,10 @@ counts as deployed. Takes (dict "root" $ "client" <redis.acl.clients key>).
      lost its Redis client in ingest phase 5, step 5.4. */ -}}
 {{- if not (has .client (list "api")) -}}
 {{- $pollers := dict "pollerIncidents" "incidents" "pollerLdbws" "ldbws" "pollerTfl" "tfl" "pollerTocs" "tocs" "pollerStations" "stations" -}}
-{{- $own := dict "pollerIrishRailGtfs" "pollerIrishRailGtfs" "pollerIrishRailLive" "pollerIrishRailLive" "pollerNirStations" "pollerNirStations" "movementRelay" "movementRelay" "ingestWriter" "ingestWriter" -}}
+{{- $own := dict "pollerIrishRailGtfs" "pollerIrishRailGtfs" "pollerIrishRailLive" "pollerIrishRailLive" "pollerNirStations" "pollerNirStations" "movementRelay" "movementRelay" "darwinRelay" "darwinRelay" "ingestWriter" "ingestWriter" -}}
 {{- /* poller-transit-schedule, one Deployment per enabled network
      (pollerTransitSchedule.networks.<network>.enabled, transit spec §13.1). */ -}}
-{{- $transit := dict "pollerTransitMetrolink" "metrolink" -}}
+{{- $transit := dict "pollerTransitMetrolink" "metrolink" "pollerTransitNet" "net" -}}
 {{- if hasKey $transit .client -}}
 {{- $networks := ($v.pollerTransitSchedule | default dict).networks | default dict -}}
 {{- if (get $networks (get $transit .client) | default dict).enabled }}true{{ end -}}
@@ -1567,6 +1567,9 @@ other than off or apply (release B removed shadow). Takes root.
 {{- end -}}
 {{- if and (eq (toString (get .Values.ingestWriter.streams "tfl-stops")) "apply") (not (include "distant-signal.perServiceConnects" (dict "root" . "service" "writer"))) -}}
 {{- fail "ingestWriter.streams.tfl-stops: apply needs postgresql.roles.perService.writer.connect (as tfl, security review M4): the writer's ingest_freshness row policy (source tfl-stops) binds its own role only. As the app role it could write any feed's freshness." -}}
+{{- end -}}
+{{- if and (eq (toString (get .Values.ingestWriter.streams "darwin")) "apply") (not (include "distant-signal.perServiceConnects" (dict "root" . "service" "writer"))) -}}
+{{- fail "ingestWriter.streams.darwin: apply needs postgresql.roles.perService.writer.connect (as tfl, security review M4): the writer's ingest_freshness row policy (source darwin-pushport) binds its own role only. As the app role it could write any feed's freshness." -}}
 {{- end -}}
 {{- range $name, $mode := .Values.ingestWriter.streams -}}
 {{- if and (hasPrefix "transit-" $name) (eq (toString $mode) "apply") (not (include "distant-signal.perServiceConnects" (dict "root" $ "service" "writer"))) -}}
@@ -2672,8 +2675,11 @@ every port. Takes (dict "root" $root "ports" (list 443)); renders one
 {{- end }}
 
 {{/*
-The TCP port a URL connects to: its explicit port, else 443 for https and
-80 for http, else nothing. Takes the URL string.
+The TCP port a URL connects to: its explicit port, else 443 for https, 80
+for http and 21 for ftp (whose passive data connections go to ports the
+server picks, so an ftp:// upstream needs the component's internetPorts
+empty when networkPolicy.egress.internetPorts is set), else nothing. Takes
+the URL string.
 */}}
 {{- define "distant-signal.urlPort" -}}
 {{- if contains "://" . -}}
@@ -2685,6 +2691,8 @@ The TCP port a URL connects to: its explicit port, else 443 for https and
 443
 {{- else if eq $u.scheme "http" -}}
 80
+{{- else if eq $u.scheme "ftp" -}}
+21
 {{- end -}}
 {{- end -}}
 {{- end }}
@@ -2737,7 +2745,7 @@ this chart can render, so a typo cannot silently drop a rule. Takes
 {{- define "distant-signal.npComponent" -}}
 {{- $root := .root -}}
 {{- $all := $root.Values.networkPolicy.components | default dict -}}
-{{- $known := list "api" "frontend" "aggregator" "enricher" "notifier" "postgres" "redis" "schedulefeed" "schedulefeed-sftp" "trust-consumer" "trust-backlog-consumer" "full-coverage-consumer" "movement-relay" "poller-irish-rail-gtfs" "poller-irish-rail-live" "poller-nir-stations" "poller-transit-schedule" "postgres-roles" "migrate" "api-maintenance" "ingest-writer" -}}
+{{- $known := list "api" "frontend" "aggregator" "enricher" "notifier" "postgres" "redis" "schedulefeed" "schedulefeed-sftp" "trust-consumer" "trust-backlog-consumer" "full-coverage-consumer" "movement-relay" "darwin-relay" "poller-irish-rail-gtfs" "poller-irish-rail-live" "poller-nir-stations" "poller-transit-schedule" "postgres-roles" "migrate" "api-maintenance" "ingest-writer" -}}
 {{- range $name, $_ := $root.Values.pollers -}}
 {{- $known = append $known (printf "poller-%s" $name) -}}
 {{- end -}}
@@ -2940,7 +2948,7 @@ spec:
     {{- end }}
   {{- if $egressOn }}
   egress:
-    {{- include "distant-signal.egressRules" (dict "root" $root "component" .component "deps" .egress "internet" (ternary .internet true (hasKey . "internet")) "urls" .urls "brokers" .brokers) | nindent 4 }}
+    {{- include "distant-signal.egressRules" (dict "root" $root "component" .component "deps" .egress "internet" (ternary .internet true (hasKey . "internet")) "urls" .urls "brokers" .brokers "ports" .ports) | nindent 4 }}
   {{- end }}
 {{- end }}
 

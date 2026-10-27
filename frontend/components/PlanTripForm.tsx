@@ -2,25 +2,16 @@
 
 import { useEffect, useId, useMemo, useState } from 'react';
 import { londonToday, nowInLondon } from '@/lib/londonWallClock';
-import {
-  Autocomplete,
-  Button,
-  Group,
-  InputLabel,
-  SegmentedControl,
-  Stack,
-  Text,
-  ActionIcon,
-  VisuallyHidden,
-} from '@mantine/core';
-import { DateInput, TimeInput } from '@mantine/dates';
+import { Button, Group, InputLabel, SegmentedControl, Stack, Text, ActionIcon, VisuallyHidden } from '@mantine/core';
+import { TimeInput } from '@mantine/dates';
+import { DateInput } from '@/components/LazyDateFields';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { getStationNames, searchPlannerLocations } from '@/lib/suggestions';
-import { useSuggestions } from '@/lib/useSuggestions';
-import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { groupLabels, useStationGroups, withGroupSuggestions } from '@/lib/stationGroups';
-import { isGroupCode, isTflStopCode, normalizeLocationCode } from '@/lib/stationLabel';
+import { isGroupCode, isTflStopCode } from '@/lib/stationLabel';
+import { typedPlannerCode } from '@/lib/codeLabels';
 import { searchPlannerEnds } from '@/lib/plannerEnds';
+import { isTransitStopCode } from '@/lib/transitStops';
 import type { Suggestion, TrainSearchDates } from '@/lib/types';
 import { searchDateBounds } from '@/lib/searchDates';
 import type { TripPlanAdvancedOptions, TripPlanQuery } from '@/lib/tripPlan';
@@ -28,6 +19,7 @@ import type { PlanFormInitial } from '@/lib/tripPlanUrl';
 import { timingMode, type TimingMode } from '@/lib/tripPlanTiming';
 import { PlanTripAdvancedOptions, advancedOptionErrors } from './PlanTripAdvancedOptions';
 import { ButtonSpinner } from '@/components/LoadingText';
+import { StationField } from '@/components/StationField';
 
 /** `@tabler/icons-react` isn't a project dependency (checked package.json,
  * matching `components/InfoIcon.tsx`/`KebabIcon.tsx`'s own reasoning) --
@@ -74,6 +66,11 @@ function XIcon() {
   );
 }
 
+/** A typed station, `tiploc:` or `group:` code in "Call at"; From and To
+ * also take a TfL stop's id. */
+const typedWaypointCode = (text: string) => typedPlannerCode(text, { tflStops: false });
+const typedEndCode = (text: string) => typedPlannerCode(text, { tflStops: true });
+
 /** One "Call at" stop: a station, bus stop or ferry terminal, or a station
  * group (2026-10-07: "Any of the London Terminals (18 stations)", sent as
  * `group:LON`, a stop at ANY member), picked from suggestions or typed as a
@@ -83,35 +80,26 @@ function WaypointField({
   onChange,
   search,
   first,
-  groupLabel,
 }: {
   value: string;
   onChange: (value: string) => void;
   search: (q: string, signal: AbortSignal) => Promise<Suggestion[]>;
   first: boolean;
-  /** The label of the group `value` names, if it is one (the field shows
-   * the code). */
-  groupLabel: string | undefined;
 }) {
-  const { suggestions, loading } = useSuggestions(value, search);
-  const help = first
-    ? 'The train must stop at each of these. A group such as "Any of the London Terminals" means a stop at any one of its stations. To go through a station without stopping, use "Pass through" in Advanced options.'
-    : null;
-  const shown = isGroupCode(value) && groupLabel !== undefined ? groupLabel : null;
-  const parts = [help, shown].filter((part): part is string => part !== null);
   return (
-    <Autocomplete
+    <StationField
       flex={1}
       label={first ? 'Call at (optional, in order)' : undefined}
-      description={parts.length > 0 ? parts.join(' ') : undefined}
-      placeholder="Station name or code"
+      fieldName="Call at"
+      description={
+        first
+          ? 'The train must stop at each of these. A group such as "Any of the London Terminals" means a stop at any one of its stations. To go through a station without stopping, use "Pass through" in Advanced options.'
+          : undefined
+      }
       value={value}
       onChange={onChange}
-      {...suggestionAutocompleteProps(suggestions, {
-        query: value,
-        loading,
-        noMatchMessage: 'No matching stations',
-      })}
+      search={search}
+      allowTypedCode={typedWaypointCode}
     />
   );
 }
@@ -233,30 +221,16 @@ export function PlanTripForm({
   // The two ends may also be a bus stop or ferry terminal (a `tiploc:` code,
   // shown as "Keswick (bus)"), or a TfL Tube, DLR or tram stop (its stop id,
   // shown as "Uxbridge (Tube)"; DS-135): `searchPlannerEnds`.
-  const { suggestions: originSuggestions, loading: originSuggestionsLoading } = useSuggestions(
-    originCrs,
-    searchPlannerEnds,
-  );
-  const { suggestions: destinationSuggestions, loading: destinationSuggestionsLoading } = useSuggestions(
-    destinationCrs,
-    searchPlannerEnds,
-  );
 
-  /** Keeps a picked TfL stop's name, so the field can say what its stop
-   * id stands for once the suggestions have moved on. */
-  function rememberStop(code: string, suggestions: Suggestion[]) {
-    const picked = suggestions.find((s) => s.code === code);
-    if (picked && isTflStopCode(picked.code)) addNames(new Map([[picked.code, picked.name]]));
-  }
-
-  /** Under From or To when it holds a TfL stop's id: what it is, and that
-   * the route runs from or to a station nearby. */
+  /** Under From or To when it holds a TfL stop's id: that the route runs
+   * from or to a station nearby (the field names the stop). */
   function stopDescription(code: string, end: 'from' | 'to'): string | undefined {
+    // A tram station (`9400ZZMAPIC`): the plan rides the tram from it.
+    if (isTransitStopCode(code)) return undefined;
     if (!isTflStopCode(code)) return undefined;
-    const name = labels.get(normalizeLocationCode(code)) ?? 'A Tube, DLR or tram stop';
     return end === 'from'
-      ? `${name}. The route starts with the Tube or a walk to a National Rail station nearby.`
-      : `${name}. The route ends with the Tube or a walk from a National Rail station nearby.`;
+      ? 'The route starts with the Tube or a walk to a National Rail station nearby.'
+      : 'The route ends with the Tube or a walk from a National Rail station nearby.';
   }
 
   // Names for the advanced options restored from the URL (read once, like
@@ -347,39 +321,23 @@ export function PlanTripForm({
 
   return (
     <Stack gap="md">
-      <Autocomplete
+      <StationField
         label="From"
-        placeholder="Station name or code"
         value={originCrs}
         onChange={setOriginCrs}
-        onOptionSubmit={(code) => rememberStop(code, originSuggestions)}
         description={stopDescription(originCrs, 'from')}
-        // Mirrors `TrackTrainForm.tsx`'s own Origin `Autocomplete`: the
-        // shared `data`/`filter`/`renderOption` trio every CRS/TOC-code
-        // `Autocomplete` field in this app needs (see
-        // `lib/suggestionAutocomplete.ts`'s own doc comment for why this
-        // is factored out rather than hand-rolled per field -- this field
-        // used to carry its own copy of the same three pieces, one of the
-        // "five call sites' worth of hand-copied, independently drifting
-        // boilerplate" that helper was meant to end).
-        {...suggestionAutocompleteProps(originSuggestions, {
-          query: originCrs,
-          loading: originSuggestionsLoading,
-          noMatchMessage: 'No matching stations or stops',
-        })}
+        search={searchPlannerEnds}
+        allowTypedCode={typedEndCode}
+        noMatchMessage="No matching stations or stops"
       />
-      <Autocomplete
+      <StationField
         label="To"
-        placeholder="Station name or code"
         value={destinationCrs}
         onChange={setDestinationCrs}
-        onOptionSubmit={(code) => rememberStop(code, destinationSuggestions)}
         description={stopDescription(destinationCrs, 'to')}
-        {...suggestionAutocompleteProps(destinationSuggestions, {
-          query: destinationCrs,
-          loading: destinationSuggestionsLoading,
-          noMatchMessage: 'No matching stations or stops',
-        })}
+        search={searchPlannerEnds}
+        allowTypedCode={typedEndCode}
+        noMatchMessage="No matching stations or stops"
       />
       {waypoints.map((waypoint, index) => (
         <Group key={index} gap="xs">
@@ -388,7 +346,6 @@ export function PlanTripForm({
             onChange={(value) => updateWaypoint(index, value)}
             search={searchWaypoints}
             first={index === 0}
-            groupLabel={labels.get(normalizeLocationCode(waypoint))}
           />
           <ActionIcon
             color="red"

@@ -34,6 +34,8 @@ import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { londonCalendarDay } from '@/lib/londonWallClock';
 import type { JourneyDetail, LineStatus, LineStatusReport, Preferences, TrackedTrainState } from '@/lib/types';
 import { pageMetadata, previewCards, SITE_NAME } from '@/lib/pageMetadata';
+import { homeJsonLd } from '@/lib/jsonLd';
+import { JsonLd, structuredDataOrigin } from '@/components/JsonLd';
 import { CurrentJourneySection, UpcomingJourneysSection, UpcomingJourneysTeaser } from './HomeJourneys';
 import { notGoodServiceSummary, RightNowModule } from './RightNowModule';
 import { SharedCustomLineSummaryRow } from './SharedCustomLineSummaryRow';
@@ -89,10 +91,10 @@ const METADATA_DESCRIPTION =
   'Live UK rail status: which lines have problems right now. Log in to pin lines and stations and track trains.';
 
 export const metadata: Metadata = {
-  ...pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION),
+  ...pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, { path: '/' }),
   // The site name is this page's name: no "Distant Signal · Distant Signal".
   title: { absolute: METADATA_TITLE },
-  ...previewCards(METADATA_TITLE, METADATA_DESCRIPTION),
+  ...previewCards(METADATA_TITLE, METADATA_DESCRIPTION, { path: '/' }),
 };
 
 // The exact shape getPreferences() already returns for a 401, named so the
@@ -219,8 +221,12 @@ export default async function DashboardPage() {
   const rightNow = notGoodServiceSummary(allReports);
 
   if (!session.authenticated) {
+    // The site's structured data, for the anonymous view crawlers see. A
+    // `<script>` is `display: none`, so it takes no flex gap.
+    const origin = await structuredDataOrigin();
     return (
       <Stack p="lg" gap="xl">
+        {origin !== null && <JsonLd data={homeJsonLd(origin)} />}
         <Stack gap="xs">
           {/* Review §3.1.7: on mobile this used to repeat "Distant
               Signal" -- once as the nav brand, again as this page's own

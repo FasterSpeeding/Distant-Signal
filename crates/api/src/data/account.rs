@@ -54,6 +54,7 @@ pub const USER_KEYED_TABLES: &[&str] = &[
     "journey_templates",
     "journeys",
     "line_notification_state",
+    "notification_holds",
     "notification_preferences",
     "pinned_lines",
     "pinned_operators",
@@ -206,6 +207,8 @@ pub struct NotificationStateExport {
     pub trains: Value,
     pub lines: Value,
     pub journey_legs: Value,
+    /// Pushes held for the user's quiet hours, not sent yet (DS-153).
+    pub held: Value,
 }
 
 /// Runs `inner` (a query yielding one `jsonb` column per row, with `$1`
@@ -426,6 +429,13 @@ pub async fn export_account(pool: &PgPool, user_id: &str) -> Result<Option<Accou
                 user_id,
             )
             .await?,
+            held: rows(
+                pool,
+                "SELECT to_jsonb(h) FROM notification_holds h WHERE user_id = $1 \
+                 ORDER BY decided_at",
+                user_id,
+            )
+            .await?,
         },
         omitted: vec![
             "sessions.id and sessions.refresh_token: hashed session credentials",
@@ -569,6 +579,7 @@ pub(crate) mod db_tests {
         exec(pool, &format!("INSERT INTO journey_revision_legs (revision_id, position, kind, service_date) VALUES ((SELECT id FROM journey_revisions WHERE journey_id = {journey}), 1, 'train', CURRENT_DATE)"), &[]).await;
         exec(pool, &format!("INSERT INTO journey_breaks (journey_id, user_id, cause, fault, severity, break_position, fingerprint) VALUES ({journey}, $1, 'user_missed', 'user', 1, 1, 'f')"), u).await;
         exec(pool, "INSERT INTO notification_preferences (user_id, journey_suggestions) VALUES ($1, FALSE)", u).await;
+        exec(pool, "INSERT INTO notification_holds (user_id, target, line_id, line_rank, title, body, url, tag, decided_at, expires_at) VALUES ($1, 'line:line-' || $1, 'line-' || $1, 2, 't', 'b', '/lines', 'line', NOW(), NOW() + INTERVAL '1 day')", u).await;
         // Delegated access: a grant, a pending consent confirmation, a
         // delegated delete and an itinerary Idempotency-Key.
         exec(pool, "INSERT INTO delegated_grants (user_id, client, client_display_name, scopes) VALUES ($1, 'ds-mcp', 'Assistant', '{journeys:read}')", u).await;
