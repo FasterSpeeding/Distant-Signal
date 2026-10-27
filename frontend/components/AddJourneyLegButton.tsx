@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { DateInput } from '@mantine/dates';
+import { DateInput } from '@/components/LazyDateFields';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { resolvePriorOriginCrs, type LondonDateTime } from '@/lib/journeyLegChaining';

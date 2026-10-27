@@ -704,7 +704,7 @@ async fn suggestions_can_be_muted_per_journey_and_turned_off() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{prefs}");
-    assert_eq!(prefs, serde_json::json!({ "journeySuggestions": true }));
+    assert_eq!(prefs["journeySuggestions"], true, "{prefs}");
     let (status, _) = call(
         &router,
         "PUT",
@@ -724,7 +724,7 @@ async fn suggestions_can_be_muted_per_journey_and_turned_off() {
         None,
     )
     .await;
-    assert_eq!(prefs, serde_json::json!({ "journeySuggestions": false }));
+    assert_eq!(prefs["journeySuggestions"], false, "{prefs}");
 }
 
 #[tokio::test]

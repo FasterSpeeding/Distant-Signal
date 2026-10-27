@@ -1579,6 +1579,7 @@ pub(crate) mod test_support {
             platform_evidence: None,
             live_status: None,
             late_minutes: None,
+            cancelled: false,
             board: None,
             timetable: StopTimetable {
                 working_minute_arrival: None,
@@ -1622,6 +1623,7 @@ mod tests {
             platform_evidence: None,
             live_status: None,
             late_minutes: None,
+            cancelled: false,
             board: None,
             timetable: StopTimetable {
                 working_minute_arrival: None,

@@ -418,6 +418,10 @@ export interface Preferences {
   pinnedLines: string[];
   pinnedStations: string[];
   pinnedOperators: string[];
+  /** Of `pinnedLines`, those whose status changes are not pushed
+   * (`PUT /preferences/pinned-lines/{id}/alerts`). Absent from an older
+   * backend. */
+  silentPinnedLines?: string[];
 }
 
 export interface LineSummary {
@@ -903,6 +907,12 @@ export interface JourneyStop {
   status?: LiveStopStatus | null;
   // Minutes late the stop is expected to be; set only when `status` is 'Late'.
   lateMinutes?: number | null;
+  // This call is in a cancelled part of the train's run (DS-181): the whole
+  // train is cancelled, or it terminates short of, starts after, or is
+  // cancelled between stations around this call. See `Cancellation`. Not set
+  // for a skipped call (`stopStatus: 'Skipped'`). Optional: absent from an
+  // older backend.
+  cancelled?: boolean;
   // This train's row on the stop's live LDBWS departure board, or `null`
   // when there is no unique fresh match (`crates/api/src/data/stop_board.rs`).
   // `null` means "not known", never "on time". Optional so older fixtures
@@ -1011,6 +1021,10 @@ export interface TrackedTrainState extends TrainJourneyState {
    * on the owner's `GET /Train/{trackingId}`; absent from an older backend. */
   journeyIds?: number[];
   singleLegJourneyIds?: number[];
+  /** Whether this train's delay, cancellation and skipped-stop pushes are
+   * on (`PATCH /Train/{trackingId}`). Only on the owner's view (the train
+   * page, and the owner's journey); absent otherwise. */
+  notificationsEnabled?: boolean;
 }
 
 /** Exactly the fields `components/TrainJourney.tsx` reads -- notably NOT
@@ -1108,6 +1122,61 @@ export interface TrainJourneyState extends ServiceModeFields, TrackingPhaseField
   // TRUST change-of-origin reason code and text, same rules.
   changeOfOriginReasonCode?: string | null;
   changeOfOriginReason?: string | null;
+  // What part of the run is cancelled and why (DS-181,
+  // `crates/api/src/data/cancellation.rs`): `null` when nothing is,
+  // including after a reinstatement. Prefer it to `cancelled` and the
+  // reason fields above, which stay for older clients. Optional: absent
+  // from an older backend.
+  cancellation?: Cancellation | null;
+}
+
+/** `Cancellation.kind`: every public call cancelled, or only some. */
+export type CancellationKind = 'full' | 'partial';
+
+/** Where a cancellation reason came from, best first: Darwin Push Port
+ * (not served yet), Darwin's text on a live departure board, then
+ * Network Rail's TRUST delay attribution code. */
+export type CancellationReasonSource = 'darwin' | 'ldbws' | 'trust';
+
+export interface CancellationReason {
+  // TRUST delay attribution code ("JP"); `null` for board text.
+  code: string | null;
+  // Darwin's own sentence ("This train has been cancelled because of ..."),
+  // or the Network Rail glossary text for a TRUST code; `null` for a code
+  // with no text (system codes such as PD).
+  text: string | null;
+  source: CancellationReasonSource;
+}
+
+/** A call named by a cancellation. `stopIndex` indexes the response's own
+ * `journeyStops`. */
+export interface CancellationStop {
+  crs: string | null;
+  name: string | null;
+  stopIndex: number;
+}
+
+/** A part of the route not run: the calls between `from` and `to` are
+ * cancelled, and `from` itself at the origin end, `to` at the destination
+ * end. */
+export interface CancelledSection {
+  from: CancellationStop;
+  to: CancellationStop;
+}
+
+/** `TrainJourneyState.cancellation`. */
+export interface Cancellation {
+  kind: CancellationKind;
+  // The first call still served, when the train starts short.
+  startsFrom: CancellationStop | null;
+  // The last call still served, when the train terminates short.
+  terminatesAt: CancellationStop | null;
+  // The only section's ends; `null` when there are several.
+  from: CancellationStop | null;
+  to: CancellationStop | null;
+  sections: CancelledSection[];
+  reason: CancellationReason | null;
+  at: string | null; // RFC3339, when the cancellation was made
 }
 
 /** `GET /Train/by-uid/{uid}/{date}`'s response shape
@@ -1175,6 +1244,8 @@ export interface PublicTrainState extends ServiceModeFields, TimetableCertaintyF
   cancelReason?: string | null;
   changeOfOriginReasonCode?: string | null;
   changeOfOriginReason?: string | null;
+  // See `TrainJourneyState.cancellation`.
+  cancellation?: Cancellation | null;
 }
 
 /** `GET /public/trains/resolve`'s 200 body
@@ -1698,9 +1769,45 @@ export interface RevisionsResponse {
   revisions: Revision[];
 }
 
-/** `GET`/`PUT /preferences/notifications`. */
+/** Quiet hours: `HH:MM` local times in an IANA `timezone`; `end` may be
+ * before `start` (through midnight). */
+export interface QuietHours {
+  start: string;
+  end: string;
+  timezone: string;
+}
+
+/** `GET /preferences/notifications` (and the `PUT`'s answer): a switch per
+ * kind of push, the delay threshold (`null`: the default, 15 minutes) and
+ * the quiet hours (`null`: none). The fields after `journeySuggestions`
+ * are absent from an older backend. */
 export interface NotificationPreferences {
   journeySuggestions: boolean;
+  lineStatus?: boolean;
+  trainDelay?: boolean;
+  trainCancel?: boolean;
+  predictedStart?: boolean;
+  stationSkip?: boolean;
+  templateAttention?: boolean;
+  delayThresholdMinutes?: 5 | 10 | 15 | 30 | null;
+  quietHours?: QuietHours | null;
+  /** Notifications are paused (held, as in quiet hours) until this time;
+   * `null` when not paused. At most a week ahead. */
+  snoozedUntil?: string | null;
+}
+
+/** A `PUT /preferences/notifications` body: only the fields sent change. */
+export type NotificationPreferencesUpdate = Partial<NotificationPreferences>;
+
+/** One of `GET /notifications/devices`: a browser push goes to. */
+export interface PushDevice {
+  id: number;
+  /** "Chrome on Android", or null when it could not be worked out. */
+  label: string | null;
+  createdAt: string;
+  lastUsedAt: string;
+  /** Hex SHA-256 of the push endpoint: hash this browser's to find it. */
+  endpointSha256: string;
 }
 
 /** One leg of a `GET /Trips/plan` itinerary
@@ -1776,7 +1883,82 @@ export type TripPlanLeg =
        * Rail station (DS-135): which end, how the station was found, and
        * how far it goes. Its `minutes` are an estimate. */
       access?: TripPlanAccessLeg;
-    };
+      /** Only on a walk between a National Rail station and a tram stop
+       * (transit trip planning, M2): the tram end, which has no code.
+       * `walkMinutes` is the walk alone, an estimate; `minutes` adds the
+       * change allowance on the tram side. */
+      transitWalk?: TripPlanTransitWalk;
+    }
+  | TripPlanTransitLeg;
+
+/** A ride on a timetabled transit network (`kind: "transit"`, sent only
+ * when the request says `transit=true` or names a tram stop): Metrolink's
+ * trams and their replacement buses. Scheduled times only: never live,
+ * never a train to track. */
+export interface TripPlanTransitLeg {
+  kind: 'transit';
+  /** The network id, `metrolink`. */
+  network: string;
+  serviceMode: TripPlanTransitServiceMode;
+  liveTracking: false;
+  realtime: false;
+  serviceDate: string; // "YYYY-MM-DD"
+  scheduledDeparture: string; // "HH:MM:SS"
+  scheduledArrival: string;
+  departureDayOffset: number;
+  arrivalDayOffset: number;
+  /** `null` for a replacement bus. */
+  line: { id: string; name: string; colour: string | null } | null;
+  headsign: string | null;
+  originCrs: null;
+  destinationCrs: null;
+  originStop: TripPlanTransitStop;
+  destinationStop: TripPlanTransitStop;
+  /** The usual gap between trams of this line and direction around the
+   * leg's departure; absent when too few run to say. */
+  headwayMinutes?: number;
+  notices: TripPlanTransitNotice[];
+}
+
+/** `tram` or `replacementBus`. */
+export type TripPlanTransitServiceMode = 'tram' | 'replacementBus';
+
+/** A transit leg's end: the station in its network's public spelling
+ * (`9400ZZMAPIC`). */
+export interface TripPlanTransitStop {
+  id: string;
+  name: string;
+  platform: string | null;
+}
+
+/** A current disruption on a transit leg's line. */
+export interface TripPlanTransitNotice {
+  kind: 'disruption';
+  lineId: string | null;
+  /** A severity number, as `statusSeverity`. */
+  severity: number;
+  description: string;
+  message: string;
+  reason: string | null;
+}
+
+/** The tram end of a rail-to-tram walk. `towardsStop`: walking from the
+ * station to the stop. */
+export interface TripPlanTransitWalk {
+  network: string;
+  stop: { id: string; name: string };
+  towardsStop: boolean;
+  walkMinutes: number;
+  estimated: boolean;
+}
+
+/** A response-level note about a transit network, such as no timetable
+ * for the date: `message` is the sentence to show. */
+export interface TripPlanNetworkNotice {
+  network: string;
+  reason: string;
+  message: string;
+}
 
 /** How a `GET /Trips/plan` access candidate was found: the stop's own
  * station (`hub`), a ride on one of its lines (`line`), a short walk
@@ -1823,6 +2005,8 @@ export interface TripPlanItinerary {
   /** The first leg is the same train the previous segment's itinerary
    * rode into the waypoint: no change is made there. */
   continuesPreviousTrain?: boolean;
+  /** Any leg is a transit leg, whose times are scheduled, not live. */
+  scheduledOnly?: boolean;
 }
 
 /** One whole journey: `segments[s].itineraries[j]` for every segment `s`,
@@ -1978,6 +2162,9 @@ export interface TripPlanResponse extends TimetableCertaintyFields {
     origin: TripPlanStopAccess | null;
     destination: TripPlanStopAccess | null;
   };
+  /** With transit legs in play: what the plan could not use, such as a
+   * network with no timetable for the date. */
+  transitNotices?: TripPlanNetworkNotice[];
 }
 
 /** Body for `POST /Journeys/{journeyId}/legs` (multi-leg chaining, spec
@@ -2900,6 +3087,9 @@ export interface LineTrainSummaryLive {
   delayMinutes: number | null;
   delayProvisional: boolean;
   cancelled: boolean;
+  /** The cancellation's Network Rail reason text while `cancelled`
+   * (DS-181). Optional: absent from an older backend. */
+  cancelReason?: string | null;
   lastReportedLocation: string | null;
 }
 
@@ -3107,6 +3297,8 @@ export interface TransitNetwork {
   horizonTo: string | null;
   timetableAsOf: string | null;
   situationsAsOf: string | null;
+  /** The trip planner can route over this network's stations. */
+  tripPlanning?: boolean;
 }
 
 /** A transit line: `id` is public (`metrolink:blue`), `lineId` the path
@@ -3259,7 +3451,7 @@ export interface TransitLineTimetable {
 
 /** A delegated-access scope a connected app may hold
  * (`crates/api/src/auth/delegated.rs::Scope`). */
-export type ConnectedAppScope = 'journeys:read' | 'journeys:write' | 'journeys:delete';
+export type ConnectedAppScope = 'journeys:read' | 'journeys:write' | 'journeys:delete' | 'preferences:read';
 
 /** One app the user connected (`GET /public/account/connected-apps`,
  * `crates/api/src/routes/connected_apps.rs::GrantView`). */

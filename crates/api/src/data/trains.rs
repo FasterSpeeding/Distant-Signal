@@ -182,6 +182,14 @@ pub struct PublicTrainState {
     /// Its glossary text, under the same rules as `cancel_reason`.
     #[sqlx(skip)]
     pub change_of_origin_reason: Option<String>,
+    /// What part of the run is cancelled and why (DS-181): full or partial,
+    /// the cancelled sections, terminated short or started short, and the
+    /// best reason with its source. `null` when nothing is cancelled,
+    /// including after a reinstatement. Filled with the fields above; see
+    /// `data::cancellation`. The older `cancelled`/`cancelReason*` fields
+    /// stay for compatibility.
+    #[sqlx(skip)]
+    pub cancellation: Option<crate::data::cancellation::Cancellation>,
     /// `serviceMode` (`train`/`replacementBus`/`bus`/`ferry`) and
     /// `liveTracking` (`false` for a bus or ferry, which TRUST never
     /// reports), from `schedule_services`; filled after the read by

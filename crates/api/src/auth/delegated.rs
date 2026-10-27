@@ -62,13 +62,17 @@ pub enum Scope {
     JourneysWrite,
     #[serde(rename = "journeys:delete")]
     JourneysDelete,
+    /// Read the user's notification settings (DS-153): read only, additive.
+    #[serde(rename = "preferences:read")]
+    PreferencesRead,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 3] = [
+    pub const ALL: [Scope; 4] = [
         Scope::JourneysRead,
         Scope::JourneysWrite,
         Scope::JourneysDelete,
+        Scope::PreferencesRead,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -76,6 +80,7 @@ impl Scope {
             Scope::JourneysRead => "journeys:read",
             Scope::JourneysWrite => "journeys:write",
             Scope::JourneysDelete => "journeys:delete",
+            Scope::PreferencesRead => "preferences:read",
         }
     }
 
@@ -96,6 +101,11 @@ pub const DELEGATED_ROUTES: &[(Method, &str, Scope)] = &[
         Method::DELETE,
         "/Journeys/{journey_id}",
         Scope::JourneysDelete,
+    ),
+    (
+        Method::GET,
+        "/public/preferences/notifications",
+        Scope::PreferencesRead,
     ),
 ];
 
@@ -206,7 +216,7 @@ pub fn parse_clients(json: &str) -> Result<Vec<ClientConfig>> {
             let Some(parsed) = Scope::parse(scope) else {
                 bail!(
                     "DELEGATED_CLIENTS: {}: unknown scope {scope:?} (allowed: journeys:read, \
-                     journeys:write, journeys:delete)",
+                     journeys:write, journeys:delete, preferences:read)",
                     client.name
                 );
             };
@@ -748,6 +758,10 @@ pub struct DeleteScope;
 impl RequiredScope for DeleteScope {
     const SCOPE: Scope = Scope::JourneysDelete;
 }
+pub struct PreferencesReadScope;
+impl RequiredScope for PreferencesReadScope {
+    const SCOPE: Scope = Scope::PreferencesRead;
+}
 
 /// How a [`DelegatedOrSessionUser`] was authenticated.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1091,7 +1105,15 @@ mod tests {
     }
 
     #[test]
-    fn route_scopes_cover_exactly_the_four_routes() {
+    fn route_scopes_cover_exactly_the_five_routes() {
+        assert_eq!(
+            route_scope(&Method::GET, "/public/preferences/notifications"),
+            Some(Scope::PreferencesRead)
+        );
+        assert_eq!(
+            route_scope(&Method::PUT, "/public/preferences/notifications"),
+            None
+        );
         assert_eq!(
             route_scope(&Method::GET, "/Journeys/mine"),
             Some(Scope::JourneysRead)
@@ -1398,6 +1420,7 @@ mod tests {
                     "GET /Journeys/{journey_id} journeys:read",
                     "POST /Journeys/itinerary journeys:write",
                     "DELETE /Journeys/{journey_id} journeys:delete",
+                    "GET /public/preferences/notifications preferences:read",
                 ]
             );
             let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -1434,6 +1457,7 @@ mod tests {
                     "routes/journeys.rs DeleteScope",
                     "routes/journeys.rs ReadScope",
                     "routes/journeys.rs ReadScope",
+                    "routes/preferences.rs PreferencesReadScope",
                 ],
                 "the handlers taking DelegatedOrSessionUser changed; update DELEGATED_ROUTES, \
                  the spec's §5.8 and this list together"

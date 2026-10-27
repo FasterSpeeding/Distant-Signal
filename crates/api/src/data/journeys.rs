@@ -1345,22 +1345,38 @@ pub async fn attach_untracked_stops(
     };
     let origin = clean(origin_stop_id);
     let destination = clean(destination_stop_id);
+    // A tram station of a trip-planner transit network (DS-164), saved from
+    // a plan's `kind: "transit"` leg: `9400ZZMAPIC`. Only while the
+    // planner switch lists a network; otherwise as before.
+    let transit_networks = crate::data::transit_planning::enabled_networks();
+    let is_transit_station = |id: &str| {
+        !transit_networks.is_empty()
+            && id.starts_with("9400")
+            && crate::data::transit_planning::looks_like_naptan(id)
+    };
     for (field, id) in [
         ("originStopId", &origin),
         ("destinationStopId", &destination),
     ] {
         if id
             .as_deref()
-            .is_some_and(|id| !common::tfl_stops::is_stop_id(id))
+            .is_some_and(|id| !common::tfl_stops::is_stop_id(id) && !is_transit_station(id))
         {
-            return Ok(Err(format!(
-                "{field} must be a TfL stop id from GET /tfl/stops."
-            )));
+            return Ok(Err(if transit_networks.is_empty() {
+                format!("{field} must be a TfL stop id from GET /tfl/stops.")
+            } else {
+                format!(
+                    "{field} must be a TfL stop id from GET /tfl/stops or a tram stop id from GET /transit/{{network}}/stops."
+                )
+            }));
         }
     }
     let ids: Vec<String> = origin.iter().chain(destination.iter()).cloned().collect();
     if ids.is_empty() {
         return Ok(Ok(leg));
+    }
+    if ids.iter().any(|id| is_transit_station(id)) {
+        return attach_transit_stops(pool, leg, origin, destination, &transit_networks).await;
     }
     if !TFL_STOP_MODES.contains(&leg.transit_mode.as_str()) {
         return Ok(Err(format!(
@@ -1389,6 +1405,71 @@ pub async fn attach_untracked_stops(
     leg.destination_stop_id = destination;
     Ok(Ok(leg))
 }
+
+/// [`attach_untracked_stops`] for a leg with a tram station id (DS-164):
+/// each id must be a station of a trip-planner network's active feed (a
+/// `TfL` id at the other end is checked as usual), and the leg a `tram` leg,
+/// or a `bus` one (a replacement bus from the tram timetable). The place
+/// names default to the stations'.
+async fn attach_transit_stops(
+    pool: &PgPool,
+    mut leg: UntrackedLeg,
+    origin: Option<String>,
+    destination: Option<String>,
+    networks: &[String],
+) -> anyhow::Result<Result<UntrackedLeg, String>> {
+    if !TRANSIT_STOP_MODES.contains(&leg.transit_mode.as_str()) {
+        return Ok(Err(format!(
+            "Only a {} leg can have a tram stop id.",
+            TRANSIT_STOP_MODES.join(" or ")
+        )));
+    }
+    for (field, id, place) in [
+        ("originStopId", &origin, &mut leg.origin_place),
+        (
+            "destinationStopId",
+            &destination,
+            &mut leg.destination_place,
+        ),
+    ] {
+        let Some(id) = id else { continue };
+        let name = if common::tfl_stops::is_stop_id(id) && id.starts_with("940G") {
+            crate::data::tfl_stops::stops_by_id(pool, std::slice::from_ref(id))
+                .await?
+                .get(id)
+                .map(|stop| stop.name.clone())
+        } else {
+            match crate::data::transit_planning::find_station(pool, networks, id).await? {
+                Some((_, station)) if &station == id => {
+                    sqlx::query_scalar::<_, String>(
+                        "SELECT s.name FROM transit_stops s JOIN transit_networks n \
+                           ON n.network = s.network AND n.active_feed_version = s.feed_version \
+                         WHERE s.network = ANY($1) AND s.stop_id = $2 LIMIT 1",
+                    )
+                    .bind(networks)
+                    .bind(id)
+                    .fetch_optional(pool)
+                    .await?
+                }
+                _ => None,
+            }
+        };
+        let Some(name) = name else {
+            return Ok(Err(format!("{field} {id} is not a stop we know.")));
+        };
+        if place.is_none() {
+            *place = Some(name.chars().take(UNTRACKED_PLACE_MAX_CHARS).collect());
+        }
+    }
+    leg.origin_stop_id = origin;
+    leg.destination_stop_id = destination;
+    Ok(Ok(leg))
+}
+
+/// The untracked-leg modes whose places may carry a tram station id of a
+/// trip-planner transit network: a tram, or a replacement bus from its
+/// timetable.
+pub const TRANSIT_STOP_MODES: [&str; 2] = ["tram", "bus"];
 
 /// The untracked-leg modes whose places may carry a `TfL` stop id.
 /// `metro` is the planner's generic `METRO` transfer (DLR, tram or Tube).
@@ -3963,30 +4044,21 @@ mod db_tests {
         cleanup_user(&pool, "TEST-JOURNEY-COMMIT-SHARED").await;
     }
 
-    /// 2026-09-26 review, Medium finding 10: `set_leg_train_subscription`
-    /// ("Change train") deactivating an orphaned subscription is meant to
-    /// be scoped to the journey-leg context it was replacing, not a
-    /// permanent verdict on the underlying `(user_id, trains_id)` pin --
-    /// `train_tracking::create_subscription_for_train` is idempotent on
-    /// that exact key, so before this fix a disabled row, once created,
-    /// could never come back: ANY later, unrelated call for the same user
-    /// and the same physical train (a brand-new journey leg auto-matching
-    /// to it, a standalone "Track this train", a second journey) just
-    /// silently inherited the disabled row forever.
-    ///
-    /// Since DS-93 "Change train" deletes a leg-only old subscription
-    /// rather than disabling it, so nothing writes the flag any more; a row
-    /// disabled before that still exists, so this disables one directly
-    /// (as the old "Change train" left it), then calls
-    /// `create_subscription_for_train` directly for the SAME `(user_id,
-    /// trains_id)` -- exactly what a brand-new, unrelated journey/tracking
-    /// use case does -- and asserts it comes back re-enabled.
+    /// DS-153: a user's "off" for a train sticks. Before, any later call of
+    /// `train_tracking::create_subscription_for_train` for the same
+    /// `(user_id, trains_id)` (a brand-new journey leg auto-matching onto
+    /// it, a standalone "Track this train", a second journey) turned a
+    /// disabled row back on (2026-09-26 review, Medium finding 10, from
+    /// when "Change train" disabled orphaned rows). FALSE is now the user's
+    /// own choice (`PATCH /Train/{trackingId}`), so this turns the first
+    /// train off as the user would, re-establishes the same train through
+    /// another use, and asserts it is the same row, still off.
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                a_disabled_subscription_is_reactivated_by_a_later_unrelated_use -- --ignored \
+                a_disabled_subscription_stays_off_when_the_train_is_used_again -- --ignored \
                 --test-threads=1`"]
-    async fn a_disabled_subscription_is_reactivated_by_a_later_unrelated_use() {
+    async fn a_disabled_subscription_stays_off_when_the_train_is_used_again() {
         let pool = connect().await;
         let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-M10-REACTIVATE";
@@ -4025,8 +4097,8 @@ mod db_tests {
                 .expect("commit first pick")
         );
 
-        // A row the old "Change train" disabled: the leg moved to a
-        // different train, and this one was left unreferenced and off.
+        // The leg moves to a different train, and the user turns the first
+        // one's pushes off.
         let second_trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-M10-UID-SECOND", service_date)
                 .await
@@ -4043,20 +4115,16 @@ mod db_tests {
             .bind(leg_id)
             .execute(&pool)
             .await
-            .expect("move the leg the way the old \"Change train\" did");
+            .expect("move the leg to the second train");
         sqlx::query("UPDATE train_subscriptions SET notifications_enabled = FALSE WHERE id = $1")
             .bind(first_tracking_id)
             .execute(&pool)
             .await
-            .expect("disable the old subscription the way the old \"Change train\" did");
+            .expect("turn the first train's pushes off, as PATCH /Train/{id} does");
 
-        // The new use case: a LATER, unrelated call for the SAME
-        // `(user_id, trains_id)` as the disabled subscription -- e.g. a
-        // fresh "Track this train" or a different journey's leg
-        // auto-matching onto the same physical train. This has nothing to
-        // do with the journey/leg above; it must not silently inherit a
-        // notification stream the "Change train" action killed for a
-        // different reason entirely.
+        // A LATER, unrelated call for the SAME `(user_id, trains_id)`: a
+        // fresh "Track this train" or a different journey's leg matching
+        // onto the same physical train.
         let reused_tracking_id = crate::data::train_tracking::create_subscription_for_train(
             &pool,
             first_trains_id,
@@ -4070,10 +4138,11 @@ mod db_tests {
              return the SAME row, not a duplicate"
         );
         assert!(
-            notifications_enabled_of(&pool, first_tracking_id).await,
-            "a new, unrelated use of the same physical train must re-enable notifications, not \
-             inherit the stale disabled flag forever"
+            !notifications_enabled_of(&pool, first_tracking_id).await,
+            "using the same physical train again must not turn the user's \"off\" back on"
         );
+        // A brand-new subscription still starts enabled.
+        assert!(notifications_enabled_of(&pool, second_tracking_id).await);
 
         cleanup_user(&pool, user_id).await;
         sqlx::query("DELETE FROM trains WHERE id IN ($1, $2)")

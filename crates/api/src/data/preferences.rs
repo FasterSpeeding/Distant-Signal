@@ -119,16 +119,63 @@ async fn insert_pinned_in_order(
 /// `ids` is deduplicated (see [`dedupe_preserving_order`]) before the
 /// insert loop -- a duplicate id in the caller's array must not turn into a
 /// primary-key-violation 500.
+///
+/// Unlike the other two, a line that stays pinned keeps its row, so its
+/// alert switch (`pinned_lines.notify`, DS-153) survives the replace: only
+/// the lines no longer listed are deleted, and the listed ones are upserted
+/// with their new order. A newly pinned line alerts.
 pub async fn replace_pinned_lines(pool: &PgPool, user_id: &str, ids: &[String]) -> Result<()> {
     let ids = dedupe_preserving_order(ids);
+    let ids: Vec<&str> = ids.iter().map(|id| id.as_str()).collect();
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM pinned_lines WHERE user_id = $1")
+    sqlx::query("DELETE FROM pinned_lines WHERE user_id = $1 AND NOT (line_id = ANY($2))")
         .bind(user_id)
+        .bind(&ids)
         .execute(&mut *tx)
         .await?;
-    insert_pinned_in_order(&mut tx, "pinned_lines", "line_id", user_id, &ids).await?;
+    if !ids.is_empty() {
+        sqlx::query(
+            "INSERT INTO pinned_lines (user_id, line_id, pinned_at) \
+             SELECT $1, item, NOW() + ord * INTERVAL '1 microsecond' \
+             FROM unnest($2::text[]) WITH ORDINALITY AS t(item, ord) \
+             ON CONFLICT (user_id, line_id) DO UPDATE SET pinned_at = EXCLUDED.pinned_at",
+        )
+        .bind(user_id)
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
     Ok(())
+}
+
+/// `user_id`'s pinned lines with their alerts off (`notify` FALSE).
+pub async fn list_silent_pinned_line_ids(pool: &PgPool, user_id: &str) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT line_id FROM pinned_lines WHERE user_id = $1 AND NOT notify \
+         ORDER BY pinned_at, line_id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Turns the line-status pushes of one of `user_id`'s pinned lines on or
+/// off. `false` when the line is not pinned.
+pub async fn set_pinned_line_notify(
+    pool: &PgPool,
+    user_id: &str,
+    line_id: &str,
+    notify: bool,
+) -> Result<bool> {
+    let result =
+        sqlx::query("UPDATE pinned_lines SET notify = $3 WHERE user_id = $1 AND line_id = $2")
+            .bind(user_id)
+            .bind(line_id)
+            .bind(notify)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Same replace-whole-set semantics as `replace_pinned_lines`, for stations

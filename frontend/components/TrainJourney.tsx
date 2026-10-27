@@ -10,6 +10,8 @@ import { isTimetableOnly, serviceNoun, TIMETABLE_ONLY_MESSAGE } from '@/lib/serv
 import type { TrainJourneyState } from '@/lib/types';
 import { StateBadge } from './StateBadge';
 import { PredictedStartNotice } from './PredictedStartNotice';
+import { CancellationNotice } from './CancellationNotice';
+import { trainCancellation } from '@/lib/cancellation';
 
 /** Renders one train's journey through every state the backend can
  * return, per
@@ -103,9 +105,18 @@ export function TrainJourney({
     );
   }
 
+  // A part-cancelled train that is still running (it starts short of its
+  // booked origin) keeps its live status; the notice says what it no
+  // longer serves. A train TRUST calls cancelled gets it from
+  // `StatusMessage` instead.
+  const runningCancellation = state.status === 'cancelled' ? null : trainCancellation(state);
+
   return (
     <Stack gap="sm">
       <StatusMessage state={state} suppressTrainUidHeading={suppressTrainUidHeading} />
+      {runningCancellation && state.resolutionStatus === 'resolved' && (
+        <CancellationNotice cancellation={runningCancellation} />
+      )}
       {/* A predicted late start from the incoming train (DS-127): the api
           sends one only before Network Rail reports this train. */}
       <PredictedStartNotice prediction={state.predictedStart} />
@@ -313,12 +324,11 @@ function StatusMessage({
     );
   }
 
-  if (state.status === 'cancelled') {
+  const cancellation = trainCancellation(state);
+  if (state.status === 'cancelled' && cancellation) {
     return (
       <Stack gap="sm">
-        <Alert color="red" title="Cancelled">
-          This service was cancelled.
-        </Alert>
+        <CancellationNotice cancellation={cancellation} />
         {trainUidLine}
         {pinSummary}
       </Stack>

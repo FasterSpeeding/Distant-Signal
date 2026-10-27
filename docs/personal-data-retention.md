@@ -58,7 +58,7 @@ The inactive-account sweep (below) uses the same function.
 | `users` | OIDC subject id, name, username, IdP groups (no email: the legacy column is dropped by `20261026090000_drop_users_email.sql`), created and last-login times | Deleted | Kept while the account exists. Optional inactive-account deletion is **off by default** (`INACTIVE_ACCOUNT_RETENTION_DAYS`). | `account` |
 | `sessions` | Hashed session token, expiry | Cascade | Deleted when expired (`session_ttl_days`, 14), hourly | `sessions` (without id or token) |
 | `oidc_login_state` | PKCE verifier, nonce, CSRF state, return path. Not linked to a user. | n/a | Deleted after 15 minutes | n/a |
-| `push_subscriptions` | Push endpoint URL, encryption keys, timestamps | Cascade | Deleted when the push service reports it gone, beyond 20 per user, or when the user has not logged in **and** the subscription has not been renewed for `STALE_PUSH_SUBSCRIPTION_DAYS` (365) | `pushSubscriptions` (without keys) |
+| `push_subscriptions` | Push endpoint URL, encryption keys, timestamps (including the last push delivered), a device label worked out from the browser's User-Agent ("Chrome on Android"; the header itself is not kept) | Cascade | Deleted when the push service reports it gone, beyond 20 per user, or when the user has not logged in **and** the subscription has not been renewed for `STALE_PUSH_SUBSCRIPTION_DAYS` (365) | `pushSubscriptions` (without keys) |
 | `pinned_lines`, `pinned_stations`, `pinned_operators` | Pins | Cascade | Life of the account | `pinnedLines`, `pinnedStations`, `pinnedOperators` |
 | `custom_lines` | User-defined lines | Cascade, which also removes its group grants, so group members lose access | Life of the account | `customLines` |
 | `custom_line_group_grants` | Grants of the user's custom line to a group (`granted_by`) | Cascade | Life of the line or group | `customLineGroupGrants` |
@@ -69,7 +69,8 @@ The inactive-account sweep (below) uses the same function.
 | `journeys`, `journey_legs` | Journeys and their legs: stations, dates, time windows | Cascade | A journey with no leg dated in the last 548 days is deleted, with its share link | `journeys` (legs nested) |
 | `journey_revisions`, `journey_revision_legs` | Each journey's booked plan and every change since: trains, stations, booked times, ticket ids, what happened to each leg | Cascade (via the journey) | Deleted with the journey | `journeys[].revisions` (legs nested) |
 | `journey_breaks` | Times a journey stopped working (cancellation, missed connection, a train marked missed), the alternatives suggested and what was done | Cascade | Deleted with the journey | `journeyBreaks` |
-| `notification_preferences` | Whether to push suggestions when a journey breaks | Cascade | Life of the account | `notificationPreferences` |
+| `notification_preferences` | Which kinds of push to send, the delay threshold and the quiet hours (time zone included) | Cascade | Life of the account | `notificationPreferences` |
+| `notification_holds` | Line and train pushes held for the user's quiet hours: the push text, the line or tracked train, its status and when it was decided | Cascade | Deleted once sent, or dropped when no longer news; at most a day | `notificationState.held` |
 | `journey_leg_notification_state` | Last push sent per journey leg | Cascade | Deleted with its leg | `notificationState.journeyLegs` |
 | `journey_templates`, `journey_template_legs` | Recurring journey definitions | Cascade | Life of the account (never pruned by age) | `journeyTemplates` (legs nested) |
 | `journey_template_skipped_dates` | "Not this date" markers | Cascade (via the template) | Markers dated more than 548 days ago are deleted | `journeyTemplates[].skipped_dates` |

@@ -1874,6 +1874,7 @@ mod tests {
             cancel_reason: None,
             change_of_origin_reason_code: None,
             change_of_origin_reason: None,
+            cancellation: None,
         };
 
         let json = render_line_train(&entry, Some(&live), &ScheduleRouteEndpoints::default());

@@ -65,7 +65,7 @@ pub const fn max_rounds(max_changes: u32) -> u32 {
     reason = "nearly every leg is a train; boxing it saves nothing"
 )]
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(rename_all = "camelCase", tag = "kind", remote = "Self")]
 pub enum PlannedLeg {
     #[serde(rename_all = "camelCase")]
     Train {
@@ -163,6 +163,15 @@ pub enum PlannedLeg {
         /// outside the live window) or a [`crate::data::trip_plan_live::LegLive`].
         #[serde(skip_serializing_if = "Option::is_none")]
         live: Option<Option<Box<crate::data::trip_plan_live::LegLive>>>,
+        /// A ride on a transit network's timetable (a tram, or a
+        /// replacement bus from a tram timetable; 2026-10-24, DS-164): the
+        /// leg is then served as `kind: "transit"` instead
+        /// (`transit_planning::TransitLeg`, see this type's `Serialize`).
+        /// Everything that walks legs still sees a ride with its times, so
+        /// it counts as a change (Q5); its UID never matches a train's, so
+        /// the live overlay and the leg details never touch it.
+        #[serde(skip)]
+        transit: Option<Box<crate::data::transit_planning::TransitLeg>>,
     },
     #[serde(rename_all = "camelCase")]
     Transfer {
@@ -197,7 +206,37 @@ pub enum PlannedLeg {
         /// `tfl_access::AccessEnds::finish_legs`.
         #[serde(skip_serializing_if = "Option::is_none")]
         access: Option<Box<crate::data::tfl_access::AccessLeg>>,
+        /// Present only on a walk between a National Rail station and a
+        /// transit network's tram stop (additive, 2026-10-24, DS-164): the
+        /// stop, and the walk's own estimated minutes (`minutes` also
+        /// holds the tram-side change time). The tram end's `*Crs` is then
+        /// `null`. Filled in by `transit_planning` dressing.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        transit_walk: Option<Box<crate::data::transit_planning::TransitWalk>>,
     },
+}
+
+/// Every leg serializes as derived (`kind` `train` or `transfer`), except a
+/// train leg carrying `transit`, which is served as that `kind: "transit"`
+/// leg instead.
+impl serde::Serialize for PlannedLeg {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            PlannedLeg::Train {
+                transit: Some(transit),
+                ..
+            } => transit.serialize(serializer),
+            _ => PlannedLeg::serialize(self, serializer),
+        }
+    }
+}
+
+impl PlannedLeg {
+    /// A train, bus, ferry or transit ride (not a transfer): what a change
+    /// count counts.
+    pub fn is_ride(&self) -> bool {
+        matches!(self, PlannedLeg::Train { .. })
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -235,6 +274,12 @@ pub struct PlannedItinerary {
     /// the response's `journeys[j].viaSatisfiedBy` (see [`journey_summaries`]).
     #[serde(skip)]
     pub via_satisfied_by: Vec<ViaSatisfied>,
+    /// Only on a request planned with transit networks (`transit=true` or a
+    /// tram stop end; additive, 2026-10-24, DS-164): whether any leg is
+    /// `kind: "transit"`, so its times are scheduled, not live. Absent
+    /// otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_only: Option<bool>,
 }
 
 impl PlannedItinerary {
@@ -260,6 +305,7 @@ impl PlannedItinerary {
             live_feasible: None,
             continues_previous_train: false,
             via_satisfied_by: Vec::new(),
+            scheduled_only: None,
             arrival_tiploc: legs.last().map(|leg| match leg {
                 JourneyLeg::Train(train) => train.to_tiploc.clone(),
                 JourneyLeg::Transfer(transfer) => transfer.to_tiploc.clone(),
@@ -358,6 +404,8 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
                 departure_min: train.departure_min,
                 arrival_min: train.arrival_min,
                 live: None,
+                // Filled in for a transit ride (`transit_planning::dress_segments`).
+                transit: None,
             }
         }
         JourneyLeg::Transfer(transfer) => PlannedLeg::Transfer {
@@ -369,6 +417,7 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
             origin_stop: None,
             destination_stop: None,
             access: None,
+            transit_walk: None,
         },
     }
 }
@@ -4230,6 +4279,7 @@ mod tests {
             live_feasible: None,
             continues_previous_train: false,
             via_satisfied_by: Vec::new(),
+            scheduled_only: None,
         };
         let walk = PlannedLeg::Transfer {
             mode: "WALK".to_string(),
@@ -4240,6 +4290,7 @@ mod tests {
             origin_stop: None,
             destination_stop: None,
             access: None,
+            transit_walk: None,
         };
         let segment = |from: &str, to: &str, itineraries| SegmentResult {
             origin_crs: from.to_string(),

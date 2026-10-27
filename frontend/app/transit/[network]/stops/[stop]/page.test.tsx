@@ -8,7 +8,13 @@ import TransitStopPage from './page';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
-  return { ...actual, getTransitNetwork: vi.fn(), getTransitStop: vi.fn(), getTransitDepartures: vi.fn() };
+  return {
+    ...actual,
+    getTransitNetwork: vi.fn(),
+    getTransitNetworks: vi.fn(),
+    getTransitStop: vi.fn(),
+    getTransitDepartures: vi.fn(),
+  };
 });
 
 const notFoundMock = vi.fn(() => {
@@ -28,6 +34,7 @@ describe('/transit/[network]/stops/[stop]', () => {
   beforeEach(() => {
     cleanup();
     vi.mocked(api.getTransitNetwork).mockResolvedValue(NETWORK);
+    vi.mocked(api.getTransitNetworks).mockResolvedValue([NETWORK]);
     vi.mocked(api.getTransitStop).mockResolvedValue(STOP);
     vi.mocked(api.getTransitDepartures).mockResolvedValue(BOARD);
   });
@@ -117,5 +124,16 @@ describe('/transit/[network]/stops/[stop]', () => {
     await expect(render({}, 'piccadilly')).rejects.toThrow('NEXT_NOT_FOUND');
     vi.mocked(api.getTransitStop).mockRejectedValue(new ApiNotFoundError('404'));
     await expect(render()).rejects.toThrow('NEXT_NOT_FOUND');
+  });
+
+  it('offers to plan a journey from the stop only when the planner routes over its network', async () => {
+    await render();
+    expect(screen.queryByRole('link', { name: 'Plan a journey from here' })).toBeNull();
+    cleanup();
+    vi.mocked(api.getTransitNetworks).mockResolvedValue([{ ...NETWORK, tripPlanning: true }]);
+    await render();
+    expect(screen.getByRole('link', { name: 'Plan a journey from here' }).getAttribute('href')).toBe(
+      '/plan?origin=9400ZZMAPIC',
+    );
   });
 });

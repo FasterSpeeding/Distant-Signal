@@ -5,6 +5,7 @@ import { PlanTripFlow } from './PlanTripFlow';
 import { resetStationGroupsCache } from '@/lib/stationGroups';
 import type { TripPlanResponse } from '@/lib/types';
 import { byVisibleText } from '@/test/routeText';
+import { RAIL_TRAM_RAIL } from '@/test/transitPlanFixtures';
 
 // `LoginPromptModal` (rendered unconditionally, per its own doc comment)
 // pulls in `useLoginHref`, which calls `usePathname`/`useSearchParams` --
@@ -98,6 +99,11 @@ vi.mock('@/lib/suggestions', () => ({
   searchTocs: async () => [],
   getStationNames: async () => new Map(mockStationNames),
 }));
+
+// The From and To search also asks the transit networks for tram stations
+// (`GET /api/transit/networks`), which would take one of the `fetch`
+// mocks below for the same debounce reason.
+vi.mock('@/lib/plannerEnds', () => ({ searchPlannerEnds: async () => [] }));
 
 describe('PlanTripFlow', () => {
   afterEach(() => {
@@ -1353,5 +1359,81 @@ describe('PlanTripFlow arrive-by and paging (2026-10-19)', () => {
     renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Later routes' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Earlier routes' })).not.toBeInTheDocument();
+  });
+});
+
+describe('PlanTripFlow with tram legs', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    mockStationNames.clear();
+  });
+
+  const tramPlan: TripPlanResponse = {
+    results: 'fastest',
+    segments: [{ originCrs: 'SPT', destinationCrs: 'LDS', cappedByMaxChanges: false, itineraries: [RAIL_TRAM_RAIL] }],
+    transitNotices: [],
+  };
+
+  async function search() {
+    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'SPT' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'LDS' } });
+    fireEvent.click(screen.getByText('Find routes'));
+  }
+
+  it('asks for tram legs, and shows the tram and its caption', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(tramPlan) });
+    vi.stubGlobal('fetch', fetchMock);
+    await search();
+    await screen.findByText(byVisibleText('08:14 Tram (Blue Line) Piccadilly to Victoria 08:22'));
+    expect(screen.getByText('Scheduled times, not live')).toBeInTheDocument();
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(new URLSearchParams(url.slice(url.indexOf('?') + 1)).get('transit')).toBe('true');
+  });
+
+  it("shows a network's notice as information, in the api's words", async () => {
+    const plan: TripPlanResponse = {
+      ...tramPlan,
+      segments: [{ ...tramPlan.segments[0]!, itineraries: [] }],
+      transitNotices: [
+        { network: 'metrolink', reason: 'noTimetable', message: "Tram times aren't available for this date." },
+      ],
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(plan) }));
+    const { container } = renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'SPT' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'LDS' } });
+    fireEvent.click(screen.getByText('Find routes'));
+    await screen.findByText("Tram times aren't available for this date.");
+    expect(container.querySelector('[data-transit-notice]')).not.toBeNull();
+    expect(container.textContent).not.toMatch(/no trams/i);
+  });
+
+  it('saves the trains and the tram ride between them', async () => {
+    mockStationNames.set('MAN', 'Manchester Piccadilly');
+    mockStationNames.set('MCV', 'Manchester Victoria');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(tramPlan) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+    const onCreated = vi.fn();
+    renderWithMantine(<PlanTripFlow onCreated={onCreated} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'SPT' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'LDS' } });
+    fireEvent.click(screen.getByText('Find routes'));
+    await screen.findByText(byVisibleText('08:14 Tram (Blue Line) Piccadilly to Victoria 08:22'));
+    const radios = screen.getAllByRole('radio');
+    fireEvent.click(radios[radios.length - 1]!);
+    fireEvent.click(screen.getByText('Track this journey'));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    const body = JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body)) as {
+      legs: { kind?: string; transitMode?: string; originStopId?: string }[];
+    };
+    expect(body.legs.map((leg) => leg.transitMode ?? 'train')).toEqual(['train', 'walk', 'tram', 'walk', 'train']);
+    expect(body.legs[2]).toMatchObject({ kind: 'untracked', originStopId: '9400ZZMAPIC' });
   });
 });

@@ -615,6 +615,38 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------
+-- A rail, tram, rail route for /plan (transit trip planning, DS-164;
+-- plan.spec.ts, with ci.yml's API_TRIP_PLAN_TRANSIT_NETWORKS=metrolink),
+-- on the seed's service date, riding the Blue Line tram already seeded
+-- above (E2E-0702: Piccadilly 07:02 to Eccles 07:27):
+--   E2ETR1  ZTA 06:20 -> MAN 06:50, then a walk to Piccadilly's tram stop
+--   E2ETR2  ZTE 07:45 -> ZTB 08:15, after a walk from Eccles's tram stop
+-- Made-up codes (ZTA, ZTB, ZTE) in `stanox_crs` only, and MAN's TIPLOC
+-- (MAN has no `stations` row here, as above), so no page shows them. The
+-- Eccles tram stop's link to ZTE is not on any screenshot.
+-- ---------------------------------------------------------------------
+INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence)
+VALUES
+  ('E2ETRAM-ZTA', 'ZTA', 'E2ETRA', 'Fixture Tramway Junction', 1),
+  ('E2ETRAM-ZTB', 'ZTB', 'E2ETRB', 'Fixture Tramway Central', 1),
+  ('E2ETRAM-ZTE', 'ZTE', 'E2ETRE', 'Fixture Eccles Road', 1),
+  ('E2ETRAM-MAN', 'MAN', 'MNCRPIC', 'MANCHESTER PICCADILLY', 1)
+ON CONFLICT (stanox) DO NOTHING;
+
+INSERT INTO schedule_calling_points_full
+  (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset)
+VALUES
+  ('2026-09-17', 'E2ETR1', 0, 'E2ETRA', 'origin', NULL, '06:20:00', 0),
+  ('2026-09-17', 'E2ETR1', 1, 'MNCRPIC', 'terminate', '06:50:00', NULL, 0),
+  ('2026-09-17', 'E2ETR2', 0, 'E2ETRE', 'origin', NULL, '07:45:00', 0),
+  ('2026-09-17', 'E2ETR2', 1, 'E2ETRB', 'terminate', '08:15:00', NULL, 0)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO transit_rail_links (network, stop_id, crs, tiploc, kind, note, observed_at)
+VALUES ('metrolink', '9400ZZMAECC', 'ZTE', 'E2ETRE', 'interchange', NULL, NOW())
+ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
 -- A PLANNED three-leg journey for fixture-owner (journey-names.spec.ts and
 -- the logged-in /journeys screenshot in visual.spec.ts): no leg has a
 -- train yet, so there is no tracking data at all. Its row on /journeys
@@ -708,3 +740,58 @@ ON CONFLICT (stop_id) DO NOTHING;
 INSERT INTO tfl_stop_crs (stop_id, crs, source)
 VALUES ('940GZZLUKSX', 'KGX', 'hub')
 ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
+-- A part-cancelled train (DS-181): W81181 on 2026-12-03, far from every
+-- other fixture date, King's Cross to Edinburgh, left King's Cross and
+-- reached York, then cancelled en route at York (TRUST 0002 at
+-- fixture STANOX 99811, code IB: "Points failure (including no fault
+-- found)"). Its York and Edinburgh are fixture TIPLOCs and codes (ZYK,
+-- ZED) named through `tiploc_locations`, so no other page's stations or
+-- names change.
+-- The public train page reads "Terminates at York" with the reason, and
+-- strikes Edinburgh through (e2e/train-cancellation.spec.ts, the
+-- `train-part-cancelled` visual). Untracked, so no list page changes.
+-- ---------------------------------------------------------------------
+INSERT INTO trains (train_uid, service_date, origin_crs, scheduled_departure, destination_crs, calling_points, matched_line_id, schedule_matched_at, train_id, resolved_at, created_at)
+VALUES (
+    'W81181', '2026-12-03', 'KGX', '2026-12-03T09:00:00Z', 'ZED',
+    '[{"tiploc":"KNGX","kind":"Origin","bookedArrival":null,"bookedDeparture":"09:00:00","publicDeparture":"09:00:00","isHalfMinuteArrival":false,"isHalfMinuteDeparture":false,"dayOffset":0},{"tiploc":"ZDSYORK","kind":"Intermediate","bookedArrival":"10:55:00","bookedDeparture":"10:57:00","publicArrival":"10:55:00","publicDeparture":"10:57:00","isHalfMinuteArrival":false,"isHalfMinuteDeparture":false,"dayOffset":0},{"tiploc":"ZDSEDIN","kind":"Terminate","bookedArrival":"13:30:00","bookedDeparture":null,"publicArrival":"13:30:00","isHalfMinuteArrival":false,"isHalfMinuteDeparture":false,"dayOffset":0}]'::jsonb,
+    'lner-ecml', NOW(), 'TRUST-FIXTURE-81', NOW(), NOW()
+)
+ON CONFLICT (train_uid, service_date) DO UPDATE SET
+  train_id = EXCLUDED.train_id, calling_points = EXCLUDED.calling_points,
+  matched_line_id = EXCLUDED.matched_line_id, schedule_matched_at = EXCLUDED.schedule_matched_at,
+  resolved_at = EXCLUDED.resolved_at;
+
+INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence)
+VALUES ('99811', 'ZYK', 'ZDSYORK', 'York', 1), ('99812', 'ZED', 'ZDSEDIN', 'Edinburgh', 1)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO tiploc_locations (tiploc, location_type, name, display_name, source_sequence)
+VALUES ('ZDSYORK', 'station', 'York', 'York', 1), ('ZDSEDIN', 'station', 'Edinburgh', 'Edinburgh', 1)
+ON CONFLICT DO NOTHING;
+
+WITH t AS (SELECT id FROM trains WHERE train_uid = 'W81181' AND service_date = '2026-12-03')
+INSERT INTO train_current_state (status, last_reported_location, last_event_type, delay_minutes, updated_at, trains_id, event_time)
+SELECT 'cancelled', 'ZYK', 'ARRIVAL', 3, NOW(), t.id, '2026-12-03T10:58:00Z'
+FROM t
+ON CONFLICT (trains_id) WHERE trains_id IS NOT NULL DO UPDATE SET
+  status = EXCLUDED.status, last_reported_location = EXCLUDED.last_reported_location,
+  last_event_type = EXCLUDED.last_event_type, delay_minutes = EXCLUDED.delay_minutes,
+  updated_at = EXCLUDED.updated_at;
+
+WITH t AS (SELECT id FROM trains WHERE train_uid = 'W81181' AND service_date = '2026-12-03')
+INSERT INTO train_movement_events (dedup_key, msg_type, event_type, loc_stanox, loc_crs, planned_timestamp, actual_timestamp, gbtt_timestamp, variation_status, raw_body, received_at, trains_id)
+SELECT * FROM (VALUES
+  ('FIXTURE-DS181-1', '0003', 'DEPARTURE', '99001', 'KGX', '2026-12-03T09:00:00Z'::timestamptz, '2026-12-03T09:01:00Z'::timestamptz, '2026-12-03T09:00:00Z'::timestamptz, 'LATE', '{}'::jsonb, NOW(), (SELECT id FROM t)),
+  ('FIXTURE-DS181-2', '0003', 'ARRIVAL', '99811', 'ZYK', '2026-12-03T10:55:00Z'::timestamptz, '2026-12-03T10:58:00Z'::timestamptz, '2026-12-03T10:55:00Z'::timestamptz, 'LATE', '{}'::jsonb, NOW(), (SELECT id FROM t))
+) AS v
+ON CONFLICT DO NOTHING;
+
+WITH t AS (SELECT id FROM trains WHERE train_uid = 'W81181' AND service_date = '2026-12-03')
+INSERT INTO train_reasons (trains_id, msg_type, reason_code, canx_type, loc_stanox, event_at)
+SELECT t.id, '0002', 'IB', 'EN ROUTE', '99811', '2026-12-03T11:05:00Z' FROM t
+ON CONFLICT (trains_id, msg_type) DO UPDATE SET
+  reason_code = EXCLUDED.reason_code, canx_type = EXCLUDED.canx_type,
+  loc_stanox = EXCLUDED.loc_stanox, event_at = EXCLUDED.event_at;
