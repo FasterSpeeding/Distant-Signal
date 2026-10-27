@@ -125,7 +125,7 @@
   //                   counts), which covers every upstream image this repo
   //                   does not build itself: postgres:18 and 16-alpine (the
   //                   bundled postgresql and devAuthentik's dedicated
-  //                   one), redis:7, ghcr.io/goauthentik/server:2026.8.0.
+  //                   one), valkey/valkey, ghcr.io/goauthentik/server:2026.8.0.
   //                   charts/distant-signal/values-example.yaml is NOT
   //                   matched (it isn't named values.yaml) -- correctly
   //                   so, its image refs are illustrative placeholders
@@ -225,6 +225,17 @@
       // real image: there is nothing to look up.
       "matchManagers": ["docker-compose"],
       "matchDepNames": ["ghcr.io/CHANGE-ME/distant-signal-mcp"],
+      "enabled": false,
+    },
+    {
+      // Valkey (the chart's `redis.image`, CI's redis services and
+      // docker-compose.yml) stays on major 8. Valkey 9 writes RDB 80, which
+      // redis:7.4.11 cannot load, so a major bump would remove the rollback
+      // in docs/valkey-migration.md. Minor and patch bumps go through as
+      // usual. Move to 9 deliberately, once that rollback is retired.
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["valkey/valkey"],
+      "matchUpdateTypes": ["major"],
       "enabled": false,
     },
     {

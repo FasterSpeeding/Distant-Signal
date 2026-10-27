@@ -118,7 +118,9 @@ services:
       start_period: 5s
 
   redis:
-    image: redis:7.4.11@sha256:44960b3100c48159a66d28c18b0588c193492e25f7551d60e51dd464fc3eca5b
+    # Valkey 8.1, the chart's `redis.image` (DS-174); the service keeps
+    # its `redis` name, so REDIS_URL=redis://redis:6379 is unchanged.
+    image: valkey/valkey:8.1.10-trixie@sha256:640c5e62cea04b6d6f2084232651d0cc70362d31f4f805e7be94dbed6855e8f2
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
