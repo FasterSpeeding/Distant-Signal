@@ -2,7 +2,7 @@
 
 import { useId, useMemo, useState, type SubmitEvent } from 'react';
 import { Button, Checkbox, Group, Loader, MultiSelect, Stack, Text, VisuallyHidden } from '@mantine/core';
-import { DatePickerInput } from '@mantine/dates';
+import { DatePickerInput } from '@/components/LazyDateFields';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { TextLink } from './TextLink';

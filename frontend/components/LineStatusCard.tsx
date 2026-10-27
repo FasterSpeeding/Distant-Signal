@@ -1,5 +1,3 @@
-'use client';
-
 import { Text } from '@mantine/core';
 import { StatusBadge } from './StatusBadge';
 import { AiGeneratedBadge, ENRICHED_INCIDENT_SHORT_NOTE, isEnricherInfluenced } from './AiGeneratedBadge';

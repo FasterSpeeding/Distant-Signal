@@ -96,7 +96,9 @@ pub fn router() -> Router {
         )
         .route(
             "/Train/{tracking_id}",
-            axum::routing::get(get_by_tracking_id).delete(delete_tracked_train),
+            axum::routing::get(get_by_tracking_id)
+                .delete(delete_tracked_train)
+                .patch(patch_tracked_train),
         )
         .route(
             "/Train/{tracking_id}/name",
@@ -918,6 +920,39 @@ async fn post_tracked_train_name(
     Ok(Json(RenameResponse {
         custom_name: normalized,
     }))
+}
+
+/// `PATCH /Train/{trackingId}` `{notificationsEnabled}`: turns this
+/// tracked train's pushes (delay, cancellation, skipped stop, predicted
+/// late start) on or off. Owner only, 404 otherwise, the same as
+/// `GET /Train/{trackingId}`. Unknown fields are refused.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TrackedTrainPatch {
+    notifications_enabled: bool,
+}
+
+async fn patch_tracked_train(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(tracking_id): Path<i64>,
+    Json(body): Json<TrackedTrainPatch>,
+) -> Result<Json<TrackedTrainPatch>, (StatusCode, String)> {
+    let updated = train_tracking::set_notifications_enabled(
+        &app.database,
+        tracking_id,
+        &user.id,
+        body.notifications_enabled,
+    )
+    .await
+    .map_err(internal_error("set tracked train notifications"))?;
+    if !updated {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no tracked train with that id".to_string(),
+        ));
+    }
+    Ok(Json(body))
 }
 
 /// `GET /Train/by-uid/{uid}/{date}` -- PUBLIC and UNSCOPED. This is a real,
@@ -2433,6 +2468,7 @@ mod tests {
             shared_group_count: 0,
             journey_ids: None,
             single_leg_journey_ids: None,
+            notifications_enabled: None,
             trains_id: Some(1),
             journey_stops: None,
             may_have_arrived: false,

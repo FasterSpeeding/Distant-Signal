@@ -961,6 +961,13 @@ pub struct TrackedTrainState {
     #[sqlx(skip)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub single_leg_journey_ids: Option<Vec<i64>>,
+    /// Whether this subscription's delay, cancellation and skipped-stop
+    /// pushes are on (`train_subscriptions.notifications_enabled`, set by
+    /// `PATCH /Train/{trackingId}`). Owner's view only, like `journey_ids`;
+    /// absent from the JSON otherwise. Additive (2026-10-23).
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications_enabled: Option<bool>,
     /// The shared `trains` row's own surrogate key, needed to read
     /// `train_movement_events` for this train's live overlay -- internal
     /// plumbing for `routes::train`'s journey-stops attachment, never sent
@@ -1523,8 +1530,9 @@ pub async fn rename_tracked_train(
     Ok(true)
 }
 
-/// Fills [`TrackedTrainState::journey_ids`] and
-/// [`TrackedTrainState::single_leg_journey_ids`] for the owner's own view
+/// Fills [`TrackedTrainState::journey_ids`],
+/// [`TrackedTrainState::single_leg_journey_ids`] and
+/// [`TrackedTrainState::notifications_enabled`] for the owner's own view
 /// of the train (`GET /Train/{trackingId}`), by the rules of
 /// `GET /Train/mine`'s `journeyIds` and `singleLegJourneyIds`.
 pub async fn attach_journey_ids(
@@ -1532,7 +1540,7 @@ pub async fn attach_journey_ids(
     state: &mut TrackedTrainState,
     user_id: &str,
 ) -> anyhow::Result<()> {
-    let (journey_ids, single_leg_journey_ids): (Vec<i64>, Vec<i64>) = sqlx::query_as(concat!(
+    let row: Option<(Vec<i64>, Vec<i64>, bool)> = sqlx::query_as(concat!(
         "SELECT (SELECT COALESCE(array_agg(DISTINCT jl.journey_id ORDER BY jl.journey_id), \
                                  '{}'::bigint[]) \
                  FROM journey_legs jl \
@@ -1542,16 +1550,42 @@ pub async fn attach_journey_ids(
                         SELECT ts2.id FROM train_subscriptions ts2 \
                         WHERE ts2.user_id = tt.user_id AND ts2.trains_id = tt.trains_id)), ",
         single_leg_journey_ids_sql!(),
-        " FROM train_subscriptions tt WHERE tt.id = $1 AND tt.user_id = $2"
+        ", tt.notifications_enabled \
+         FROM train_subscriptions tt WHERE tt.id = $1 AND tt.user_id = $2"
     ))
     .bind(state.id)
     .bind(user_id)
     .fetch_optional(pool)
-    .await?
-    .unwrap_or_default();
+    .await?;
+    let (journey_ids, single_leg_journey_ids, notifications_enabled) = match row {
+        Some((journeys, single_leg, enabled)) => (journeys, single_leg, Some(enabled)),
+        None => (Vec::new(), Vec::new(), None),
+    };
     state.journey_ids = Some(journey_ids);
     state.single_leg_journey_ids = Some(single_leg_journey_ids);
+    state.notifications_enabled = notifications_enabled;
     Ok(())
+}
+
+/// Turns a tracked train's pushes on or off (`PATCH /Train/{trackingId}`):
+/// its delay, cancellation and skipped-stop pushes, and its predicted late
+/// start. Owner only: `false` when `id` is not one of `user_id`'s
+/// subscriptions.
+pub async fn set_notifications_enabled(
+    pool: &PgPool,
+    id: i64,
+    user_id: &str,
+    enabled: bool,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE train_subscriptions SET notifications_enabled = $3 WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(enabled)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 #[cfg(test)]

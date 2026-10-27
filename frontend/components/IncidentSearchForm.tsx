@@ -2,7 +2,7 @@
 
 import { useId, useMemo, useState, type ReactNode } from 'react';
 import { Chip, ChipGroup, Group, InputWrapper, MultiSelect, NumberInput, Select, Stack, Text } from '@mantine/core';
-import { DatePickerInput } from '@mantine/dates';
+import { DatePickerInput } from '@/components/LazyDateFields';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { londonCalendarDay, londonDayEndIso, londonDayStartIso } from '@/lib/londonWallClock';
 import { IncidentResults } from './IncidentResults';

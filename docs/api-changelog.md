@@ -3,6 +3,65 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-26: notification settings
+
+Additive. Nothing existing changes for a client that does not use the new
+routes. DS-MCP needs no change.
+
+- **New: `DELETE /public/notifications/subscribe`** `{endpoint}` (session
+  only): forgets the caller's push subscription for that endpoint, "Turn
+  off on this device". `204`; `404` when the caller has none for it
+  (including another user's endpoint). Unknown fields are refused (`422`).
+- **New: `PATCH /Train/{trackingId}`** `{notificationsEnabled}` (session
+  only, owner only): turns that tracked train's pushes (delay,
+  cancellation, skipped stop, predicted late start) on or off. `200` with
+  the body echoed; `404` for a train that is not the caller's. Unknown
+  fields are refused (`422`).
+- `GET /Train/{trackingId}` and the owner's `GET /Journeys/{id}` (each
+  leg's `trackedTrainState`) gain `notificationsEnabled`. Absent on every
+  other reader's view.
+- `GET /public/preferences/notifications` gains a switch per kind of
+  push, each `true` unless turned off: `lineStatus`, `trainDelay`,
+  `trainCancel`, `predictedStart`, `stationSkip` and `templateAttention`
+  (beside `journeySuggestions`); `delayThresholdMinutes` (`5`, `10`, `15`
+  or `30`, `null` for the default, 15); and `quietHours` (`{start, end,
+  timezone}`: `HH:MM` local times, `end` may be before `start`, and an
+  IANA zone; `null` for none). In quiet hours line and train pushes are
+  held and the latest state is sent when they end; cancellations still go
+  through, and the "app connected" notice is never held.
+- `PUT /public/preferences/notifications` takes any of those fields and
+  changes only the ones present (`journeySuggestions` is no longer
+  required; `null` clears the threshold or the quiet hours), and answers
+  with every setting instead of echoing the body. `400` for a threshold
+  outside the four, quiet hours that start and end at the same time or
+  an unknown zone; unknown fields are still refused (`422`).
+- `GET`/`PUT /public/preferences/notifications` also take
+  `snoozedUntil` (RFC 3339, at most a week ahead, else `400`; `null` to
+  resume): pushes are held as in quiet hours until then. It reads as
+  `null` once past.
+- New delegated scope `preferences:read`: a connected app holding it may
+  read `GET /public/preferences/notifications` on the delegated listener
+  (read only). Additive; DS-MCP needs it in its client's `maxScopes`, in
+  its token request and in a tool before it can use it
+  (docs/connected-apps.md).
+- **New: `PUT /public/preferences/pinned-lines/{lineId}/alerts`**
+  `{notify}`: whether a pinned line's status changes are pushed. Pinning
+  and alerting are separate; every existing pin alerts, and so does a new
+  one until this says otherwise. `204`; `404` when the caller has not
+  pinned that line. `PUT /public/preferences/pinned-lines` keeps the
+  switch of every line it keeps pinned.
+- `GET /public/preferences` gains `silentPinnedLines`: the pinned lines
+  whose alerts are off.
+- **New: `GET /public/notifications/devices`**: the caller's devices with
+  push on, most recently used first: `[{id, label, createdAt, lastUsedAt,
+  endpointSha256}]`. `label` names the browser ("Chrome on Android"), from
+  the User-Agent sent when it subscribed, or is `null`; `lastUsedAt` is
+  the later of the last push delivered and the last subscribe;
+  `endpointSha256` (hex) lets a browser find itself by hashing its own
+  endpoint. The endpoint and keys are never sent.
+- **New: `DELETE /public/notifications/devices/{id}`**: stops pushes to
+  one of the caller's devices. `204`; `404` when it is not theirs.
+
 ## 2026-10-26: `cancellation`, full or partial, with its reason
 
 Additive. DS-MCP can keep reading `cancelled` and `cancelReason*`, which
@@ -83,6 +142,24 @@ change: a delegated caller's `GET /Journeys/mine` is unchanged.
   group and journey, a journey's rows together, newest share first) now come
   in it, and their caps count journeys in that order.
 
+## 2026-10-26: `results=fastest` takes the fewest changes on a tie
+
+Changed plans, no new fields. DS-MCP needs no change.
+
+- `departAfter`: of the itineraries arriving earliest, `/Trips/plan` now
+  returns the one with the fewest changes, then the one leaving latest,
+  then the one walking least. It used to return whichever it found first,
+  often with more changes than needed (6 where 4 arrive as early). The
+  arrival time is never later than before; `changes` can be lower, the
+  legs and departure can differ, and `exceedsRecommendedChanges` is set
+  less often.
+- `arriveBy`: of the itineraries leaving latest, the one with the fewest
+  changes, then the earliest-arriving. It used to be the earliest-arriving
+  one, so an answer can now arrive later (never after `arriveBy`) when
+  that saves a change. The departure is unchanged.
+- `results=options`, and `results=fastest` with `waypoints` or `via`, are
+  unchanged.
+
 ## 2026-10-24: a TfL stop with its own station gets rides too
 
 Changed candidates and plans, no new fields. DS-MCP needs no change. See
@@ -100,6 +177,66 @@ docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md §2.
   ride's own minutes (no walk out at the station end). So `EUS` to
   `940GZZLUODS` is one Northern line transfer leg (`access.end:
   "destination"`), not a train via Moorgate and a walk.
+
+## 2026-10-24: `/Trips/plan` plans with trams (`transit=true`)
+
+Additive and opt-in. Without `transit=true` (and without a tram stop as
+an end) every response is byte-identical to before, also once the switch
+is on; while `api.tripPlanTransitNetworks` is empty (the default) the
+parameter is ignored. **For DS-MCP:** nothing changes until it sends
+`transit=true`; before it does, it must handle the new leg `kind`. See
+docs/superpowers/specs/2026-10-24-transit-trip-planning-design.md.
+
+- New query parameter `transit=true|false` (default `false`; anything else
+  is a `400` while the switch is on). With it, the plan may ride the trams
+  of the networks the switch lists (Manchester Metrolink first) anywhere
+  in a journey: rail into Piccadilly, the tram to Victoria, rail on.
+- `origin` and `destination` may be a tram stop of such a network: its
+  station code (`9400ZZMAPIC`), the stop-area spelling (`940GZZMAPIC`) or a
+  platform (`9400ZZMAPIC1`, folded to its station), any case. Naming one
+  opts in as `transit=true` does, and the segment echoes the station code.
+  A `9400…` code no listed network knows is a `400` ("'9400ZZXXXX' is not
+  a stop the planner knows") when the request opted in; the same station
+  at both ends is a `400`; a tram stop end on a date the network has no
+  timetable for is a `400`. Waypoints, vias and the avoid lists still take
+  stations only (a tram stop there is a `400`).
+- A new leg, `kind: "transit"`, for a tram or a replacement bus run from
+  the tram timetable:
+  `{kind, network, serviceMode: "tram" | "replacementBus", liveTracking:
+  false, realtime: false, serviceDate, scheduledDeparture,
+  scheduledArrival, departureDayOffset, arrivalDayOffset, line: {id, name,
+  colour} | null, headsign, originCrs: null, destinationCrs: null,
+  originStop: {id, name, platform}, destinationStop, headwayMinutes?,
+  notices: [{kind: "disruption", lineId, severity, description, message,
+  reason}]}`.
+  - **Scheduled, never live:** `realtime` and `liveTracking` are always
+    `false`; it never has `live`, `expected`, `delay`, `cancelled`,
+    `status`, `public*`, `working*`, `trainUid`, `operator` or `headcode`.
+    The live overlay never changes it. Show "Scheduled times, not live".
+  - `headwayMinutes`: the median gap between trams of the same line and
+    direction from the boarding platform in the hour around the leg
+    ("about every 6 min"); absent with fewer than three.
+  - It counts as a change like a train (rail, tram, rail is 2 changes).
+  - Saving it: as an untracked leg (`transitMode: "tram"`, or `"bus"` for
+    a replacement bus), with its own scheduled times and its stop ids.
+- The walk between a rail station and a tram stop is a `kind: "transfer"`,
+  `mode: "WALK"` leg whose tram end's `originCrs`/`destinationCrs` is
+  `null`, with new `transitWalk: {network, stop: {id, name}, towardsStop,
+  walkMinutes, estimated: true}`. `walkMinutes` is the estimated walk;
+  `minutes` also holds the tram-side change time (2 minutes by default).
+- Only on a request planned with transit: each itinerary's new
+  `scheduledOnly` (`true` when a leg is `kind: "transit"`), and the
+  top-level `transitNotices: [{network, reason: "noTimetable", message}]`
+  for each network whose timetable does not cover the date (past its
+  60-day horizon, or a gap): the plan was made without it. It never means
+  "no trams".
+- `GET /public/transit/networks`: while the planner switch lists any
+  network, each network gains `tripPlanning` (`true` when `/Trips/plan`
+  can plan with it); absent otherwise.
+- An untracked journey leg's `originStopId`/`destinationStopId` may be a
+  tram station of a planner network (`9400ZZMAPIC`) as well as a TfL stop
+  id.
+
 
 ## 2026-10-24: a second transit network, `net` (dark)
 
