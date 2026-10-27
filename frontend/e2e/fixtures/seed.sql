@@ -615,6 +615,38 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------
+-- A rail, tram, rail route for /plan (transit trip planning, DS-164;
+-- plan.spec.ts, with ci.yml's API_TRIP_PLAN_TRANSIT_NETWORKS=metrolink),
+-- on the seed's service date, riding the Blue Line tram already seeded
+-- above (E2E-0702: Piccadilly 07:02 to Eccles 07:27):
+--   E2ETR1  ZTA 06:20 -> MAN 06:50, then a walk to Piccadilly's tram stop
+--   E2ETR2  ZTE 07:45 -> ZTB 08:15, after a walk from Eccles's tram stop
+-- Made-up codes (ZTA, ZTB, ZTE) in `stanox_crs` only, and MAN's TIPLOC
+-- (MAN has no `stations` row here, as above), so no page shows them. The
+-- Eccles tram stop's link to ZTE is not on any screenshot.
+-- ---------------------------------------------------------------------
+INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence)
+VALUES
+  ('E2ETRAM-ZTA', 'ZTA', 'E2ETRA', 'Fixture Tramway Junction', 1),
+  ('E2ETRAM-ZTB', 'ZTB', 'E2ETRB', 'Fixture Tramway Central', 1),
+  ('E2ETRAM-ZTE', 'ZTE', 'E2ETRE', 'Fixture Eccles Road', 1),
+  ('E2ETRAM-MAN', 'MAN', 'MNCRPIC', 'MANCHESTER PICCADILLY', 1)
+ON CONFLICT (stanox) DO NOTHING;
+
+INSERT INTO schedule_calling_points_full
+  (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset)
+VALUES
+  ('2026-09-17', 'E2ETR1', 0, 'E2ETRA', 'origin', NULL, '06:20:00', 0),
+  ('2026-09-17', 'E2ETR1', 1, 'MNCRPIC', 'terminate', '06:50:00', NULL, 0),
+  ('2026-09-17', 'E2ETR2', 0, 'E2ETRE', 'origin', NULL, '07:45:00', 0),
+  ('2026-09-17', 'E2ETR2', 1, 'E2ETRB', 'terminate', '08:15:00', NULL, 0)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO transit_rail_links (network, stop_id, crs, tiploc, kind, note, observed_at)
+VALUES ('metrolink', '9400ZZMAECC', 'ZTE', 'E2ETRE', 'interchange', NULL, NOW())
+ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
 -- A PLANNED three-leg journey for fixture-owner (journey-names.spec.ts and
 -- the logged-in /journeys screenshot in visual.spec.ts): no leg has a
 -- train yet, so there is no tracking data at all. Its row on /journeys

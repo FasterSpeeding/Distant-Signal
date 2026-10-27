@@ -10,6 +10,7 @@ import { groupLabels, useStationGroups, withGroupSuggestions } from '@/lib/stati
 import { isGroupCode, isTflStopCode } from '@/lib/stationLabel';
 import { typedPlannerCode } from '@/lib/codeLabels';
 import { searchPlannerEnds } from '@/lib/plannerEnds';
+import { isTransitStopCode } from '@/lib/transitStops';
 import type { Suggestion, TrainSearchDates } from '@/lib/types';
 import { searchDateBounds } from '@/lib/searchDates';
 import type { TripPlanAdvancedOptions, TripPlanQuery } from '@/lib/tripPlan';
@@ -223,6 +224,8 @@ export function PlanTripForm({
   /** Under From or To when it holds a TfL stop's id: that the route runs
    * from or to a station nearby (the field names the stop). */
   function stopDescription(code: string, end: 'from' | 'to'): string | undefined {
+    // A tram station (`9400ZZMAPIC`): the plan rides the tram from it.
+    if (isTransitStopCode(code)) return undefined;
     if (!isTflStopCode(code)) return undefined;
     return end === 'from'
       ? 'The route starts with the Tube or a walk to a National Rail station nearby.'

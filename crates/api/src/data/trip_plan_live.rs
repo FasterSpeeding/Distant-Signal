@@ -1093,7 +1093,12 @@ pub fn uids_in_window(
                 train_uid,
                 departure_min,
                 ..
-            } if within_horizon(date, *departure_min, now, config) => Some(train_uid.clone()),
+            } if within_horizon(date, *departure_min, now, config)
+                // A transit trip (DS-164) has no live data to read.
+                && !crate::data::transit_planning::is_transit_uid(train_uid) =>
+            {
+                Some(train_uid.clone())
+            }
             _ => None,
         })
         .collect();

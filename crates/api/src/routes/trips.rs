@@ -18,7 +18,9 @@ use serde::Deserialize;
 
 use crate::app::App;
 use crate::data::station_groups::{self, StationChoice};
-use crate::data::{tfl_access, trip_plan_live, trip_planning, trip_planning_itinerary};
+use crate::data::{
+    tfl_access, transit_planning, trip_plan_live, trip_planning, trip_planning_itinerary,
+};
 
 /// Hard cap on `?waypoints=`, enforced before any database read (2026-09-25
 /// review, High 4b): before it, `?waypoints=YRK,YRK,YRK,...` repeated a few
@@ -270,6 +272,12 @@ struct TripPlanParams {
     /// response. Validated by [`parse_live`].
     #[serde(default)]
     live: Option<String>,
+    /// `?transit=true|false` (default `false`; DS-164): plan with the
+    /// transit networks in `API_TRIP_PLAN_TRANSIT_NETWORKS` (trams as
+    /// `kind: "transit"` legs). Ignored while that list is empty. A tram
+    /// stop as `origin` or `destination` opts in too. See [`parse_transit`].
+    #[serde(default)]
+    transit: Option<String>,
 }
 
 /// The live overlay's configuration, read once from the environment.
@@ -580,8 +588,24 @@ async fn get_trip_plan(
     let time = parse_time_bound(params.depart_after, params.arrive_by, day_offset)?;
     let across_midnight = parse_across_midnight(params.across_midnight.as_deref(), day_offset)?;
     // A CRS, or a bus stop's or ferry terminal's `tiploc:` code.
-    let origin = common::location_naming::normalize_location_code(&params.origin);
-    let destination = common::location_naming::normalize_location_code(&params.destination);
+    let mut origin = common::location_naming::normalize_location_code(&params.origin);
+    let mut destination = common::location_naming::normalize_location_code(&params.destination);
+    // Transit networks (DS-164): only while the switch lists any. A tram
+    // stop end (either NaPTAN spelling, or a platform) becomes its station
+    // node and opts in, as `transit=true` does; checked before any graph is
+    // built.
+    let transit_networks = transit_planning::enabled_networks();
+    let transit_requested = parse_transit(params.transit.as_deref(), !transit_networks.is_empty())?;
+    let transit_ends = resolve_transit_ends(
+        &app,
+        &transit_networks,
+        transit_requested,
+        &mut origin,
+        &mut destination,
+    )
+    .await?;
+    let transit = !transit_networks.is_empty()
+        && (transit_requested || transit_ends.iter().any(Option::is_some));
     let avoid_choices = AvoidChoices {
         avoid: parse_station_list("avoid", params.avoid.as_deref())?,
         avoid_stop: parse_station_list("avoidStop", params.avoid_stop.as_deref())?,
@@ -599,6 +623,14 @@ async fn get_trip_plan(
     let waypoint_codes = apply_waypoint_choices(&waypoints, &avoid)?;
     let via_choices = parse_vias(params.via.as_deref())?;
     check_via_conflicts(&via_choices, &avoid, &origin, &destination)?;
+    if transit {
+        check_no_transit_stops(
+            waypoints
+                .iter()
+                .chain(&via_choices)
+                .chain(avoid_choices.all()),
+        )?;
+    }
     // A group via is ONE via to the search (one progress step), measured to
     // cost about what a single-station via does (`bench_group_vias_against_single`).
     let max_changes = requested_max_changes.unwrap_or_else(|| {
@@ -627,8 +659,22 @@ async fn get_trip_plan(
     let vias: Vec<String> = via_choices.iter().map(|via| via.label.clone()).collect();
     let via_codes: Vec<Vec<String>> = via_choices.into_iter().map(|via| via.codes).collect();
     // A `TfL` stop end (DS-135): its access candidates, read before the
-    // permit like the other checks (a few hundred `tfl_stops` rows).
-    let access = load_access_ends(&app, &origin, &destination).await?;
+    // permit like the other checks (a few hundred `tfl_stops` rows). A tram
+    // stop end of a planner network is a graph node instead (spec §12.2).
+    let access = load_access_ends(
+        &app,
+        if transit_ends[0].is_some() {
+            ""
+        } else {
+            &origin
+        },
+        if transit_ends[1].is_some() {
+            ""
+        } else {
+            &destination
+        },
+    )
+    .await?;
 
     // Acquired BEFORE the reads below, not just around the search: the
     // whole-day row read and the graph built from it are the memory half of
@@ -645,9 +691,7 @@ async fn get_trip_plan(
     };
 
     let permit = Arc::new(permit);
-    let marker = trip_planning::latest_schedule_publish(&app.database)
-        .await
-        .map_err(internal_error("read the latest schedule publish"))?;
+    let marker = graph_marker(&app, &transit_networks).await?;
     let date = params.date;
     let Some(graph) = load_graph(&app, date, marker).await? else {
         return Err((
@@ -658,10 +702,13 @@ async fn get_trip_plan(
             ),
         ));
     };
+    if transit {
+        check_transit_ends_planned(&graph, &transit_ends)?;
+    }
     let access = match access {
         Some(mut access) => {
             access
-                .retain_known(&graph.interchange)
+                .retain_known(planning_interchange(&graph, transit))
                 .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
             Some(Arc::new(access))
         }
@@ -680,6 +727,7 @@ async fn get_trip_plan(
         live_requested,
         allowed_uids: None,
         access: access.clone(),
+        transit,
     };
     // `acrossMidnight` (2026-10-20): the next service date's trains too,
     // from the same clock time, merged in (`data::trip_plan_overnight`).
@@ -711,6 +759,12 @@ async fn get_trip_plan(
     )?;
     drop(permit);
     let request = first.request.clone();
+    let transit_skipped: Vec<(String, transit_planning::SkipReason)> = first
+        .transit_skipped
+        .iter()
+        .chain(second.iter().flat_map(|second| &second.transit_skipped))
+        .cloned()
+        .collect();
     let (segments, live_outcome, service_dates) = match (second, next_date) {
         (Some(second), Some(next)) => (
             crate::data::trip_plan_overnight::merge_across_midnight(
@@ -859,6 +913,12 @@ async fn get_trip_plan(
     if let Some(access) = &access {
         body["access"] = access.to_json();
     }
+    // Additive (2026-10-24, DS-164), only when planned with transit
+    // networks: each network whose timetable does not cover the date
+    // (`noTimetable`), so the plan was made without it. Never "no trams".
+    if transit {
+        body["transitNotices"] = transit_planning::notices_json(&transit_skipped);
+    }
     // Additive (2026-10-08): whether `date`'s timetable is still
     // provisional. Once per response, not per journey or leg. With
     // `acrossMidnight`, the later of the two dates: it is the one that can
@@ -917,6 +977,10 @@ struct DateInputs {
     /// The `TfL` stop ends and their access candidates (DS-135); `None`
     /// when both ends are stations.
     access: Option<Arc<tfl_access::AccessEnds>>,
+    /// Plan with the transit networks (DS-164): `transit=true` or a tram
+    /// stop end, with the switch on. Searches the graph's transit
+    /// interchange data, and dresses the transit legs.
+    transit: bool,
 }
 
 /// One service date's finished plan: searched, live-checked (when asked)
@@ -927,6 +991,9 @@ struct DatePlan {
     /// `None` when live data was not asked for; `Err(reason)` when it was
     /// but did not apply.
     live: Option<Result<LiveSummary, &'static str>>,
+    /// The transit networks left out of this date's graph (empty unless
+    /// planned with transit).
+    transit_skipped: Vec<(String, transit_planning::SkipReason)>,
 }
 
 /// TRIPS-1: `date`'s graph from the per-date cache, keyed on the latest
@@ -938,9 +1005,11 @@ async fn load_graph(
     marker: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Option<Arc<trip_planning::PlanningGraph>>, (StatusCode, String)> {
     let pool = app.database.clone();
+    // Read here, not in the build: the build may run on another task.
+    let transit_networks = transit_planning::enabled_networks();
     let cached = GRAPH_CACHE
         .get_or_build(date, marker, move || async move {
-            let Some(calling_points) =
+            let Some(mut calling_points) =
                 trip_planning::fetch_calling_points_for_date(&pool, date).await?
             else {
                 return Ok(None);
@@ -961,16 +1030,44 @@ async fn load_graph(
                 &road_or_water,
                 trip_planning::road_water_change_minutes(),
             );
+            // The transit networks' trips join the trains before the one
+            // sort (DS-164); with the switch empty, nothing is read.
+            let transit_days = if transit_networks.is_empty() {
+                None
+            } else {
+                let (days, skipped) =
+                    transit_planning::read_days(&pool, &transit_networks, date).await;
+                calling_points.extend(transit_planning::calling_points(&days));
+                Some((days, skipped))
+            };
             // The sort over every calling point of the day, on the blocking
-            // pool (bound 4 in `get_trip_plan`'s doc comment).
-            let (connections, passes) = tokio::task::spawn_blocking(move || {
-                trip_planning::build_connections_with_passes(calling_points)
-            })
-            .await?;
+            // pool (bound 4 in `get_trip_plan`'s doc comment), and the
+            // transit interchange data (a copy of the rail data).
+            let (connections, passes, interchange, transit) =
+                tokio::task::spawn_blocking(move || {
+                    let (connections, passes) =
+                        trip_planning::build_connections_with_passes(calling_points);
+                    let transit = transit_days.map(|(days, skipped)| {
+                        transit_planning::build_transit_graph(
+                            &interchange,
+                            &days,
+                            &transit_planning::count_connections(&connections),
+                            skipped,
+                            transit_planning::change_minutes(),
+                            trip_planning::road_water_change_minutes(),
+                        )
+                    });
+                    (connections, passes, interchange, transit)
+                })
+                .await?;
+            if let Some(transit) = &transit {
+                transit_planning::record_connections(transit);
+            }
             Ok(Some(trip_planning::PlanningGraph {
                 connections,
                 interchange,
                 passes,
+                transit,
             }))
         })
         .await
@@ -1051,10 +1148,14 @@ async fn plan_on_date(
     };
     // A `TfL` stop end (DS-135): this request's own copy of the interchange
     // data with the stop's access links; the cached graph is not changed.
-    let interchange = inputs
-        .access
-        .as_ref()
-        .map(|access| Arc::new(access.interchange(&graph.interchange)));
+    // With transit (DS-164), the graph's transit interchange data, shared.
+    let interchange = match (&inputs.access, graph.transit.as_ref()) {
+        (Some(access), _) => Some(Arc::new(
+            access.interchange(planning_interchange(graph, inputs.transit)),
+        )),
+        (None, Some(transit_graph)) if inputs.transit => Some(transit_graph.interchange.clone()),
+        (None, _) => None,
+    };
     let request = Arc::new(PlanRequest {
         interchange,
         date,
@@ -1160,11 +1261,176 @@ async fn plan_on_date(
         );
     }
     crate::data::tfl_stops::merge_transfer_rides(&app.database, &mut segments).await;
+    // Transit legs (DS-164): `kind: "transit"`, the rail-link walks'
+    // `transitWalk`, `scheduledOnly` and the lines' disruption notices.
+    let transit_skipped = match graph.transit.as_ref().filter(|_| inputs.transit) {
+        Some(transit_graph) => {
+            transit_planning::dress_segments(
+                transit_graph,
+                &graph.connections,
+                date,
+                &mut segments,
+            );
+            transit_planning::attach_line_notices(&app.database, &mut segments).await;
+            transit_graph.skipped.clone()
+        }
+        None => Vec::new(),
+    };
     Ok(DatePlan {
         request,
         segments,
         live,
+        transit_skipped,
     })
+}
+
+/// The interchange data a request plans on before any `TfL` access links:
+/// the graph's transit copy when it plans with transit, else its own.
+fn planning_interchange(
+    graph: &trip_planning::PlanningGraph,
+    transit: bool,
+) -> &schedule_query::InterchangeData {
+    match graph.transit.as_ref().filter(|_| transit) {
+        Some(transit_graph) => &transit_graph.interchange,
+        None => &graph.interchange,
+    }
+}
+
+/// The graph cache key (TRIPS-1): the latest schedule publish, or (DS-164)
+/// the latest activation of a switched-on transit network's feed when that
+/// is later. With the switch empty, the publish marker alone, as before.
+async fn graph_marker(
+    app: &App,
+    transit_networks: &[String],
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, (StatusCode, String)> {
+    let schedule = trip_planning::latest_schedule_publish(&app.database)
+        .await
+        .map_err(internal_error("read the latest schedule publish"))?;
+    // A failed read only loses the early invalidation (the cache's
+    // max-age still applies): a rail plan never fails because of trams.
+    let activation =
+        match transit_planning::latest_activation(&app.database, transit_networks).await {
+            Ok(activation) => activation,
+            Err(err) => {
+                tracing::warn!(error = ?err, "could not read the transit activation marker");
+                None
+            }
+        };
+    Ok(transit_planning::cache_marker(schedule, activation))
+}
+
+/// `?transit=`: `true` or `false` (default). Read only while the switch
+/// lists a network; with it empty the parameter is ignored, so every
+/// response stays as before.
+fn parse_transit(raw: Option<&str>, switch_on: bool) -> Result<bool, (StatusCode, String)> {
+    if !switch_on {
+        return Ok(false);
+    }
+    match raw.map(str::trim) {
+        None | Some("" | "false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(_) => Err((
+            StatusCode::BAD_REQUEST,
+            "transit must be 'true' or 'false'".to_string(),
+        )),
+    }
+}
+
+/// Resolves a tram stop `origin` or `destination` (spec §5.2) to its
+/// station node, in place, and returns each end's network (`None` for any
+/// other end). Only with the switch on and a `NaPTAN`-shaped code: either
+/// spelling (`9400ZZMAPIC`, `940GZZMAPIC`) or a platform, any case. A
+/// `9400` code no switched-on network knows is a 400 when the request
+/// opted in (otherwise it is left to the station lookup, as before); a
+/// `940G` code no network knows stays a `TfL` stop. The same station at
+/// both ends is a 400.
+async fn resolve_transit_ends(
+    app: &App,
+    networks: &[String],
+    transit_requested: bool,
+    origin: &mut String,
+    destination: &mut String,
+) -> Result<[Option<String>; 2], (StatusCode, String)> {
+    let mut ends = [None, None];
+    if networks.is_empty() {
+        return Ok(ends);
+    }
+    for (slot, end) in ends.iter_mut().zip([&mut *origin, &mut *destination]) {
+        let code = end.trim().to_ascii_uppercase();
+        if !transit_planning::looks_like_naptan(&code) {
+            continue;
+        }
+        match transit_planning::find_station(&app.database, networks, &code)
+            .await
+            .map_err(internal_error("read the transit stops"))?
+        {
+            Some((network, station)) => {
+                *end = station;
+                *slot = Some(network);
+            }
+            None if transit_requested && code.starts_with("9400") => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("'{code}' is not a stop the planner knows"),
+                ));
+            }
+            None => {}
+        }
+    }
+    if ends.iter().any(Option::is_some) && origin == destination {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "origin and destination must differ".to_string(),
+        ));
+    }
+    Ok(ends)
+}
+
+/// A tram stop end whose network has no timetable for the date (spec §7.3)
+/// cannot be planned from: a 400 saying so, rather than "unknown station".
+fn check_transit_ends_planned(
+    graph: &trip_planning::PlanningGraph,
+    ends: &[Option<String>; 2],
+) -> Result<(), (StatusCode, String)> {
+    let planned = |network: &str| {
+        graph.transit.as_ref().is_some_and(|transit| {
+            transit
+                .networks
+                .iter()
+                .any(|known| known.network == network)
+        })
+    };
+    if ends.iter().flatten().all(|network| planned(network)) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            "Tram times aren't available for this date, so the plan can't start or end at a tram stop."
+                .to_string(),
+        ))
+    }
+}
+
+/// Tram stops are not waypoints, vias or avoided stations yet (Q9): a 400
+/// for a `NaPTAN`-shaped entry, when planning with transit.
+fn check_no_transit_stops<'c>(
+    choices: impl Iterator<Item = &'c StationChoice>,
+) -> Result<(), (StatusCode, String)> {
+    for choice in choices {
+        if let Some(code) = choice
+            .codes
+            .iter()
+            .find(|code| transit_planning::looks_like_naptan(code))
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "'{code}' is a tram stop: waypoints, vias and avoided stations must be stations"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Both dates' live outcomes as one: applied when either applied (its
@@ -1538,9 +1804,7 @@ pub(crate) async fn plan_for_journey(
         })?,
     };
     let permit = Arc::new(permit);
-    let marker = trip_planning::latest_schedule_publish(&app.database)
-        .await
-        .map_err(internal_error("read the latest schedule publish"))?;
+    let marker = graph_marker(app, &transit_planning::enabled_networks()).await?;
     let Some(graph) = load_graph(app, query.date, marker).await? else {
         return Ok(None);
     };
@@ -1559,6 +1823,8 @@ pub(crate) async fn plan_for_journey(
         live_requested: true,
         allowed_uids: query.allowed_uids.clone(),
         access: None,
+        // Journey alternatives and re-plans ride trains only (spec §9).
+        transit: false,
     };
     let plan = plan_on_date(
         app,
@@ -2102,6 +2368,9 @@ fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusC
 /// path axum's `FromRequestParts` impl for `Query` uses at request time (see
 /// `axum::extract::query::Query::try_from_uri`, which
 /// `from_request_parts` calls directly).
+#[cfg(test)]
+mod transit_db_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

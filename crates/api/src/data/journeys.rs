@@ -1345,22 +1345,38 @@ pub async fn attach_untracked_stops(
     };
     let origin = clean(origin_stop_id);
     let destination = clean(destination_stop_id);
+    // A tram station of a trip-planner transit network (DS-164), saved from
+    // a plan's `kind: "transit"` leg: `9400ZZMAPIC`. Only while the
+    // planner switch lists a network; otherwise as before.
+    let transit_networks = crate::data::transit_planning::enabled_networks();
+    let is_transit_station = |id: &str| {
+        !transit_networks.is_empty()
+            && id.starts_with("9400")
+            && crate::data::transit_planning::looks_like_naptan(id)
+    };
     for (field, id) in [
         ("originStopId", &origin),
         ("destinationStopId", &destination),
     ] {
         if id
             .as_deref()
-            .is_some_and(|id| !common::tfl_stops::is_stop_id(id))
+            .is_some_and(|id| !common::tfl_stops::is_stop_id(id) && !is_transit_station(id))
         {
-            return Ok(Err(format!(
-                "{field} must be a TfL stop id from GET /tfl/stops."
-            )));
+            return Ok(Err(if transit_networks.is_empty() {
+                format!("{field} must be a TfL stop id from GET /tfl/stops.")
+            } else {
+                format!(
+                    "{field} must be a TfL stop id from GET /tfl/stops or a tram stop id from GET /transit/{{network}}/stops."
+                )
+            }));
         }
     }
     let ids: Vec<String> = origin.iter().chain(destination.iter()).cloned().collect();
     if ids.is_empty() {
         return Ok(Ok(leg));
+    }
+    if ids.iter().any(|id| is_transit_station(id)) {
+        return attach_transit_stops(pool, leg, origin, destination, &transit_networks).await;
     }
     if !TFL_STOP_MODES.contains(&leg.transit_mode.as_str()) {
         return Ok(Err(format!(
@@ -1389,6 +1405,71 @@ pub async fn attach_untracked_stops(
     leg.destination_stop_id = destination;
     Ok(Ok(leg))
 }
+
+/// [`attach_untracked_stops`] for a leg with a tram station id (DS-164):
+/// each id must be a station of a trip-planner network's active feed (a
+/// `TfL` id at the other end is checked as usual), and the leg a `tram` leg,
+/// or a `bus` one (a replacement bus from the tram timetable). The place
+/// names default to the stations'.
+async fn attach_transit_stops(
+    pool: &PgPool,
+    mut leg: UntrackedLeg,
+    origin: Option<String>,
+    destination: Option<String>,
+    networks: &[String],
+) -> anyhow::Result<Result<UntrackedLeg, String>> {
+    if !TRANSIT_STOP_MODES.contains(&leg.transit_mode.as_str()) {
+        return Ok(Err(format!(
+            "Only a {} leg can have a tram stop id.",
+            TRANSIT_STOP_MODES.join(" or ")
+        )));
+    }
+    for (field, id, place) in [
+        ("originStopId", &origin, &mut leg.origin_place),
+        (
+            "destinationStopId",
+            &destination,
+            &mut leg.destination_place,
+        ),
+    ] {
+        let Some(id) = id else { continue };
+        let name = if common::tfl_stops::is_stop_id(id) && id.starts_with("940G") {
+            crate::data::tfl_stops::stops_by_id(pool, std::slice::from_ref(id))
+                .await?
+                .get(id)
+                .map(|stop| stop.name.clone())
+        } else {
+            match crate::data::transit_planning::find_station(pool, networks, id).await? {
+                Some((_, station)) if &station == id => {
+                    sqlx::query_scalar::<_, String>(
+                        "SELECT s.name FROM transit_stops s JOIN transit_networks n \
+                           ON n.network = s.network AND n.active_feed_version = s.feed_version \
+                         WHERE s.network = ANY($1) AND s.stop_id = $2 LIMIT 1",
+                    )
+                    .bind(networks)
+                    .bind(id)
+                    .fetch_optional(pool)
+                    .await?
+                }
+                _ => None,
+            }
+        };
+        let Some(name) = name else {
+            return Ok(Err(format!("{field} {id} is not a stop we know.")));
+        };
+        if place.is_none() {
+            *place = Some(name.chars().take(UNTRACKED_PLACE_MAX_CHARS).collect());
+        }
+    }
+    leg.origin_stop_id = origin;
+    leg.destination_stop_id = destination;
+    Ok(Ok(leg))
+}
+
+/// The untracked-leg modes whose places may carry a tram station id of a
+/// trip-planner transit network: a tram, or a replacement bus from its
+/// timetable.
+pub const TRANSIT_STOP_MODES: [&str; 2] = ["tram", "bus"];
 
 /// The untracked-leg modes whose places may carry a `TfL` stop id.
 /// `metro` is the planner's generic `METRO` transfer (DLR, tram or Tube).
