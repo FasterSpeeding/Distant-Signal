@@ -127,7 +127,8 @@ translate one into the other.
 `cancellation` (and `journeyStops[].cancelled`) says what part of the run
 is cancelled: `full` or `partial`, the cancelled `sections`,
 `terminatesAt`/`startsFrom`, and one `reason` with its `source`. The rules
-are in `crates/api/src/data/cancellation.rs`; the wire shape is in
+are in `crates/ds-store/src/trains/cancellation.rs` (shared by the api and the
+notifier since DS-184); the wire shape is in
 docs/api-changelog.md (2026-10-26). In short:
 
 - The latest `0002`, `0005` and `0006` (`train_reasons`, each with its
@@ -149,6 +150,13 @@ docs/api-changelog.md (2026-10-26). In short:
 Since DS-181, `trust-backlog-consumer` also stores `0005` Reinstatements
 and uncoded `0002`/`0006` messages (`reason_code` `''`), for their location
 and time.
+
+Since DS-184 the list rows (`GET /Journeys/mine`, `GET /Train/mine`) carry
+a compact `cancellation`, and the notifier words cancellation pushes from
+the same rules, without the LDBWS board overlay (so a push's reason is
+always the TRUST one). A push decided before TRUST's reason is stored gets
+one follow-up, replacing it on the device, if the reason arrives within 15
+minutes (`crates/notifier/src/cancel_reason.rs`).
 
 ## Per-stop status
 

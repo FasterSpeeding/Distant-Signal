@@ -13,6 +13,7 @@ import type {
   GroupJourney,
   JourneyLegDetail,
   JourneyListItem,
+  ListCancellation,
   ServiceMode,
   ServiceModeFields,
   TrackingPhaseFields,
@@ -41,6 +42,11 @@ export interface TrackedRowStatus {
   delayProvisional: boolean;
   /** For `timetableOnly`: which kind of service it is. */
   serviceMode: ServiceMode | null;
+  /** For `severe` ("Cancelled") and `partCancelled`: the row's own train's
+   * cancellation (DS-181), when it is the whole story (a lone train, or a
+   * journey with one train leg), so the badge can say "Terminates at
+   * York" and give the reason. Absent or `null` otherwise. */
+  cancellation?: ListCancellation | null;
 }
 
 /** The fields a tracked-train row needs: `TrackedTrainListItem`,
@@ -51,6 +57,7 @@ export type TrackedTrainRowInput = {
   status: string | null;
   delayMinutes: number | null;
   delayProvisional?: boolean;
+  cancellation?: ListCancellation | null;
 } & ServiceModeFields &
   TrackingPhaseFields;
 
@@ -61,7 +68,11 @@ const STILL_FLAGGED: ReadonlySet<JourneySummaryGroup> = new Set(['severe', 'part
  * unless something still flags it; one from a past day that never
  * finished stops asking for anything ("No report received", "No train
  * picked") but keeps a problem it had. */
-export function journeySummaryRowStatus(summary: JourneySummary, pastDay: boolean): TrackedRowStatus {
+export function journeySummaryRowStatus(
+  summary: JourneySummary,
+  pastDay: boolean,
+  cancellation: ListCancellation | null = null,
+): TrackedRowStatus {
   const { group } = summary;
   let kind: TrackedRowStatusKind = group;
   const finished = pastDay || summary.phase === 'completed';
@@ -85,6 +96,7 @@ export function journeySummaryRowStatus(summary: JourneySummary, pastDay: boolea
     delayMinutes: staleForecast ? null : summary.finalArrivalDelayMinutes,
     delayProvisional: staleForecast ? false : summary.finalArrivalDelayProvisional,
     serviceMode: null,
+    cancellation: kind === 'severe' || kind === 'partCancelled' ? cancellation : null,
   };
 }
 
@@ -103,12 +115,17 @@ export function trackedTrainRowStatus(train: TrackedTrainRowInput, today: string
     };
   }
   const cancelled = train.status === 'cancelled';
+  // Wholly or partly cancelled by the api's own `cancellation` (DS-181),
+  // else by the status alone, as before.
+  const kind = train.cancellation?.kind ?? (cancelled ? 'full' : null);
   const summary = summariseJourney({
     currentLegGroup: trackedTrainListStatusGroup(train),
     otherLegGroups: [],
     legCount: 1,
     trainLegCount: 1,
     cancelledLegCount: cancelled ? 1 : 0,
+    fullyCancelledLegCount: kind === 'full' ? 1 : 0,
+    partCancelledLegCount: kind === 'partial' ? 1 : 0,
     unmatchedLegCount: 0,
     finishedLegCount: train.status === 'completed' ? 1 : 0,
     startedLegCount: train.status === 'en_route' || train.status === 'completed' ? 1 : 0,
@@ -116,13 +133,27 @@ export function trackedTrainRowStatus(train: TrackedTrainRowInput, today: string
     finalArrivalDelayProvisional: train.delayProvisional ?? false,
     connection: null,
   });
-  return journeySummaryRowStatus(summary, pastDay);
+  return journeySummaryRowStatus(summary, pastDay, train.cancellation ?? null);
+}
+
+/** The cancellation a `GET /Journeys/mine` row's badge words (DS-181): its
+ * current leg's train's, when that train is the journey's only train leg.
+ * A journey with several train legs keeps its rollup ("Part cancelled",
+ * "Cancelled") without one train's detail, which would read as the whole
+ * journey's. */
+export function journeyListItemCancellation(journey: JourneyListItem): ListCancellation | null {
+  const trainLegs = journey.trainLegCount ?? journey.legCount ?? 1;
+  return trainLegs === 1 ? (journey.cancellation ?? null) : null;
 }
 
 /** One row of `GET /Journeys/mine`, by its whole-journey summary
  * (`journeyListItemSummary`). Past means the current leg's day is over. */
 export function journeyRowStatus(journey: JourneyListItem, today: string): TrackedRowStatus {
-  return journeySummaryRowStatus(journeyListItemSummary(journey), journey.serviceDate < today);
+  return journeySummaryRowStatus(
+    journeyListItemSummary(journey),
+    journey.serviceDate < today,
+    journeyListItemCancellation(journey),
+  );
 }
 
 /** The journey page header's status, from every leg. `null` with no legs. */

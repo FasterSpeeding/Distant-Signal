@@ -323,6 +323,43 @@ describe('dimmed body text contrast', () => {
 // `light` and the input placeholder were never covered by it -- and a
 // full-ruleset axe sweep of every route, in both schemes, found all three
 // failing. See app/globals.css for the per-colour derivations.
+// DS-181 follow-up: a cancelled list row's reason line
+// (`CancelledRowBadge`, `c="dimmed"` at `xs`) sits under the red badge on a
+// list card. Small text, so it is held to the light-variant pill's 5.5:1
+// rather than AA's 4.5:1, on every surface a card has: resting (white,
+// dark 6), the page body (dark 7) and a clickable card's hover background
+// (gray 0, and dark 5 mixed half and half into dark 6 in dark).
+describe('cancellation reason line contrast', () => {
+  const GRAY_0 = '#f8f9fa';
+  const DARK_5 = '#3b3b3b';
+  /** `color-mix(in srgb, a 50%, b)` for two hex colours. */
+  function mixHalf(a: string, b: string): string {
+    return `#${[1, 3, 5]
+      .map((i) =>
+        Math.round((parseInt(a.slice(i, i + 2), 16) + parseInt(b.slice(i, i + 2), 16)) / 2)
+          .toString(16)
+          .padStart(2, '0'),
+      )
+      .join('')}`;
+  }
+
+  it('resolves dimmed to gray 7 in light and dark 1 in dark', () => {
+    expect(schemeBlock('light')).toContain('--mantine-color-dimmed: var(--mantine-color-gray-7)');
+    expect(schemeBlock('dark')).toContain('--mantine-color-dimmed: var(--mantine-color-dark-1)');
+  });
+
+  it.each([
+    ['light card', GRAY_7, WHITE, 8.18],
+    ['light card hover', GRAY_7, GRAY_0, 7.76],
+    ['dark card', DARK_1, DARK_6, 6.85],
+    ['dark body', DARK_1, DARK_7, 7.83],
+    ['dark card hover', DARK_1, mixHalf(DARK_5, DARK_6), 6.18],
+  ] as const)('clears 5.5:1 on the %s', (_, text, surface, ratio) => {
+    expect(contrast(text, surface)).toBeGreaterThanOrEqual(PILL_TEXT);
+    expect(contrast(text, surface)).toBeCloseTo(ratio, 1);
+  });
+});
+
 describe('non-filled variants and placeholders', () => {
   const lightRule = () => schemeBlock('light');
 
