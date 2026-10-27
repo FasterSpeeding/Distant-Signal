@@ -4506,6 +4506,7 @@ mod db_tests {
             next_calling_point: Some("MKC".to_string()),
             eta_next: None,
             eta_source: None,
+            platform: None,
         };
         upsert_train_event(&pool, &event)
             .await
@@ -4628,6 +4629,7 @@ mod db_tests {
             next_calling_point: Some("WOK".to_string()),
             eta_next: None,
             eta_source: None,
+            platform: None,
         };
         upsert_train_event(&pool, &event_for(first_id))
             .await

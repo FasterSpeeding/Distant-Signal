@@ -690,6 +690,7 @@ mod tests {
             planned_platform: None,
             platform_changed: false,
             platform_status: None,
+            platform_evidence: None,
             booked_platform: None,
             platform_basis: None,
             display_platform: None,

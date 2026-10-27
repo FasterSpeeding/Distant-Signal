@@ -32,6 +32,7 @@ pub mod line_train_summaries;
 pub mod notification_settings;
 pub mod notifications;
 pub mod operators;
+pub mod platform_confirmation;
 pub mod preferences;
 pub mod queries;
 pub mod recently_cleared;

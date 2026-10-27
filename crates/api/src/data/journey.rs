@@ -515,6 +515,19 @@ pub async fn build_journey_stops_batch(
         trains.dedup();
         crate::data::stop_board::board_keys_for_trains(pool, &trains).await?
     };
+    // Each train's previous working's arrival platform (DS-180), for the
+    // origin's pre-departure confirmation, in one query.
+    let previous_working = {
+        let mut trains: Vec<(String, NaiveDate)> = requests
+            .iter()
+            .zip(&built)
+            .filter(|(_, stops)| matches!(stops, Ok(Some(_))))
+            .map(|(request, _)| (request.train_uid.to_string(), request.service_date))
+            .collect();
+        trains.sort();
+        trains.dedup();
+        crate::data::platform_confirmation::previous_working_arrivals(pool, &trains).await?
+    };
     let now = Utc::now();
 
     for (request, stops) in requests.iter().zip(built.iter_mut()) {
@@ -544,6 +557,12 @@ pub async fn build_journey_stops_batch(
             Some((request.train_uid, request.service_date)),
             now,
         );
+        // After the board match: a board showing another platform vetoes it.
+        crate::data::platform_confirmation::apply_previous_working_platform(
+            stops,
+            previous_working.get(&(request.train_uid.to_string(), request.service_date)),
+            now,
+        );
         apply_platform_basis(stops);
         match request.current_delay_minutes {
             Some(delay) => apply_delay_estimates(stops, Some(delay)),
@@ -571,7 +590,7 @@ async fn movement_events_for_trains(
     }
     let rows = sqlx::query_as::<_, Row>(
         "SELECT trains_id, UPPER(loc_crs) AS loc_crs, event_type, \
-                planned_timestamp, actual_timestamp, variation_status, gbtt_timestamp \
+                planned_timestamp, actual_timestamp, variation_status, gbtt_timestamp, platform \
          FROM train_movement_events \
          WHERE trains_id = ANY($1) AND loc_crs IS NOT NULL \
          ORDER BY trains_id, received_at ASC, id ASC",
@@ -593,14 +612,19 @@ async fn movement_events_for_trains(
 ///
 /// `assign_events_to_stops` decides WHICH stop each event belongs to, by
 /// position in the journey rather than by CRS identity; this then applies
-/// at most one event per stop, exactly as the CRS-keyed version did.
+/// at most one event per stop, exactly as the CRS-keyed version did. The
+/// stop's reported platform comes from its whole visit
+/// (`platform_confirmation::reported_platform`, DS-180).
 fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::MovementEventRow]) {
-    let assignment = assign_events_to_stops(stops, events);
+    let assignment = assign_visits_to_stops(stops, events);
 
     for (index, stop) in stops.iter_mut().enumerate() {
-        let Some(event) = assignment[index].map(|event_index| &events[event_index]) else {
+        let Some(visit) = assignment[index].as_ref() else {
             continue;
         };
+        let event = &events[visit.winner];
+        stop.platform_evidence =
+            crate::data::platform_confirmation::reported_platform(events, &visit.members);
         stop.last_event_type.clone_from(&event.event_type);
         stop.variation_status.clone_from(&event.variation_status);
 
@@ -968,15 +992,45 @@ const DEFAULT_REVISIT_GAP: Duration = Duration::minutes(30);
 /// to the earlier call rather than the later one -- there is nothing in the
 /// data to say the train skipped ahead. Any other reported stop resolves
 /// it, because the cursor has already moved past the earlier call by then.
-#[expect(
-    clippy::expect_used,
-    reason = "the invariant is established just above; the expect message names it"
-)]
+#[cfg(test)]
 fn assign_events_to_stops(
     stops: &[JourneyStop],
     events: &[queries::MovementEventRow],
 ) -> Vec<Option<usize>> {
-    let mut assignment: Vec<Option<usize>> = vec![None; stops.len()];
+    assign_visits_to_stops(stops, events)
+        .into_iter()
+        .map(|visit| visit.map(|visit| visit.winner))
+        .collect()
+}
+
+/// One stop's share of a train's movement events: the visit
+/// [`assign_visits_to_stops`] placed on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StopVisit {
+    /// The event the stop displays (the latest received of the visit).
+    pub(crate) winner: usize,
+    /// Every event of the visit, `winner` included. Indices into the
+    /// events slice, whose order is received order; this list itself is
+    /// not guaranteed sorted.
+    pub(crate) members: Vec<usize>,
+}
+
+/// One visit while [`assign_visits_to_stops`] places it: `(start instant,
+/// crs, winning event, every event)`.
+type PlacedVisit<'a> = (Option<DateTime<Utc>>, &'a String, usize, Vec<usize>);
+
+/// [`assign_events_to_stops`], keeping every event of each placed visit
+/// as well as its winner (DS-180: a platform may be on the arrival when
+/// the departure won).
+#[expect(
+    clippy::expect_used,
+    reason = "the invariant is established just above; the expect message names it"
+)]
+pub(crate) fn assign_visits_to_stops(
+    stops: &[JourneyStop],
+    events: &[queries::MovementEventRow],
+) -> Vec<Option<StopVisit>> {
+    let mut assignment: Vec<Option<StopVisit>> = vec![None; stops.len()];
     if stops.is_empty() {
         return assignment;
     }
@@ -998,8 +1052,8 @@ fn assign_events_to_stops(
         }
     }
 
-    // Phase one: `(start instant, crs, winning event)` per visit.
-    let mut visits: Vec<(Option<DateTime<Utc>>, &String, usize)> = Vec::new();
+    // Phase one: `(start instant, crs, winning event, every event)` per visit.
+    let mut visits: Vec<PlacedVisit<'_>> = Vec::new();
     for (crs, report_indices) in reports {
         let groups = if calls[crs].len() < 2 {
             vec![report_indices]
@@ -1014,7 +1068,7 @@ fn assign_events_to_stops(
                 .iter()
                 .filter_map(|&i| event_instant(&events[i]))
                 .min();
-            visits.push((started, crs, winner));
+            visits.push((started, crs, winner, group));
         }
     }
 
@@ -1031,7 +1085,7 @@ fn assign_events_to_stops(
             .then(a.2.cmp(&b.2))
     });
     let mut cursor = 0usize;
-    for (_, crs, winner) in visits {
+    for (_, crs, winner, members) in visits {
         let crs_calls = &calls[crs];
         let last_call = *crs_calls
             .last()
@@ -1055,7 +1109,7 @@ fn assign_events_to_stops(
         else {
             continue;
         };
-        assignment[target] = Some(winner);
+        assignment[target] = Some(StopVisit { winner, members });
         cursor = cursor.max(target);
     }
 
@@ -1236,12 +1290,19 @@ const MAY_HAVE_ARRIVED_THRESHOLD: Duration = Duration::minutes(15);
 /// `platform_changed` (DS-127, spec section 6.2). Run after every platform
 /// overlay (`apply_origin_platform`, the board match).
 ///
-/// - A live `platform` is shown, on basis `board`.
+/// - A confirmed platform (`platform_evidence`, DS-180) wins: it becomes
+///   `platform`, on basis `confirmed`, with `platform_status` `active`
+///   and `planned_platform` set to the booked platform when one is known
+///   (else the board's first-seen platform stays), so `platform_changed`
+///   names the platform it changed from. See
+///   `platform_confirmation`'s module doc for when evidence is set.
+/// - Else a live `platform` is shown, on basis `board`.
 /// - Else the `booked_platform`, on basis `booked`: provisional, nothing
 ///   live has shown it.
 /// - `platform_changed`: against `booked_platform` when both are known
 ///   ([`platforms_differ`]); otherwise the first-seen comparison the board
-///   overlay already made stays as it is.
+///   overlay already made stays as it is (for a confirmed platform with
+///   no booked one: against that first-seen platform).
 pub fn apply_platform_basis(stops: &mut [JourneyStop]) {
     for stop in stops.iter_mut() {
         let booked = stop
@@ -1249,6 +1310,26 @@ pub fn apply_platform_basis(stops: &mut [JourneyStop]) {
             .as_deref()
             .map(str::trim)
             .filter(|p| !p.is_empty());
+        if let Some(evidence) = &stop.platform_evidence {
+            let confirmed = evidence.platform.clone();
+            match booked {
+                Some(booked) => {
+                    stop.platform_changed = platforms_differ(&confirmed, booked);
+                    stop.planned_platform = Some(booked.to_string());
+                }
+                None => {
+                    stop.platform_changed = stop
+                        .planned_platform
+                        .as_deref()
+                        .is_some_and(|first_seen| platforms_differ(&confirmed, first_seen));
+                }
+            }
+            stop.platform = Some(confirmed.clone());
+            stop.platform_status = Some(PlatformStatus::Active);
+            stop.platform_basis = Some(PlatformBasis::Confirmed);
+            stop.display_platform = Some(confirmed);
+            continue;
+        }
         if let (Some(live), Some(booked)) = (stop.platform.as_deref(), booked) {
             stop.platform_changed = platforms_differ(live, booked);
         }
@@ -1495,6 +1576,7 @@ pub(crate) mod test_support {
             booked_platform: None,
             platform_basis: None,
             display_platform: None,
+            platform_evidence: None,
             live_status: None,
             late_minutes: None,
             cancelled: false,
@@ -1538,6 +1620,7 @@ mod tests {
             booked_platform: None,
             platform_basis: None,
             display_platform: None,
+            platform_evidence: None,
             live_status: None,
             late_minutes: None,
             cancelled: false,
@@ -2535,6 +2618,106 @@ mod tests {
         assert_eq!(none[0].display_platform, None);
     }
 
+    fn platform_event(
+        crs: &str,
+        event_type: &str,
+        at: &str,
+        platform: Option<&str>,
+    ) -> queries::MovementEventRow {
+        queries::MovementEventRow {
+            platform: platform.map(str::to_string),
+            ..event(crs, event_type, at)
+        }
+    }
+
+    /// DS-180, hand-written after the W33284 2026-10-25 case: booked
+    /// platform 3 at Milton Keynes Central, the train's own automatic
+    /// arrival there reported platform 5. Expected: confirmed, changed 3
+    /// to 5, `plannedPlatform` naming the booked 3. Stops it has called at
+    /// with a platform matching the booked one are confirmed unchanged;
+    /// stops still to come keep their booked basis.
+    #[test]
+    fn a_reported_arrival_platform_confirms_and_changes_the_booked_one() {
+        use schedule_query::CallingPointKind::{Intermediate, Origin, Terminate};
+        let booked = |crs: &str, kind, platform: &str| JourneyStop {
+            booked_platform: Some(platform.to_string()),
+            ..stop_at(crs, kind)
+        };
+        let mut stops = vec![
+            booked("EUS", Origin, "5"),
+            booked("WFJ", Intermediate, "8"),
+            booked("MKC", Intermediate, "3"),
+            booked("NMP", Intermediate, "2"),
+            booked("WVH", Terminate, "1"),
+        ];
+        let events = vec![
+            platform_event("EUS", "DEPARTURE", "2099-10-25T23:24:00Z", Some("5")),
+            platform_event("WFJ", "ARRIVAL", "2099-10-25T23:41:00Z", Some("8")),
+            platform_event("WFJ", "DEPARTURE", "2099-10-25T23:42:00Z", None),
+            platform_event("MKC", "ARRIVAL", "2099-10-26T00:11:00Z", Some("5")),
+            platform_event("MKC", "DEPARTURE", "2099-10-26T00:15:00Z", Some("5")),
+        ];
+        overlay_movement_events(&mut stops, &events);
+        apply_platform_basis(&mut stops);
+
+        let mkc = &stops[2];
+        assert_eq!(mkc.platform.as_deref(), Some("5"));
+        assert_eq!(mkc.display_platform.as_deref(), Some("5"));
+        assert_eq!(mkc.platform_basis, Some(PlatformBasis::Confirmed));
+        assert!(mkc.platform_changed);
+        assert_eq!(mkc.planned_platform.as_deref(), Some("3"));
+        assert_eq!(mkc.booked_platform.as_deref(), Some("3"));
+        assert_eq!(mkc.platform_status, Some(PlatformStatus::Active));
+        let json = serde_json::to_value(mkc).unwrap();
+        assert_eq!(json["platformBasis"], "confirmed");
+        assert_eq!(json["platformChanged"], true);
+        assert_eq!(json["plannedPlatform"], "3");
+        assert_eq!(json["platform"], "5");
+        assert!(json.get("platformEvidence").is_none(), "internal only");
+
+        for (index, platform) in [(0, "5"), (1, "8")] {
+            assert_eq!(stops[index].platform_basis, Some(PlatformBasis::Confirmed));
+            assert_eq!(stops[index].platform.as_deref(), Some(platform));
+            assert!(!stops[index].platform_changed, "stop {index}");
+        }
+        for index in [3, 4] {
+            assert_eq!(stops[index].platform_basis, Some(PlatformBasis::Booked));
+            assert_eq!(stops[index].platform, None);
+        }
+    }
+
+    /// A confirmed platform overrides a disagreeing live board, and with
+    /// no booked platform is compared against the board's first-seen one.
+    #[test]
+    fn a_confirmed_platform_beats_the_board() {
+        let mut stops = vec![JourneyStop {
+            platform_evidence: Some(ds_store::trains::types::PlatformEvidence {
+                platform: "7".to_string(),
+                source: ds_store::trains::types::PlatformEvidenceSource::TrainReport,
+            }),
+            ..platform_stop(Some("6"), None, Some("6"))
+        }];
+        apply_platform_basis(&mut stops);
+        assert_eq!(stops[0].platform.as_deref(), Some("7"));
+        assert_eq!(stops[0].platform_basis, Some(PlatformBasis::Confirmed));
+        assert!(stops[0].platform_changed);
+        assert_eq!(stops[0].planned_platform.as_deref(), Some("6"));
+
+        let mut unchanged = vec![JourneyStop {
+            platform_evidence: Some(ds_store::trains::types::PlatformEvidence {
+                platform: "4".to_string(),
+                source: ds_store::trains::types::PlatformEvidenceSource::TrainReport,
+            }),
+            ..platform_stop(None, Some("4A"), None)
+        }];
+        apply_platform_basis(&mut unchanged);
+        assert!(
+            !unchanged[0].platform_changed,
+            "4 against 4A is the same platform"
+        );
+        assert_eq!(unchanged[0].planned_platform.as_deref(), Some("4A"));
+    }
+
     #[test]
     fn a_sub_platform_letter_on_one_side_is_not_a_change() {
         assert!(!platforms_differ("4", "4A"));
@@ -2783,6 +2966,7 @@ mod tests {
             actual_timestamp: Some(at.parse().unwrap()),
             variation_status: Some("ON TIME".to_string()),
             gbtt_timestamp: None,
+            platform: None,
         }
     }
 
@@ -3623,6 +3807,7 @@ mod tests {
             actual_timestamp: None,
             variation_status: None,
             gbtt_timestamp: None,
+            platform: None,
         };
         let events = vec![event("RDG", "ARRIVAL", "2026-09-14T09:15:00Z"), untimed];
 
@@ -3778,6 +3963,7 @@ mod tests {
             actual_timestamp: None,
             variation_status: None,
             gbtt_timestamp: None,
+            platform: None,
         };
         let events = vec![
             untimed_clj,
@@ -3900,6 +4086,7 @@ mod tests {
                 actual_timestamp: None,
                 variation_status: None,
                 gbtt_timestamp: None,
+                platform: None,
             },
         ];
 
@@ -4226,6 +4413,7 @@ mod db_tests {
                 next_calling_point: None,
                 eta_next: None,
                 eta_source: None,
+                platform: None,
             },
         )
         .await
