@@ -1,10 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { screen, fireEvent } from '@testing-library/react';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { renderWithMantine } from '@/test/render';
 import { ChatPanel } from './ChatPanel';
 import { CHAT_AI_NOTE } from './AiGeneratedBadge';
 import { setAnthropicApiKey } from '@/lib/anthropicKey';
+import { loadChatRuntime } from '@/lib/chatRuntime';
 
 const mockRunChatTurn = vi.fn();
 vi.mock('@/lib/chatTurn', () => ({
@@ -22,6 +23,12 @@ function seedMcpTokens() {
 }
 
 describe('ChatPanel', () => {
+  // The panel loads the SDKs on demand; load them once up front so the
+  // first test to send a message isn't timed against a cold import.
+  beforeAll(async () => {
+    await loadChatRuntime();
+  });
+
   beforeEach(() => {
     localStorage.clear();
     mockRunChatTurn.mockReset();

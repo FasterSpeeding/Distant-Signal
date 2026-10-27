@@ -1,5 +1,3 @@
-'use client';
-
 import { useId } from 'react';
 import { Button, Card, Group, List, ListItem, Stack, Text, Title } from '@mantine/core';
 import { CopyableLink } from './CopyableLink';
