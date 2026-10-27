@@ -1257,6 +1257,11 @@ pub struct TrackedTrainListItem {
     /// these rows with `GET /Journeys/mine`'s (whose `departsAt` is the
     /// same kind of key) can place them. Additive (2026-10-26).
     pub departs_at: DateTime<Utc>,
+    /// The train's compact cancellation (`data::cancellation`'s list
+    /// form): full or partial, where it now starts or terminates, and why.
+    /// `null` when no part of its run is cancelled. Additive (2026-10-27).
+    #[sqlx(skip)]
+    pub cancellation: Option<crate::data::cancellation::CancellationSummary>,
 }
 
 impl crate::data::tracking_phase::PhaseRow for TrackedTrainListItem {
@@ -1424,6 +1429,13 @@ pub async fn list_tracked_trains_for_user(
     crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
     crate::data::schedule_services::attach(pool, &mut rows).await;
     crate::data::tracking_phase::attach(pool, &mut rows, Utc::now()).await;
+    crate::data::cancellation::attach_summaries(
+        pool,
+        &mut rows,
+        |row| row.trains_id.map(|id| (id, row.status.as_deref())),
+        |row, summary| row.cancellation = summary,
+    )
+    .await;
     Ok(rows)
 }
 

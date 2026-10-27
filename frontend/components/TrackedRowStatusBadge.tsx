@@ -1,9 +1,12 @@
-import { Group } from '@mantine/core';
+import type { ReactNode } from 'react';
+import { Group, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { DelayBadge } from './DelayBadge';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { StateBadge, type StateTone } from './StateBadge';
+import { cancellationReasonLine, listCancellationHeadline, listCancellationSentence } from '@/lib/cancellation';
 import type { JourneySummaryGroup } from '@/lib/journeyStatus';
 import type { TrackedRowStatus } from '@/lib/trackedRowStatus';
+import type { ListCancellation } from '@/lib/types';
 import { UNTRACKED_STATUS_LABEL } from '@/lib/untrackedLeg';
 
 // 2026-09-22 UX review finding M22/2.11: "On track" here and "On time" on
@@ -72,12 +75,63 @@ const TONE: Record<JourneySummaryGroup, StateTone> = {
   connectionMissed: 'late',
 };
 
+/** A cancelled or part-cancelled row's badge (DS-181), from its train's
+ * `ListCancellation`: the red badge says what no longer runs ("Cancelled",
+ * "Terminates at York", "Starts from York", "Part cancelled"), any `delay`
+ * sits beside it, and the reason ("Failure to maintain vegetation") is a
+ * dimmed line under both. The badge and the reason are hidden from screen
+ * readers, which hear one sentence instead ("This train terminates at
+ * York. Reason: Failure to maintain vegetation."). Capped in width, so a
+ * long station name truncates the badge (its `title` keeps the whole
+ * headline) rather than squeezing the row's title away. */
+export function CancelledRowBadge({
+  cancellation,
+  delay = null,
+}: {
+  cancellation: ListCancellation;
+  delay?: ReactNode;
+}) {
+  const headline = listCancellationHeadline(cancellation);
+  const reason = cancellationReasonLine(cancellation.reason);
+  return (
+    <Stack gap={2} align="flex-end" maw="14rem" data-row-cancellation={cancellation.kind}>
+      <VisuallyHidden>{listCancellationSentence(cancellation)}</VisuallyHidden>
+      <Group gap={6} wrap="nowrap" maw="100%">
+        <StateBadge tone="critical" title={headline} aria-hidden>
+          {headline}
+        </StateBadge>
+        {delay}
+      </Group>
+      {reason !== null && (
+        <Text size="xs" c="dimmed" ta="right" lineClamp={2} aria-hidden data-row-cancellation-reason>
+          {reason}
+        </Text>
+      )}
+    </Stack>
+  );
+}
+
+/** Whether a group is the one a train's cancellation explains. */
+function isCancelledGroup(group: JourneySummaryGroup | TrackedRowStatus['kind']): boolean {
+  return group === 'severe' || group === 'partCancelled';
+}
+
 /** The badge for an ALREADY-CLASSIFIED status group -- the one place a
  * `JourneySummaryGroup` becomes a label and a colour. No `Tooltip`: it
  * would only restate the badge's own visible text (2026-09-22 UX review,
  * M17) and a `Tooltip` on a non-focusable `Badge` is keyboard-unreachable
- * anyway. Re-exported from `JourneyStatusBadge.tsx`, its old home. */
-export function JourneyStatusGroupBadge({ group }: { group: JourneySummaryGroup }) {
+ * anyway. Re-exported from `JourneyStatusBadge.tsx`, its old home.
+ *
+ * With a `cancellation` (the row's one train's, DS-181), a "Cancelled" or
+ * "Part cancelled" group is worded from it (`CancelledRowBadge`). */
+export function JourneyStatusGroupBadge({
+  group,
+  cancellation = null,
+}: {
+  group: JourneySummaryGroup;
+  cancellation?: ListCancellation | null;
+}) {
+  if (cancellation !== null && isCancelledGroup(group)) return <CancelledRowBadge cancellation={cancellation} />;
   return <StateBadge tone={TONE[group]}>{LABEL[group]}</StateBadge>;
 }
 
@@ -91,11 +145,20 @@ export function JourneyStatusGroupBadge({ group }: { group: JourneySummaryGroup 
  * A finished row says how it ended: "Completed" (with its final delay),
  * "No report received" or "No train picked", all gray. Cancelled stays
  * red. "Part cancelled" (red) sits beside the final delay, so a journey
- * that lost a train but still got there on time says both. */
+ * that lost a train but still got there on time says both. A lone train
+ * or one-train journey that is cancelled in whole or part says what of it
+ * runs and why instead (`CancelledRowBadge`). */
 export function TrackedRowStatusBadge({ status }: { status: TrackedRowStatus }) {
   const { kind, delayMinutes, delayProvisional } = status;
   const delay =
     delayMinutes === null ? null : <DelayBadge delayMinutes={delayMinutes} provisional={delayProvisional} />;
+  // The row's own train's cancellation, when it is the whole story
+  // (`TrackedRowStatus.cancellation`): its words and reason, with the
+  // final delay beside a part cancellation as before.
+  const cancellation = status.cancellation ?? null;
+  if (cancellation !== null && isCancelledGroup(kind)) {
+    return <CancelledRowBadge cancellation={cancellation} delay={kind === 'partCancelled' ? delay : null} />;
+  }
   switch (kind) {
     case 'timetableOnly':
       return (

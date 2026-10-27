@@ -17,7 +17,7 @@
  * fault with the signalling system". A board sentence's "This train has
  * been cancelled because of" is dropped, as the headline already says it.
  */
-import type { Cancellation, CancellationReason, CancellationStop, JourneyStatus } from './types';
+import type { Cancellation, CancellationPlace, CancellationReason, JourneyStatus, ListCancellation } from './types';
 
 /** The fields of a train state this module reads. */
 export interface CancellationFields {
@@ -48,7 +48,7 @@ export function trainCancellation(state: CancellationFields): Cancellation | nul
 }
 
 /** A call's name, else its code. */
-export function cancellationStopName(stop: CancellationStop): string {
+export function cancellationStopName(stop: CancellationPlace): string {
   return stop.name ?? stop.crs ?? 'an unnamed stop';
 }
 
@@ -59,18 +59,29 @@ export function cancellationHeadline(cancellation: Cancellation): string {
   if (cancellation.kind === 'full') return 'Cancelled';
   const { startsFrom, terminatesAt, sections } = cancellation;
   if (startsFrom && terminatesAt && sections.length === 2) {
-    return `Starts from ${cancellationStopName(startsFrom)} and terminates at ${cancellationStopName(terminatesAt)}`;
+    return shortRunHeadline(startsFrom, terminatesAt) ?? 'Part cancelled';
   }
   if (sections.length === 1) {
-    if (terminatesAt) return `Terminates at ${cancellationStopName(terminatesAt)}`;
-    if (startsFrom) return `Starts from ${cancellationStopName(startsFrom)}`;
+    if (terminatesAt) return shortRunHeadline(null, terminatesAt) ?? 'Part cancelled';
+    if (startsFrom) return shortRunHeadline(startsFrom, null) ?? 'Part cancelled';
     const [only] = sections;
     if (only) return sectionLine(only.from, only.to);
   }
   return 'Part cancelled';
 }
 
-function sectionLine(from: CancellationStop, to: CancellationStop): string {
+/** "Starts from X and terminates at Y", "Terminates at Y", "Starts from
+ * X", or `null` when the train runs from end to end. */
+function shortRunHeadline(startsFrom: CancellationPlace | null, terminatesAt: CancellationPlace | null): string | null {
+  if (startsFrom && terminatesAt) {
+    return `Starts from ${cancellationStopName(startsFrom)} and terminates at ${cancellationStopName(terminatesAt)}`;
+  }
+  if (terminatesAt) return `Terminates at ${cancellationStopName(terminatesAt)}`;
+  if (startsFrom) return `Starts from ${cancellationStopName(startsFrom)}`;
+  return null;
+}
+
+function sectionLine(from: CancellationPlace, to: CancellationPlace): string {
   return `Cancelled between ${cancellationStopName(from)} and ${cancellationStopName(to)}`;
 }
 
@@ -111,6 +122,36 @@ export function cancellationSummary(cancellation: Cancellation): string {
   const reason = cancellationReasonPhrase(cancellation.reason);
   const headline = cancellationHeadline(cancellation);
   return reason ? `${headline}: ${reason}` : headline;
+}
+
+/** A list row's headline (`ListCancellation`, which has no sections):
+ * "Cancelled", "Terminates at X", "Starts from X", "Starts from X and
+ * terminates at Y", or "Part cancelled" for a cancelled middle section. */
+export function listCancellationHeadline(cancellation: ListCancellation): string {
+  if (cancellation.kind === 'full') return 'Cancelled';
+  return shortRunHeadline(cancellation.startsFrom, cancellation.terminatesAt) ?? 'Part cancelled';
+}
+
+/** The reason on its own line, under a list row's badge: the phrase
+ * (`cancellationReasonPhrase`) with a capital first letter ("Failure to
+ * maintain vegetation"). `null` without reason text. */
+export function cancellationReasonLine(reason: CancellationReason | null): string | null {
+  const phrase = cancellationReasonPhrase(reason);
+  return phrase === null ? null : phrase.charAt(0).toUpperCase() + phrase.slice(1);
+}
+
+/** What a screen reader hears for a list row's cancellation, as whole
+ * sentences: "This train terminates at York. Reason: Failure to maintain
+ * vegetation." */
+export function listCancellationSentence(cancellation: ListCancellation): string {
+  let what: string;
+  if (cancellation.kind === 'full') what = 'is cancelled';
+  else {
+    const headline = shortRunHeadline(cancellation.startsFrom, cancellation.terminatesAt);
+    what = headline === null ? 'is part cancelled' : headline.charAt(0).toLowerCase() + headline.slice(1);
+  }
+  const reason = cancellationReasonLine(cancellation.reason);
+  return reason === null ? `This train ${what}.` : `This train ${what}. Reason: ${reason}.`;
 }
 
 /** The fields of a live departure-board row `boardCancellationNote` reads

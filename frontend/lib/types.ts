@@ -1152,11 +1152,16 @@ export interface CancellationReason {
   source: CancellationReasonSource;
 }
 
-/** A call named by a cancellation. `stopIndex` indexes the response's own
- * `journeyStops`. */
-export interface CancellationStop {
+/** A station a cancellation names: its code and its name (`null` when
+ * unknown; fall back to the code). */
+export interface CancellationPlace {
   crs: string | null;
   name: string | null;
+}
+
+/** A call named by a cancellation. `stopIndex` indexes the response's own
+ * `journeyStops`. */
+export interface CancellationStop extends CancellationPlace {
   stopIndex: number;
 }
 
@@ -1181,6 +1186,17 @@ export interface Cancellation {
   sections: CancelledSection[];
   reason: CancellationReason | null;
   at: string | null; // RFC3339, when the cancellation was made
+}
+
+/** The compact `cancellation` on a list row (`GET /Journeys/mine`'s current
+ * leg, `GET /Train/mine`): the same meaning as `Cancellation`, without the
+ * sections. `startsFrom`/`terminatesAt` are set when the train starts or
+ * ends short; a partial with neither is a cancelled middle section. */
+export interface ListCancellation {
+  kind: CancellationKind;
+  startsFrom: CancellationPlace | null;
+  terminatesAt: CancellationPlace | null;
+  reason: CancellationReason | null;
 }
 
 /** `GET /Train/by-uid/{uid}/{date}`'s response shape
@@ -1320,6 +1336,9 @@ export interface TrackedTrainListItem extends ServiceModeFields, TrackingPhaseFi
    * first `true` is where travelled rows begin. Optional: absent from an
    * older backend (`lib/upcomingPast.ts` then reads the order instead). */
   travelled?: boolean;
+  /** What part of the train's run is cancelled and why (DS-181), `null`
+   * when no part is. Optional: absent from an older backend. */
+  cancellation?: ListCancellation | null;
   /** The list's sort key (DS-178): the departure `pinScheduledDeparture`
    * serves, else the London start of `serviceDate`. What
    * `lib/upcomingPast.ts`'s `mergeTravelOrder` places a train by among
@@ -1395,6 +1414,10 @@ export interface JourneyListItem extends UntrackedLegFields, TrackingPhaseFields
    * above. */
   finalArrivalDelayMinutes?: number | null;
   finalArrivalDelayProvisional?: boolean;
+  /** What part of the current leg's train's run is cancelled and why
+   * (DS-181), `null` when no part is (or the leg has no train). Optional:
+   * absent from an older backend. */
+  cancellation?: ListCancellation | null;
   /** Whether the whole journey is over, by the rule that splits the
    * api's travel order: its last leg has arrived (actual arrival, else
    * timetable plus delay, else timetable plus

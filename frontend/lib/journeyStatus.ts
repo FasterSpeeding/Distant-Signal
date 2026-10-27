@@ -423,6 +423,12 @@ export function journeyListItemSummary(item: JourneyListItem): JourneySummary {
   const currentFinished = item.status === 'completed' || current === 'untrackedDone';
   const currentStarted = currentFinished || item.status === 'en_route' || current === 'untrackedInProgress';
   const hasFinalDelay = item.finalArrivalDelayMinutes !== undefined;
+  // The current leg's train cancelled only in part (DS-181): a train
+  // TRUST marked cancelled en route is counted in `cancelledLegCount`, but
+  // isn't wholly cancelled; one that starts short may not be marked at all.
+  const currentPartial = item.cancellation?.kind === 'partial';
+  const cancelledLegCount = item.cancelledLegCount ?? (current === 'severe' ? 1 : 0);
+  const partialCountedCancelled = currentPartial && item.status === 'cancelled' ? 1 : 0;
   return summariseJourney({
     currentLegGroup: current,
     otherLegGroups: [],
@@ -431,7 +437,9 @@ export function journeyListItemSummary(item: JourneyListItem): JourneySummary {
     // can't be told from a wholly cancelled journey; it reads "Part
     // cancelled", which is true either way that some of it is.
     trainLegCount: item.trainLegCount ?? (current === 'severe' && legCount > 1 ? legCount : 1),
-    cancelledLegCount: item.cancelledLegCount ?? (current === 'severe' ? 1 : 0),
+    cancelledLegCount,
+    partCancelledLegCount: currentPartial ? 1 : 0,
+    fullyCancelledLegCount: Math.max(0, cancelledLegCount - partialCountedCancelled),
     unmatchedLegCount: item.unmatchedLegCount ?? (current === 'unmatched' ? 1 : 0),
     finishedLegCount: item.finishedLegCount ?? (currentFinished ? 1 : 0),
     startedLegCount: item.startedLegCount ?? (currentStarted ? 1 : 0),

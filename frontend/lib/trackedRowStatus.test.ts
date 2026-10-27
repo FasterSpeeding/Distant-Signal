@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   groupJourneyRowStatus,
+  journeyListItemCancellation,
   journeyRowStatus,
   trackedTrainRowStatus,
   type TrackedTrainRowInput,
 } from './trackedRowStatus';
-import type { GroupJourney, JourneyListItem } from './types';
+import type { GroupJourney, JourneyListItem, ListCancellation } from './types';
 
 const TODAY = '2026-10-21';
 const PAST = '2026-10-20';
@@ -239,5 +240,101 @@ describe('journey-only and train-only states', () => {
     expect(
       trackedTrainRowStatus(train({ resolutionStatus: 'pending', status: null, trackingPhase: null }), TODAY),
     ).toMatchObject({ kind: 'awaiting', finished: false });
+  });
+});
+
+describe("tracked row status: the train's own cancellation (DS-181)", () => {
+  const york = { crs: 'YRK', name: 'York' };
+  const reason = { code: 'JP', text: 'Failure to maintain vegetation', source: 'trust' } as const;
+  const terminates: ListCancellation = { kind: 'partial', startsFrom: null, terminatesAt: york, reason };
+  const startsFrom: ListCancellation = { kind: 'partial', startsFrom: york, terminatesAt: null, reason: null };
+  const middle: ListCancellation = { kind: 'partial', startsFrom: null, terminatesAt: null, reason: null };
+  const full: ListCancellation = { kind: 'full', startsFrom: null, terminatesAt: null, reason };
+
+  it('a train TRUST marked cancelled en route that terminates short is part cancelled, not cancelled', () => {
+    const { lone, oneLeg } = allThree({ status: 'cancelled', delayMinutes: null, cancellation: terminates });
+    for (const status of [lone, oneLeg]) {
+      expect(status).toMatchObject({ kind: 'partCancelled', cancellation: terminates });
+    }
+  });
+
+  it('a change of origin flags a train whose status is still running', () => {
+    const { lone, oneLeg } = allThree({ status: 'en_route', delayMinutes: 3, cancellation: startsFrom });
+    for (const status of [lone, oneLeg]) {
+      expect(status).toMatchObject({ kind: 'partCancelled', delayMinutes: 3, cancellation: startsFrom });
+    }
+  });
+
+  it('a cancelled middle section is part cancelled too', () => {
+    const { lone, oneLeg } = allThree({ status: 'en_route', delayMinutes: 0, cancellation: middle });
+    for (const status of [lone, oneLeg]) {
+      expect(status).toMatchObject({ kind: 'partCancelled', cancellation: middle });
+    }
+  });
+
+  it('a wholly cancelled train stays cancelled and carries its reason', () => {
+    const { lone, oneLeg } = allThree({ status: 'cancelled', delayMinutes: null, cancellation: full });
+    for (const status of [lone, oneLeg]) {
+      expect(status).toMatchObject({ kind: 'severe', cancellation: full });
+    }
+  });
+
+  it('a part-cancelled train that arrived stays flagged once finished', () => {
+    const { lone } = allThree({ status: 'completed', delayMinutes: 0, cancellation: terminates });
+    expect(lone).toMatchObject({ kind: 'partCancelled', finished: true, cancellation: terminates });
+  });
+
+  it('no cancellation reads as before', () => {
+    for (const status of Object.values(allThree({ status: 'cancelled', delayMinutes: null, cancellation: null }))) {
+      expect(status.kind === 'severe' || status.kind === 'partCancelled').toBe(true);
+      expect(status.cancellation ?? null).toBeNull();
+    }
+    expect(allThree({ status: 'en_route', delayMinutes: 0, cancellation: null }).lone).toMatchObject({
+      kind: 'good',
+      cancellation: null,
+    });
+  });
+
+  it("keeps a multi-leg journey's rollup without one train's detail", () => {
+    const row = journey({
+      legCount: 2,
+      trainLegCount: 2,
+      cancelledLegCount: 1,
+      finishedLegCount: 0,
+      startedLegCount: 0,
+      unmatchedLegCount: 0,
+      status: 'cancelled',
+      cancellation: full,
+    });
+    expect(journeyListItemCancellation(row)).toBeNull();
+    expect(journeyRowStatus(row, TODAY)).toMatchObject({ kind: 'partCancelled', cancellation: null });
+  });
+
+  it("a multi-leg journey whose current train is part cancelled says so, without that train's detail", () => {
+    const row = journey({
+      legCount: 2,
+      trainLegCount: 2,
+      cancelledLegCount: 0,
+      finishedLegCount: 0,
+      startedLegCount: 1,
+      unmatchedLegCount: 0,
+      cancellation: terminates,
+    });
+    expect(journeyRowStatus(row, TODAY)).toMatchObject({ kind: 'partCancelled', cancellation: null });
+  });
+
+  it('a journey with one train leg and a walk carries the train detail', () => {
+    const row = journey({
+      legCount: 2,
+      trainLegCount: 1,
+      cancelledLegCount: 1,
+      finishedLegCount: 0,
+      startedLegCount: 0,
+      unmatchedLegCount: 0,
+      status: 'cancelled',
+      cancellation: full,
+    });
+    expect(journeyListItemCancellation(row)).toBe(full);
+    expect(journeyRowStatus(row, TODAY)).toMatchObject({ kind: 'severe', cancellation: full });
   });
 });
