@@ -123,7 +123,7 @@
   //   helm-values   - default pattern `/(^|/)values\.ya?ml$/` matches
   //                   charts/distant-signal/values.yaml (any subdirectory
   //                   counts), which covers every upstream image this repo
-  //                   does not build itself: postgres:16 (both the
+  //                   does not build itself: postgres:18 and 16-alpine (the
   //                   bundled postgresql and devAuthentik's dedicated
   //                   one), valkey/valkey, ghcr.io/goauthentik/server:2026.8.0.
   //                   charts/distant-signal/values-example.yaml is NOT
@@ -218,7 +218,7 @@
     // Dockerfile is gone (the pgBackRest image now comes from
     // lucy/postgres-pgbackrest, pinned by the deployer). When a postgres
     // bump lands here, bump the deployer's pgBackRest image to the same
-    // Postgres version (docs/postgres-pitr.md).
+    // Postgres version (docs/postgres-pitr.md). Majors are disabled below.
     {
       // docker-compose.yml's rail-mcp `${RAIL_MCP_IMAGE:-...}` default is
       // a deliberately invalid placeholder (see the comment there), not a
@@ -270,6 +270,20 @@
       "matchDepNames": ["rust"],
       "matchDepTypes": ["uses-with"],
       "matchUpdateTypes": ["major", "minor", "patch"],
+      "enabled": false,
+    },
+    {
+      // A Postgres major changes the on-disk format: an 18 server can't
+      // open a 16 data directory, so a major needs pg_upgrade on production
+      // (docs/postgres-18-upgrade.md), the postgres-pgbackrest image on the
+      // same base, and a recreated compose volume. PR #29 (16 -> 18) showed
+      // the bot can't do that; majors are moved by hand. Covers the chart's
+      // postgresql.image, CI's service images, docker-compose.yml, and the
+      // Authentik dev database (docker-compose.authentik.yml,
+      // devAuthentik.postgresql.image).
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["postgres"],
+      "matchUpdateTypes": ["major"],
       "enabled": false,
     },
   ],
