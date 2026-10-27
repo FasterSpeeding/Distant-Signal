@@ -200,10 +200,6 @@ async fn the_writer_records_tracked_stop_boards() {
 
 #[tokio::test]
 #[ignore = "requires the per-service roles: run under scripts/test-postgres-roles.py --mode per-service"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one scenario over every role and source, read top to bottom"
-)]
 async fn each_producer_writes_only_its_own_freshness_rows() {
     let (Some(writer), Some(stations), Some(incidents), Some(api), Some(aggregator)) = (
         pool("DATABASE_URL_WRITER").await,

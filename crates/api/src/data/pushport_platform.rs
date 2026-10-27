@@ -293,11 +293,11 @@ mod tests {
         assert_eq!(stops[0].platform_status, Some(PlatformStatus::Cancelled));
     }
 
-    fn evidence(platform: &str, source: PlatformEvidenceSource) -> Option<PlatformEvidence> {
-        Some(PlatformEvidence {
+    fn evidence(platform: &str, source: PlatformEvidenceSource) -> PlatformEvidence {
+        PlatformEvidence {
             platform: platform.to_string(),
             source,
-        })
+        }
     }
 
     #[test]
@@ -306,14 +306,16 @@ mod tests {
         confirmed.platform_confirmed = true;
 
         let mut reported = vec![york()];
-        reported[0].platform_evidence = evidence("6", PlatformEvidenceSource::TrainReport);
+        reported[0].platform_evidence = Some(evidence("6", PlatformEvidenceSource::TrainReport));
         apply_pushport_platforms(&mut reported, std::slice::from_ref(&confirmed));
         apply_platform_basis(&mut reported);
         assert_eq!(reported[0].platform.as_deref(), Some("6"));
 
         let mut forming = vec![york()];
-        forming[0].platform_evidence =
-            evidence("6", PlatformEvidenceSource::PreviousWorkingArrival);
+        forming[0].platform_evidence = Some(evidence(
+            "6",
+            PlatformEvidenceSource::PreviousWorkingArrival,
+        ));
         apply_pushport_platforms(&mut forming, std::slice::from_ref(&confirmed));
         apply_platform_basis(&mut forming);
         assert_eq!(forming[0].platform.as_deref(), Some("5"));
@@ -326,15 +328,17 @@ mod tests {
         hidden.platform_suppressed = true;
 
         let mut forming = vec![york()];
-        forming[0].platform_evidence =
-            evidence("6", PlatformEvidenceSource::PreviousWorkingArrival);
+        forming[0].platform_evidence = Some(evidence(
+            "6",
+            PlatformEvidenceSource::PreviousWorkingArrival,
+        ));
         apply_pushport_platforms(&mut forming, std::slice::from_ref(&hidden));
         apply_platform_basis(&mut forming);
         assert_eq!(forming[0].platform, None);
         assert!(forming[0].platform_suppressed);
 
         let mut reported = vec![york()];
-        reported[0].platform_evidence = evidence("6", PlatformEvidenceSource::TrainReport);
+        reported[0].platform_evidence = Some(evidence("6", PlatformEvidenceSource::TrainReport));
         apply_pushport_platforms(&mut reported, std::slice::from_ref(&hidden));
         apply_platform_basis(&mut reported);
         assert_eq!(reported[0].platform.as_deref(), Some("6"));
