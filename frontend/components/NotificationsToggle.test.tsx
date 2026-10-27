@@ -200,7 +200,7 @@ describe('NotificationsToggle', () => {
       // Synchronously: no await has run since the click event.
       expect(requestPermission).toHaveBeenCalledTimes(1);
       expect(calls.at(-1)).toBe('requestPermission');
-      await screen.findByRole('button', { name: /notifications enabled/i });
+      await screen.findByRole('button', { name: 'Turn off on this device' });
       const afterClick = calls.slice(calls.indexOf('requestPermission'));
       // The key was fetched before the click, so nothing but subscribe
       // and the save sit between the permission answer and the end.
@@ -248,7 +248,7 @@ describe('NotificationsToggle', () => {
         activationActive = false;
       }, 0);
 
-      expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'Turn off on this device' })).toBeInTheDocument();
       expect(subscribe).toHaveBeenCalledTimes(1);
     });
   });
@@ -288,7 +288,7 @@ describe('NotificationsToggle', () => {
       stubFetch();
       renderWithMantine(<NotificationsToggle />);
       await clickEnable();
-      expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'Turn off on this device' })).toBeInTheDocument();
     });
   });
 
@@ -298,7 +298,7 @@ describe('NotificationsToggle', () => {
       stubFetch();
       renderWithMantine(<NotificationsToggle />);
       await clickEnable();
-      await screen.findByRole('button', { name: /notifications enabled/i });
+      await screen.findByRole('button', { name: 'Turn off on this device' });
       const options = registration.pushManager.subscribe.mock.calls[0]![0] as PushSubscriptionOptionsInit;
       expect(options.userVisibleOnly).toBe(true);
       expect(options.applicationServerKey).toBeInstanceOf(Uint8Array);
@@ -399,7 +399,7 @@ describe('NotificationsToggle', () => {
       stubFetch();
       renderWithMantine(<NotificationsToggle />);
       await clickEnable();
-      expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'Turn off on this device' })).toBeInTheDocument();
       expect(stale.unsubscribe).toHaveBeenCalledTimes(1);
       expect(subscribe).toHaveBeenCalledTimes(2);
     });
@@ -414,7 +414,7 @@ describe('NotificationsToggle', () => {
       });
       renderWithMantine(<NotificationsToggle />);
       await clickEnable();
-      expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'Turn off on this device' })).toBeInTheDocument();
       expect(keyCalls).toBe(2);
     });
 
@@ -434,7 +434,7 @@ describe('NotificationsToggle', () => {
       stubFetch();
       renderWithMantine(<NotificationsToggle />);
       await clickEnable();
-      expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'Turn off on this device' })).toBeInTheDocument();
     });
 
     it('shows LoginPromptModal on a 401', async () => {
@@ -506,11 +506,52 @@ describe('NotificationsToggle', () => {
   });
 
   // Bug: `enabled` was never seeded from the real subscription state.
-  it('seeds "Notifications enabled" on mount when a subscription already exists', async () => {
+  it('offers "Turn off on this device" on mount when a subscription already exists', async () => {
     stubPushApi({ getSubscription: vi.fn().mockResolvedValue(SUBSCRIPTION) });
     stubFetch();
     renderWithMantine(<NotificationsToggle />);
-    expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Turn off on this device' })).toBeEnabled();
+  });
+
+  it('turns this device off: forgets it on the server, then unsubscribes the browser', async () => {
+    const unsubscribe = vi.fn(() => {
+      calls.push('unsubscribe');
+      return Promise.resolve(true);
+    });
+    stubPushApi({ getSubscription: vi.fn().mockResolvedValue({ ...SUBSCRIPTION, unsubscribe }) });
+    const fetchMock = stubFetch();
+    const onChange = vi.fn();
+    renderWithMantine(<NotificationsToggle onChange={onChange} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn off on this device' }));
+    expect(await screen.findByRole('button', { name: /enable notifications/i })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/api/notifications/subscribe', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: SUBSCRIPTION.endpoint }),
+    });
+    expect(calls.indexOf('fetch /api/notifications/subscribe')).toBeLessThan(calls.indexOf('unsubscribe'));
+    expect(onChange).toHaveBeenCalledWith(false);
+  });
+
+  it('treats a device the server already forgot as turned off', async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    stubPushApi({ getSubscription: vi.fn().mockResolvedValue({ ...SUBSCRIPTION, unsubscribe }) });
+    stubFetch({ save: () => new Response('gone', { status: 404 }) });
+    renderWithMantine(<NotificationsToggle />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn off on this device' }));
+    expect(await screen.findByRole('button', { name: /enable notifications/i })).toBeInTheDocument();
+    expect(unsubscribe).toHaveBeenCalled();
+  });
+
+  it('keeps this device on and says so when turning off fails', async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    stubPushApi({ getSubscription: vi.fn().mockResolvedValue({ ...SUBSCRIPTION, unsubscribe }) });
+    stubFetch({ save: () => new Response('boom', { status: 500 }) });
+    renderWithMantine(<NotificationsToggle />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn off on this device' }));
+    expect(await screen.findByText("Couldn't turn off notifications. Try again.")).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Turn off on this device' })).toBeInTheDocument();
+    expect(unsubscribe).not.toHaveBeenCalled();
   });
 
   it('leaves "Enable notifications" on mount when there is no subscription', async () => {
@@ -519,6 +560,6 @@ describe('NotificationsToggle', () => {
     renderWithMantine(<NotificationsToggle />);
     const button = await screen.findByRole('button', { name: /enable notifications/i });
     await waitFor(() => expect(button).not.toBeDisabled());
-    expect(screen.queryByRole('button', { name: /notifications enabled/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Turn off on this device' })).not.toBeInTheDocument();
   });
 });

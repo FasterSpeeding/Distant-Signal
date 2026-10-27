@@ -418,6 +418,10 @@ export interface Preferences {
   pinnedLines: string[];
   pinnedStations: string[];
   pinnedOperators: string[];
+  /** Of `pinnedLines`, those whose status changes are not pushed
+   * (`PUT /preferences/pinned-lines/{id}/alerts`). Absent from an older
+   * backend. */
+  silentPinnedLines?: string[];
 }
 
 export interface LineSummary {
@@ -1011,6 +1015,10 @@ export interface TrackedTrainState extends TrainJourneyState {
    * on the owner's `GET /Train/{trackingId}`; absent from an older backend. */
   journeyIds?: number[];
   singleLegJourneyIds?: number[];
+  /** Whether this train's delay, cancellation and skipped-stop pushes are
+   * on (`PATCH /Train/{trackingId}`). Only on the owner's view (the train
+   * page, and the owner's journey); absent otherwise. */
+  notificationsEnabled?: boolean;
 }
 
 /** Exactly the fields `components/TrainJourney.tsx` reads -- notably NOT
@@ -1698,9 +1706,45 @@ export interface RevisionsResponse {
   revisions: Revision[];
 }
 
-/** `GET`/`PUT /preferences/notifications`. */
+/** Quiet hours: `HH:MM` local times in an IANA `timezone`; `end` may be
+ * before `start` (through midnight). */
+export interface QuietHours {
+  start: string;
+  end: string;
+  timezone: string;
+}
+
+/** `GET /preferences/notifications` (and the `PUT`'s answer): a switch per
+ * kind of push, the delay threshold (`null`: the default, 15 minutes) and
+ * the quiet hours (`null`: none). The fields after `journeySuggestions`
+ * are absent from an older backend. */
 export interface NotificationPreferences {
   journeySuggestions: boolean;
+  lineStatus?: boolean;
+  trainDelay?: boolean;
+  trainCancel?: boolean;
+  predictedStart?: boolean;
+  stationSkip?: boolean;
+  templateAttention?: boolean;
+  delayThresholdMinutes?: 5 | 10 | 15 | 30 | null;
+  quietHours?: QuietHours | null;
+  /** Notifications are paused (held, as in quiet hours) until this time;
+   * `null` when not paused. At most a week ahead. */
+  snoozedUntil?: string | null;
+}
+
+/** A `PUT /preferences/notifications` body: only the fields sent change. */
+export type NotificationPreferencesUpdate = Partial<NotificationPreferences>;
+
+/** One of `GET /notifications/devices`: a browser push goes to. */
+export interface PushDevice {
+  id: number;
+  /** "Chrome on Android", or null when it could not be worked out. */
+  label: string | null;
+  createdAt: string;
+  lastUsedAt: string;
+  /** Hex SHA-256 of the push endpoint: hash this browser's to find it. */
+  endpointSha256: string;
 }
 
 /** One leg of a `GET /Trips/plan` itinerary
@@ -3341,7 +3385,7 @@ export interface TransitLineTimetable {
 
 /** A delegated-access scope a connected app may hold
  * (`crates/api/src/auth/delegated.rs::Scope`). */
-export type ConnectedAppScope = 'journeys:read' | 'journeys:write' | 'journeys:delete';
+export type ConnectedAppScope = 'journeys:read' | 'journeys:write' | 'journeys:delete' | 'preferences:read';
 
 /** One app the user connected (`GET /public/account/connected-apps`,
  * `crates/api/src/routes/connected_apps.rs::GrantView`). */

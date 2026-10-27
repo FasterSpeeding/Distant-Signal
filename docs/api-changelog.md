@@ -3,6 +3,65 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-26: notification settings
+
+Additive. Nothing existing changes for a client that does not use the new
+routes. DS-MCP needs no change.
+
+- **New: `DELETE /public/notifications/subscribe`** `{endpoint}` (session
+  only): forgets the caller's push subscription for that endpoint, "Turn
+  off on this device". `204`; `404` when the caller has none for it
+  (including another user's endpoint). Unknown fields are refused (`422`).
+- **New: `PATCH /Train/{trackingId}`** `{notificationsEnabled}` (session
+  only, owner only): turns that tracked train's pushes (delay,
+  cancellation, skipped stop, predicted late start) on or off. `200` with
+  the body echoed; `404` for a train that is not the caller's. Unknown
+  fields are refused (`422`).
+- `GET /Train/{trackingId}` and the owner's `GET /Journeys/{id}` (each
+  leg's `trackedTrainState`) gain `notificationsEnabled`. Absent on every
+  other reader's view.
+- `GET /public/preferences/notifications` gains a switch per kind of
+  push, each `true` unless turned off: `lineStatus`, `trainDelay`,
+  `trainCancel`, `predictedStart`, `stationSkip` and `templateAttention`
+  (beside `journeySuggestions`); `delayThresholdMinutes` (`5`, `10`, `15`
+  or `30`, `null` for the default, 15); and `quietHours` (`{start, end,
+  timezone}`: `HH:MM` local times, `end` may be before `start`, and an
+  IANA zone; `null` for none). In quiet hours line and train pushes are
+  held and the latest state is sent when they end; cancellations still go
+  through, and the "app connected" notice is never held.
+- `PUT /public/preferences/notifications` takes any of those fields and
+  changes only the ones present (`journeySuggestions` is no longer
+  required; `null` clears the threshold or the quiet hours), and answers
+  with every setting instead of echoing the body. `400` for a threshold
+  outside the four, quiet hours that start and end at the same time or
+  an unknown zone; unknown fields are still refused (`422`).
+- `GET`/`PUT /public/preferences/notifications` also take
+  `snoozedUntil` (RFC 3339, at most a week ahead, else `400`; `null` to
+  resume): pushes are held as in quiet hours until then. It reads as
+  `null` once past.
+- New delegated scope `preferences:read`: a connected app holding it may
+  read `GET /public/preferences/notifications` on the delegated listener
+  (read only). Additive; DS-MCP needs it in its client's `maxScopes`, in
+  its token request and in a tool before it can use it
+  (docs/connected-apps.md).
+- **New: `PUT /public/preferences/pinned-lines/{lineId}/alerts`**
+  `{notify}`: whether a pinned line's status changes are pushed. Pinning
+  and alerting are separate; every existing pin alerts, and so does a new
+  one until this says otherwise. `204`; `404` when the caller has not
+  pinned that line. `PUT /public/preferences/pinned-lines` keeps the
+  switch of every line it keeps pinned.
+- `GET /public/preferences` gains `silentPinnedLines`: the pinned lines
+  whose alerts are off.
+- **New: `GET /public/notifications/devices`**: the caller's devices with
+  push on, most recently used first: `[{id, label, createdAt, lastUsedAt,
+  endpointSha256}]`. `label` names the browser ("Chrome on Android"), from
+  the User-Agent sent when it subscribed, or is `null`; `lastUsedAt` is
+  the later of the last push delivered and the last subscribe;
+  `endpointSha256` (hex) lets a browser find itself by hashing its own
+  endpoint. The endpoint and keys are never sent.
+- **New: `DELETE /public/notifications/devices/{id}`**: stops pushes to
+  one of the caller's devices. `204`; `404` when it is not theirs.
+
 ## 2026-10-26: journey lists in one travel order, shared journeys merged in
 
 Additive parameter and fields; two lists change order. DS-MCP needs no

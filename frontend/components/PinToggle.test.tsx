@@ -328,4 +328,41 @@ describe('PinToggle', () => {
       expect(screen.queryByText("Couldn't update. Check your connection and try again.")).not.toBeInTheDocument(),
     );
   });
+  it('asks to alert about a line just pinned, on by default, and saves turning it off', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/api/preferences') {
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), {
+          status: 200,
+        });
+      }
+      return new Response(null, { status: 204 });
+    });
+    renderWithMantine(<PinToggle kind="line" id="metrolink:blue" initiallyPinned={false} />);
+    expect(screen.queryByRole('switch', { name: 'Alert me about this line' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
+    const alerts = await screen.findByRole('switch', { name: 'Alert me about this line' });
+    expect(alerts).toBeChecked();
+    fireEvent.click(alerts);
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/preferences/pinned-lines/metrolink%3Ablue/alerts', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notify: false }),
+      }),
+    );
+    await waitFor(() => expect(alerts).not.toBeChecked());
+  });
+
+  it('does not ask about alerts when pinning a station', async () => {
+    vi.mocked(fetch).mockImplementation(async (url) =>
+      url === '/api/preferences'
+        ? new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 })
+        : new Response(null, { status: 204 }),
+    );
+    renderWithMantine(<PinToggle kind="station" id="KGX" initiallyPinned={false} />);
+    fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
+    await waitFor(() => expect(screen.getByLabelText('Unpin (currently pinned)')).toBeInTheDocument());
+    expect(screen.queryByRole('switch', { name: 'Alert me about this line' })).not.toBeInTheDocument();
+  });
 });

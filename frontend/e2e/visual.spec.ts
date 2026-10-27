@@ -77,6 +77,9 @@ const PAGES: [name: string, path: string][] = [
   // in prompt, logged in the account sections too.
   ['preferences', '/account/preferences'],
   ['preferences-logged-in', '/account/preferences'],
+  // Every notification setting (DS-153), logged in: the seed user's
+  // defaults, no device with push on.
+  ['notifications', '/account/notifications'],
   // The Journeys page's Upcoming and Past lists, logged in: the seed's tracked trains and its
   // planned three-leg journey, named end to end (docs/style-guide.md,
   // "Journey names").
@@ -105,6 +108,7 @@ const LOGGED_IN_PAGES: ReadonlySet<string> = new Set([
   'home-logged-in',
   'account',
   'preferences-logged-in',
+  'notifications',
   'journeys',
   'group',
   'train-no-timetable',

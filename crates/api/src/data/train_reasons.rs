@@ -359,6 +359,7 @@ mod tests {
             shared_group_count: 0,
             journey_ids: None,
             single_leg_journey_ids: None,
+            notifications_enabled: None,
             trains_id,
             journey_stops: stops,
             may_have_arrived: false,

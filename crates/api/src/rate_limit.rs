@@ -900,7 +900,8 @@ pub async fn enforce(
 fn delegated_class(token: &crate::auth::delegated::DelegatedToken) -> LimitClass {
     use crate::auth::delegated::Scope;
     match token.route_scope {
-        Scope::JourneysRead => LimitClass::DelegatedRead,
+        // A read, charged like the journey reads.
+        Scope::JourneysRead | Scope::PreferencesRead => LimitClass::DelegatedRead,
         Scope::JourneysWrite => LimitClass::DelegatedWrite,
         Scope::JourneysDelete => LimitClass::DelegatedDelete,
     }
