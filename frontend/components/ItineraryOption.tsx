@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Group, Radio, Stack, Text } from '@mantine/core';
 import { ClickableCard, selectableCardRadioProps, StaticCard } from './ClickableCard';
 import { codeRouteLabel, tflStopPlaceName } from '@/lib/stationLabel';
@@ -9,12 +10,18 @@ import type {
   TripPlanItinerary,
   TripPlanLeg,
   TripPlanLegLive,
+  TripPlanTransitLeg,
+  TripPlanTransitWalk,
   TripPlanViaSatisfied,
   TripPlanWaypointSatisfied,
   TflStop,
 } from '@/lib/types';
 import { accessLegNote, transferLabel } from '@/lib/displayLabels';
+import { transitServiceModeLabel } from '@/lib/serviceMode';
+import { SCHEDULED_CAPTION } from '@/lib/transitStops';
 import { StateBadge } from './StateBadge';
+import { StatusBadge } from './StatusBadge';
+import { TransitLineSwatch } from './TransitLineSwatch';
 import { LateDepartureNote, plannerLateDepartureTimes } from './LateDepartureNote';
 
 /** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
@@ -27,7 +34,9 @@ import { LateDepartureNote, plannerLateDepartureTimes } from './LateDepartureNot
  * result yet (or a test exercising this component in isolation) still
  * renders the bare-code fallback `codeRouteLabel` already provides for an
  * unresolved code. */
-function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): string {
+function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): ReactNode {
+  if (leg.kind === 'transit') return transitLegSummary(leg);
+  if (leg.kind === 'transfer' && leg.transitWalk) return transitWalkSummary(leg.transitWalk, leg.minutes);
   // A TfL stop From or To (DS-135) is no station: its access leg has no
   // code at that end, only the stop, named `Uxbridge (Tube)`.
   const end = (code: string | null, stop: TflStop | undefined): [string | null, string | undefined] => {
@@ -49,6 +58,38 @@ function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): string
     return `${departure} ${route} ${arrival}${liveNote(leg.live)}`;
   }
   return `${transferLabel(leg.mode, leg.line)} ${route}, ${leg.minutes} min`;
+}
+
+/** A tram leg (transit trip planning §11.3): "08:14 Tram (Blue Line)
+ * Piccadilly to Victoria 08:22", the line's name after its colour, as the
+ * network page's line cards show it. A replacement bus has no line:
+ * "08:14 Replacement bus Piccadilly to Victoria 08:22". Its times are the
+ * timetable's, never live. */
+function transitLegSummary(leg: TripPlanTransitLeg): ReactNode {
+  const departure = leg.scheduledDeparture.slice(0, 5);
+  const arrival = leg.scheduledArrival.slice(0, 5);
+  const mode = transitServiceModeLabel(leg.serviceMode) ?? 'Tram';
+  const route = `${leg.originStop.name} to ${leg.destinationStop.name}`;
+  if (leg.serviceMode !== 'tram' || !leg.line) return `${departure} ${mode} ${route} ${arrival}`;
+  return (
+    <>
+      {departure} {mode} (
+      <TransitLineSwatch line={leg.line} size={10} inline />
+      {leg.line.name}) {route} {arrival}
+    </>
+  );
+}
+
+/** A walk between a station and a tram stop (§8.1): the tram end has no
+ * station code, so the row names the stop. */
+function transitWalkSummary(walk: TripPlanTransitWalk, minutes: number): string {
+  return `Walk ${walk.towardsStop ? 'to' : 'from'} ${walk.stop.name} tram stop, ${minutes} min`;
+}
+
+/** The note under a tram walk: its minutes are worked out from where the
+ * stop and station are, not measured. */
+function transitWalkNote(walk: TripPlanTransitWalk): string {
+  return `About ${walk.walkMinutes} min walk${walk.estimated ? ', estimated' : ''}`;
 }
 
 /** A short live annotation for a train leg (`GET /Trips/plan`'s live
@@ -121,12 +162,19 @@ export function ItineraryOption({
                   <Group gap="xs" wrap="wrap">
                     <Text size="sm">{legSummary(leg, stationNames)}</Text>
                     {leg.kind === 'train' && <ServiceModeBadge mode={leg.serviceMode} />}
+                    {leg.kind === 'transit' && <ServiceModeBadge transitMode={leg.serviceMode} />}
                   </Group>
                   {leg.kind === 'transfer' && leg.access && (
                     <Text size="xs" c="dimmed" pl="sm">
                       {accessLegNote(leg.access)}
                     </Text>
                   )}
+                  {leg.kind === 'transfer' && leg.transitWalk && (
+                    <Text size="xs" c="dimmed" pl="sm">
+                      {transitWalkNote(leg.transitWalk)}
+                    </Text>
+                  )}
+                  {leg.kind === 'transit' && <TransitLegNotes leg={leg} />}
                   {leg.kind === 'train' && leg.live?.reliesOnLateDeparture && (
                     <LateDepartureNote {...plannerLateDepartureTimes(leg.live.reliesOnLateDeparture)} />
                   )}
@@ -144,6 +192,11 @@ export function ItineraryOption({
                   {waypointSatisfiedLabel(stop, stationLabelOf(stop))}
                 </Text>
               ))}
+              {itinerary.scheduledOnly && (
+                <Text size="xs" c="dimmed" data-scheduled-only>
+                  {SCHEDULED_CAPTION}
+                </Text>
+              )}
             </Stack>
           }
         />
@@ -175,5 +228,33 @@ export function ItineraryOption({
     <ClickableCard selected={selected}>{content}</ClickableCard>
   ) : (
     <StaticCard>{content}</StaticCard>
+  );
+}
+
+/** Under a tram leg: how often trams run, when there are enough to say,
+ * and any disruption reported on its line, in the line status's colour.
+ * Shown, never acted on: the plan still uses the timetable. */
+function TransitLegNotes({ leg }: { leg: TripPlanTransitLeg }) {
+  return (
+    <>
+      {leg.headwayMinutes !== undefined && (
+        <Text size="xs" c="dimmed" pl="sm">
+          About every {leg.headwayMinutes} min
+        </Text>
+      )}
+      {leg.notices.map((notice, index) => (
+        <Stack key={index} gap={2} pl="sm" pt={2} data-transit-leg-notice>
+          <Group gap="xs" wrap="wrap">
+            <StatusBadge severity={notice.severity} />
+            <Text size="xs">{notice.message}</Text>
+          </Group>
+          {notice.reason && (
+            <Text size="xs" c="dimmed">
+              {notice.reason}
+            </Text>
+          )}
+        </Stack>
+      ))}
+    </>
   );
 }

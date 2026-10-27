@@ -45,6 +45,25 @@ async function searchTflStopPlaces(q: string, signal?: AbortSignal): Promise<Sug
 }
 
 async function searchTransitStopPlaces(q: string, signal?: AbortSignal): Promise<Suggestion[]> {
+  const matches = await matchingTransitStations(q, signal);
+  return matches.map(({ network, stop }) => ({
+    code: `transit:${network.id}:${stop.id}`,
+    name: stop.name,
+    detail: transitDetail(network),
+    place: { kind: 'transit', network: network.id, stopId: stop.id },
+  }));
+}
+
+/** The served transit networks' stations whose names match `q` (`GET
+ * /public/transit/networks`, then each network's `/stops`), each with its
+ * network; with `tripPlanningOnly`, only networks the planner routes over
+ * (`tripPlanning: true`). `[]` for a blank query; a failed lookup is no
+ * rows for that network. */
+export async function matchingTransitStations(
+  q: string,
+  signal?: AbortSignal,
+  { tripPlanningOnly = false }: { tripPlanningOnly?: boolean } = {},
+): Promise<{ network: TransitNetwork; stop: TransitStop }[]> {
   const needle = searchKey(q);
   if (!needle) return [];
   const init = signal ? { signal } : {};
@@ -53,21 +72,16 @@ async function searchTransitStopPlaces(q: string, signal?: AbortSignal): Promise
   const body = (await response.json()) as { networks?: unknown };
   const networks = arrayOf(body.networks)
     .filter((n): n is TransitNetwork => hasStrings(n, 'id', 'name'))
-    .filter((n) => TRANSIT_ID.test(n.id));
+    .filter((n) => TRANSIT_ID.test(n.id) && (!tripPlanningOnly || n.tripPlanning === true));
   const perNetwork = await Promise.all(
-    networks.map(async (network): Promise<Suggestion[]> => {
+    networks.map(async (network) => {
       const stopsResponse = await fetch(`/api/transit/${encodeURIComponent(network.id)}/stops`, init);
       if (!stopsResponse.ok) return [];
       const stopsBody = (await stopsResponse.json()) as { stops?: unknown };
       return arrayOf(stopsBody.stops)
         .filter((stop): stop is TransitStop => hasStrings(stop, 'id', 'name'))
         .filter((stop) => TRANSIT_STOP_ID.test(stop.id) && searchKey(stop.name).includes(needle))
-        .map((stop) => ({
-          code: `transit:${network.id}:${stop.id}`,
-          name: stop.name,
-          detail: transitDetail(network),
-          place: { kind: 'transit', network: network.id, stopId: stop.id },
-        }));
+        .map((stop) => ({ network, stop }));
     }),
   );
   return perNetwork.flat();

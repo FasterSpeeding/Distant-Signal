@@ -58,3 +58,26 @@ describe('lib/serviceMode', () => {
     expect(serviceNoun('ferry')).toBe('Ferry');
   });
 });
+
+describe('ServiceModeBadge for a planned transit leg', () => {
+  it.each([
+    ['tram', 'Tram'],
+    ['replacementBus', 'Replacement bus'],
+  ] as const)('%s reads "%s", with its own icon', (transitMode, label) => {
+    const { container } = renderWithMantine(<ServiceModeBadge transitMode={transitMode} />);
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(container.querySelector('svg[data-icon]')).toHaveAttribute('data-icon', transitMode);
+    expect(container.querySelector('[data-service-mode]')).toHaveAttribute('data-service-mode', transitMode);
+  });
+
+  it('draws a tram unlike the buses and the ferry', () => {
+    const tram = renderWithMantine(<ServiceModeBadge transitMode="tram" />);
+    const tramMarkup = tram.container.querySelector('svg')?.innerHTML;
+    tram.unmount();
+    for (const mode of ['replacementBus', 'bus', 'ferry'] as const) {
+      const { container, unmount } = renderWithMantine(<ServiceModeBadge mode={mode} />);
+      expect(container.querySelector('svg')?.innerHTML).not.toBe(tramMarkup);
+      unmount();
+    }
+  });
+});

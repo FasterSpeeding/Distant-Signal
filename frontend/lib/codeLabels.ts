@@ -10,6 +10,7 @@ import {
   tflStopPlaceName,
 } from './stationLabel';
 import { getStationNames, searchTocs } from './suggestions';
+import { isTransitStopCode, transitNetworkOf, transitStopPlaceName } from './transitStops';
 import type { Suggestion, TflStop } from './types';
 
 /** Code -> display label for one kind of code lookup field (stations,
@@ -104,7 +105,7 @@ export function createCodeLabelCache({
  * means nothing to a reader. */
 export function stationFieldLabel(code: string, name: string | null | undefined): string {
   if (!name) return code;
-  if (isTiplocCode(code) || isGroupCode(code) || isTflStopCode(code)) return name;
+  if (isTiplocCode(code) || isGroupCode(code) || isTflStopCode(code) || isTransitStopCode(code)) return name;
   return stationLabel(code, name);
 }
 
@@ -122,11 +123,23 @@ async function lookUpStationLabel(code: string): Promise<string | null> {
     if (!response.ok) return null;
     return tflStopPlaceName((await response.json()) as TflStop);
   }
+  if (isTransitStopCode(code)) return lookUpTransitStopLabel(code.trim().toUpperCase());
   // `/stations`' place keys (`tfl:940G...`) only ever come from a pick.
   if (code.includes(':') && !isTiplocCode(code)) return null;
   const names = await getStationNames([code]);
   const name = names.get(code);
   return name ? stationFieldLabel(isTiplocCode(code) ? code : code.toUpperCase(), name) : null;
+}
+
+/** A planner tram station (`9400ZZMAPIC`) as the planner's From and To
+ * name it: "Piccadilly (Metrolink)", from its network's stop page. */
+async function lookUpTransitStopLabel(code: string): Promise<string | null> {
+  const network = transitNetworkOf(code);
+  if (!network) return null;
+  const response = await fetch(`/api/transit/${encodeURIComponent(network.network)}/stops/${encodeURIComponent(code)}`);
+  if (!response.ok) return null;
+  const stop = (await response.json()) as { name?: unknown };
+  return typeof stop.name === 'string' && stop.name ? transitStopPlaceName(stop.name, network.name) : null;
 }
 
 /** Every station, stop and group field's labels (`components/StationField.tsx`). */
@@ -163,13 +176,13 @@ export function typedStationCode(text: string): string | null {
 
 /** Any code the journey planner takes, as `GET /Trips/plan` takes it: a
  * station code, a `tiploc:` stop, a `group:` and, for From and To, a TfL
- * stop id. */
+ * stop id or a planner tram station (`9400ZZMAPIC`). */
 export function typedPlannerCode(text: string, { tflStops }: { tflStops: boolean }): string | null {
   const trimmed = text.trim();
   if (TYPED_CRS.test(trimmed)) return trimmed.toUpperCase();
   if (isTiplocCode(trimmed) && trimmed.length > 'tiploc:'.length) return normalizeLocationCode(trimmed);
   if (isGroupCode(trimmed)) return parseGroupCode(trimmed);
-  if (tflStops && isTflStopCode(trimmed)) return trimmed.toUpperCase();
+  if (tflStops && (isTflStopCode(trimmed) || isTransitStopCode(trimmed))) return trimmed.toUpperCase();
   return null;
 }
 

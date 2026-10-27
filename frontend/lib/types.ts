@@ -1776,7 +1776,82 @@ export type TripPlanLeg =
        * Rail station (DS-135): which end, how the station was found, and
        * how far it goes. Its `minutes` are an estimate. */
       access?: TripPlanAccessLeg;
-    };
+      /** Only on a walk between a National Rail station and a tram stop
+       * (transit trip planning, M2): the tram end, which has no code.
+       * `walkMinutes` is the walk alone, an estimate; `minutes` adds the
+       * change allowance on the tram side. */
+      transitWalk?: TripPlanTransitWalk;
+    }
+  | TripPlanTransitLeg;
+
+/** A ride on a timetabled transit network (`kind: "transit"`, sent only
+ * when the request says `transit=true` or names a tram stop): Metrolink's
+ * trams and their replacement buses. Scheduled times only: never live,
+ * never a train to track. */
+export interface TripPlanTransitLeg {
+  kind: 'transit';
+  /** The network id, `metrolink`. */
+  network: string;
+  serviceMode: TripPlanTransitServiceMode;
+  liveTracking: false;
+  realtime: false;
+  serviceDate: string; // "YYYY-MM-DD"
+  scheduledDeparture: string; // "HH:MM:SS"
+  scheduledArrival: string;
+  departureDayOffset: number;
+  arrivalDayOffset: number;
+  /** `null` for a replacement bus. */
+  line: { id: string; name: string; colour: string | null } | null;
+  headsign: string | null;
+  originCrs: null;
+  destinationCrs: null;
+  originStop: TripPlanTransitStop;
+  destinationStop: TripPlanTransitStop;
+  /** The usual gap between trams of this line and direction around the
+   * leg's departure; absent when too few run to say. */
+  headwayMinutes?: number;
+  notices: TripPlanTransitNotice[];
+}
+
+/** `tram` or `replacementBus`. */
+export type TripPlanTransitServiceMode = 'tram' | 'replacementBus';
+
+/** A transit leg's end: the station in its network's public spelling
+ * (`9400ZZMAPIC`). */
+export interface TripPlanTransitStop {
+  id: string;
+  name: string;
+  platform: string | null;
+}
+
+/** A current disruption on a transit leg's line. */
+export interface TripPlanTransitNotice {
+  kind: 'disruption';
+  lineId: string | null;
+  /** A severity number, as `statusSeverity`. */
+  severity: number;
+  description: string;
+  message: string;
+  reason: string | null;
+}
+
+/** The tram end of a rail-to-tram walk. `towardsStop`: walking from the
+ * station to the stop. */
+export interface TripPlanTransitWalk {
+  network: string;
+  stop: { id: string; name: string };
+  towardsStop: boolean;
+  walkMinutes: number;
+  estimated: boolean;
+}
+
+/** A response-level note about a transit network, such as no timetable
+ * for the date: `message` is the sentence to show. */
+export interface TripPlanNetworkNotice {
+  network: string;
+  reason: string;
+  message: string;
+}
 
 /** How a `GET /Trips/plan` access candidate was found: the stop's own
  * station (`hub`), a ride on one of its lines (`line`), a short walk
@@ -1823,6 +1898,8 @@ export interface TripPlanItinerary {
   /** The first leg is the same train the previous segment's itinerary
    * rode into the waypoint: no change is made there. */
   continuesPreviousTrain?: boolean;
+  /** Any leg is a transit leg, whose times are scheduled, not live. */
+  scheduledOnly?: boolean;
 }
 
 /** One whole journey: `segments[s].itineraries[j]` for every segment `s`,
@@ -1978,6 +2055,9 @@ export interface TripPlanResponse extends TimetableCertaintyFields {
     origin: TripPlanStopAccess | null;
     destination: TripPlanStopAccess | null;
   };
+  /** With transit legs in play: what the plan could not use, such as a
+   * network with no timetable for the date. */
+  transitNotices?: TripPlanNetworkNotice[];
 }
 
 /** Body for `POST /Journeys/{journeyId}/legs` (multi-leg chaining, spec
@@ -3107,6 +3187,8 @@ export interface TransitNetwork {
   horizonTo: string | null;
   timetableAsOf: string | null;
   situationsAsOf: string | null;
+  /** The trip planner can route over this network's stations. */
+  tripPlanning?: boolean;
 }
 
 /** A transit line: `id` is public (`metrolink:blue`), `lineId` the path
