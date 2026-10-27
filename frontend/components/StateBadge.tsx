@@ -40,7 +40,9 @@ export const STATE_TONE_COLOR: Record<StateTone, MantineColor> = {
  *
  * `href` makes the badge an in-page anchor (a journey's "Needs a train
  * picked" jumps to the leg). `data-state-badge` carries the tone, as a
- * test and CSS hook; other `data-*` attributes pass through. */
+ * test and CSS hook; other `data-*` attributes pass through.
+ * `aria-hidden` hides a badge whose words a fuller sentence beside it
+ * already gives a screen reader (`TrackedRowStatusBadge`'s cancellation). */
 export function StateBadge({
   tone = 'neutral',
   size,
@@ -48,6 +50,7 @@ export function StateBadge({
   href,
   leftSection,
   children,
+  'aria-hidden': ariaHidden,
   ...data
 }: {
   tone?: StateTone;
@@ -57,6 +60,7 @@ export function StateBadge({
   /** A 12px icon before the label (`ServiceModeBadge`). */
   leftSection?: ReactNode;
   children: ReactNode;
+  'aria-hidden'?: boolean;
 } & Record<`data-${string}`, string | undefined>) {
   const props = {
     ...data,
@@ -66,6 +70,7 @@ export function StateBadge({
     ...(size !== undefined && { size }),
     ...(title !== undefined && { title }),
     ...(leftSection !== undefined && { leftSection }),
+    ...(ariaHidden !== undefined && { 'aria-hidden': ariaHidden }),
     'data-state-badge': tone,
   } as const;
   return href === undefined ? (

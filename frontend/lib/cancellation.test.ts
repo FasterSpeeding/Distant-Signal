@@ -6,9 +6,12 @@ import {
   cancellationReasonSource,
   cancellationSummary,
   cancelledSectionLines,
+  cancellationReasonLine,
+  listCancellationHeadline,
+  listCancellationSentence,
   trainCancellation,
 } from './cancellation';
-import type { Cancellation, CancellationStop } from './types';
+import type { Cancellation, CancellationStop, ListCancellation } from './types';
 
 function stop(name: string, stopIndex: number): CancellationStop {
   return { crs: name.slice(0, 3).toUpperCase(), name, stopIndex };
@@ -193,5 +196,55 @@ describe('boardCancellationNote', () => {
         callingPoints: points([false, false, false, false]),
       }),
     ).toBeNull();
+  });
+});
+
+describe('list row cancellation (DS-181 follow-up)', () => {
+  const york = { crs: 'YRK', name: 'York' };
+  const vegetation = { code: 'JP', text: 'Failure to maintain vegetation', source: 'trust' } as const;
+  function list(overrides: Partial<ListCancellation> = {}): ListCancellation {
+    return { kind: 'partial', startsFrom: null, terminatesAt: null, reason: null, ...overrides };
+  }
+
+  it.each([
+    ['terminates short', list({ terminatesAt: york }), 'Terminates at York', 'This train terminates at York.'],
+    ['starts short', list({ startsFrom: york }), 'Starts from York', 'This train starts from York.'],
+    [
+      'both ends',
+      list({ startsFrom: { crs: 'WOK', name: 'Woking' }, terminatesAt: { crs: 'BSK', name: 'Basingstoke' } }),
+      'Starts from Woking and terminates at Basingstoke',
+      'This train starts from Woking and terminates at Basingstoke.',
+    ],
+    ['a middle section', list(), 'Part cancelled', 'This train is part cancelled.'],
+    ['wholly', list({ kind: 'full' }), 'Cancelled', 'This train is cancelled.'],
+  ])('%s', (_, cancellation, headline, sentence) => {
+    expect(listCancellationHeadline(cancellation)).toBe(headline);
+    expect(listCancellationSentence(cancellation)).toBe(sentence);
+  });
+
+  it('falls back to the code when the name is unknown', () => {
+    expect(listCancellationHeadline(list({ terminatesAt: { crs: 'YRK', name: null } }))).toBe('Terminates at YRK');
+  });
+
+  it('adds the reason as its own sentence', () => {
+    expect(listCancellationSentence(list({ terminatesAt: york, reason: vegetation }))).toBe(
+      'This train terminates at York. Reason: Failure to maintain vegetation.',
+    );
+    expect(listCancellationSentence(list({ kind: 'full', reason: vegetation }))).toBe(
+      'This train is cancelled. Reason: Failure to maintain vegetation.',
+    );
+  });
+
+  it('gives the reason a capital, without a board sentence or a closing full stop', () => {
+    expect(cancellationReasonLine(vegetation)).toBe('Failure to maintain vegetation');
+    expect(
+      cancellationReasonLine({
+        code: null,
+        text: 'This train has been cancelled because of a fault with the signalling system.',
+        source: 'ldbws',
+      }),
+    ).toBe('A fault with the signalling system');
+    expect(cancellationReasonLine({ code: 'PD', text: null, source: 'trust' })).toBeNull();
+    expect(cancellationReasonLine(null)).toBeNull();
   });
 });

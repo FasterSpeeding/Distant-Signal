@@ -3,6 +3,38 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-27: `cancellation` on list rows, and reasons in pushes
+
+Additive. DS-MCP can keep reading `status`; it should read `cancellation`
+to tell a train that terminates short from one that does not run at all
+(DS-184; `crates/api/src/data/cancellation.rs`).
+
+- `GET /Journeys/mine` rows (the current leg's train) and `GET /Train/mine`
+  rows gain `cancellation`, `null` when no part of the train's run is
+  cancelled (and for an open or untracked leg):
+
+  ```json
+  "cancellation": {
+    "kind": "partial",
+    "startsFrom": null,
+    "terminatesAt": { "crs": "YRK", "name": "York" },
+    "reason": { "code": "IA", "text": "Signal failure (including no fault found)", "source": "trust" }
+  }
+  ```
+
+  It is the detail's `cancellation` (2026-10-26 below) without the
+  stop-indexed fields: `kind` `full` or `partial`; `startsFrom` and
+  `terminatesAt` (`{crs, name}`, `name` may be `null`) when the train
+  starts or ends short; `reason` as on the detail. A row can have `status:
+  "cancelled"` with a `partial` cancellation (TRUST marks a train cancelled
+  en route as cancelled), or a running status with one (a change of
+  origin).
+- Push notifications (no API change): a cancellation push now says where
+  the train runs ("Your train terminates at York", "now starts from
+  York", "is part cancelled") and why ("Reason: Signal failure."). When
+  the reason is not known yet, one follow-up with the same tag replaces
+  the push if the reason arrives within 15 minutes.
+
 ## 2026-10-27: a train's push switch sticks, and covers its suggestions
 
 Behaviour only; no field changes. DS-MCP needs no change.
