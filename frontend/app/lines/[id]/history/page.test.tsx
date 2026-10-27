@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, vi, beforeEach } from 'vitest';
 import { screen, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import LineHistoryPage, { HistoryResults } from './page';
+import LineHistoryPage, { generateMetadata, HistoryResults } from './page';
 import * as api from '@/lib/api';
 import type { LineStatusReport, LineDailyStats } from '@/lib/types';
 import { formatDate } from '@/lib/dateFormat';
@@ -80,6 +80,12 @@ async function renderPage(searchParams: { from?: string; to?: string; range?: st
 // the JSX. They're kept anyway as basic regression coverage for the page's
 // rendering logic (which was previously completely untested), not as a
 // substitute for the live check.
+// TrendsCharts loads its Recharts half on demand (next/dynamic); load it once
+// up front so the first chart assertion isn't timed against a cold import.
+beforeAll(async () => {
+  await import('@/app/lines/[id]/history/TrendsChartParts');
+});
+
 describe('LineHistoryPage', () => {
   beforeEach(() => {
     vi.mocked(api.getLineStatus).mockResolvedValue([report('c2c', 'c2c (London, Tilbury & Southend line)')]);
@@ -372,5 +378,13 @@ describe('LineHistoryPage', () => {
 
     expect(screen.getByText('No history entries in that range.')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '30 days' })).not.toBeInTheDocument();
+  });
+});
+
+describe('generateMetadata', () => {
+  it('is crawlable but never indexed: a date-range view', async () => {
+    vi.mocked(api.getLineStatus).mockRejectedValue(new Error('down'));
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: 'wcml' }) });
+    expect(metadata.robots).toEqual({ index: false, follow: true });
   });
 });

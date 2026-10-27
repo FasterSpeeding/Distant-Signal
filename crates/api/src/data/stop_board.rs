@@ -89,6 +89,20 @@
 //! first, with the same rules; only when it has no unique match does the
 //! station's general sample get a turn. It reaches past the general
 //! board's 10 rows and covers stations outside the sample set.
+//!
+//! **Tracked-stop arrival boards (DS-152).** Departure boards never list a
+//! call where the train terminates or only sets down, so such a stop (the
+//! user's destination, usually) never matched above. poller-ldbws's
+//! arrivals sub-lane polls the LDBWS arrival board of each tracked train's
+//! alighting stops, narrowed to its booked arrival
+//! (`tracked_stop_arrival_boards`). For a stop with a booked arrival that
+//! still has no live `platform` after the departure match, the arrival
+//! board's row that is this train is matched by the same rules, on `sta`
+//! against the stop's booked arrival (RSID, then its 6-character prefix;
+//! without RSIDs, operator and origin CRS within
+//! [`TIMETABLE_WINDOW_MINUTES`]), with the same [`BOARD_FRESHNESS`]. It
+//! sets the platform fields only ([`apply_board_platform`]'s rules, with
+//! no first-seen platform), never `board`, which is the departure board's.
 
 use std::collections::HashMap;
 
@@ -126,6 +140,19 @@ pub struct BoardIndex<'a> {
     by_crs: HashMap<String, &'a BoardSampleRow>,
     by_tiploc: HashMap<String, Vec<&'a BoardSampleRow>>,
     tracked: HashMap<(String, NaiveDate, String), &'a BoardSampleRow>,
+    tracked_arrivals: HashMap<(String, NaiveDate, String), &'a TrackedArrivalRow>,
+}
+
+/// One `tracked_stop_arrival_boards` row (DS-152): an arrival board polled
+/// for one train's alighting stop.
+#[derive(Debug, Clone)]
+pub struct TrackedArrivalRow {
+    pub train_uid: String,
+    pub service_date: NaiveDate,
+    /// Upper-case CRS.
+    pub crs: String,
+    pub polled_at: DateTime<Utc>,
+    pub arrivals: Vec<common::StationArrival>,
 }
 
 /// One `tracked_stop_boards` row: a board polled for one train's stop.
@@ -170,8 +197,37 @@ impl<'a> BoardIndex<'a> {
         index
     }
 
+    /// Adds the tracked-stop arrival boards (DS-152).
+    #[must_use]
+    pub fn with_tracked_arrivals(mut self, arrivals: &'a [TrackedArrivalRow]) -> Self {
+        for row in arrivals {
+            self.tracked_arrivals.insert(
+                (
+                    row.train_uid.clone(),
+                    row.service_date,
+                    row.crs.trim().to_ascii_uppercase(),
+                ),
+                row,
+            );
+        }
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.by_crs.is_empty() && self.tracked.is_empty()
+        self.by_crs.is_empty() && self.tracked.is_empty() && self.tracked_arrivals.is_empty()
+    }
+
+    /// The tracked-stop arrival board polled for this train at this stop's
+    /// CRS (DS-152).
+    fn tracked_arrival_board(
+        &self,
+        train: Option<(&str, NaiveDate)>,
+        crs: Option<&str>,
+    ) -> Option<&'a TrackedArrivalRow> {
+        let (uid, date) = train?;
+        self.tracked_arrivals
+            .get(&(uid.to_string(), date, crs?.trim().to_ascii_uppercase()))
+            .copied()
     }
 
     /// The tracked-stop board polled for this train at this stop's CRS.
@@ -369,6 +425,121 @@ fn match_in_boards<'a>(
     Some((picked.row, picked.polled_at))
 }
 
+/// The one arrival row on this train's tracked arrival board at `stop`
+/// that is this train (DS-152; see the module doc).
+fn match_arrival<'a>(
+    stop: &JourneyStop,
+    board: &'a TrackedArrivalRow,
+    keys: &TrainBoardKeys,
+    origin_crs: Option<&str>,
+    now: DateTime<Utc>,
+) -> Option<&'a common::StationArrival> {
+    let booked = stop.timetable.working_minute_arrival?;
+    if now - board.polled_at > BOARD_FRESHNESS {
+        return None;
+    }
+    let candidates: Vec<(&'a common::StationArrival, Duration)> = board
+        .arrivals
+        .iter()
+        .filter_map(|row| {
+            let sta = NaiveTime::parse_from_str(&row.scheduled, "%H:%M").ok()?;
+            let at = crate::data::eta_blend::resolve_london_time_near(board.polled_at, sta)?;
+            let delta = (at - booked).abs();
+            (delta <= Duration::minutes(RSID_WINDOW_MINUTES)).then_some((row, delta))
+        })
+        .collect();
+    match keys.rsid.as_deref() {
+        Some(rsid) if candidates.iter().any(|(row, _)| row.rsid.is_some()) => {
+            let exact: Vec<&common::StationArrival> = candidates
+                .iter()
+                .filter(|(row, _)| {
+                    row.rsid
+                        .as_deref()
+                        .is_some_and(|r| r.eq_ignore_ascii_case(rsid))
+                })
+                .map(|(row, _)| *row)
+                .collect();
+            if exact.is_empty() {
+                let prefix = rsid_prefix(rsid)?;
+                only(
+                    candidates
+                        .iter()
+                        .filter(|(row, _)| {
+                            row.rsid
+                                .as_deref()
+                                .and_then(rsid_prefix)
+                                .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+                        })
+                        .map(|(row, _)| *row)
+                        .collect(),
+                )
+            } else {
+                only(exact)
+            }
+        }
+        _ => {
+            let origin = origin_crs?;
+            let operator = keys.operator.as_deref()?;
+            only(
+                candidates
+                    .iter()
+                    .filter(|(_, delta)| *delta <= Duration::minutes(TIMETABLE_WINDOW_MINUTES))
+                    .filter(|(row, _)| {
+                        row.origin_crs
+                            .as_deref()
+                            .is_some_and(|o| o.eq_ignore_ascii_case(origin))
+                    })
+                    .filter(|(row, _)| row.operator.eq_ignore_ascii_case(operator))
+                    .map(|(row, _)| *row)
+                    .collect(),
+            )
+        }
+    }
+}
+
+/// The arrival-board half of the overlay (DS-152): for every stop with a
+/// booked arrival and still no live platform, a matched arrival row with a
+/// platform sets it (`active`, or `cancelled` when the row is). No
+/// first-seen platform exists for an arrival board, so `platformChanged`
+/// is left to `journey::apply_platform_basis`'s booked comparison.
+fn apply_tracked_arrival_boards(
+    stops: &mut [JourneyStop],
+    boards: &BoardIndex<'_>,
+    keys: &TrainBoardKeys,
+    train: Option<(&str, NaiveDate)>,
+    now: DateTime<Utc>,
+) {
+    if boards.tracked_arrivals.is_empty() {
+        return;
+    }
+    let origin_crs = stops
+        .iter()
+        .find(|stop| stop.kind == Some(schedule_query::CallingPointKind::Origin))
+        .and_then(|stop| stop.crs.clone());
+    for stop in stops.iter_mut() {
+        if stop.platform.is_some() {
+            continue;
+        }
+        let Some(board) = boards.tracked_arrival_board(train, stop.crs.as_deref()) else {
+            continue;
+        };
+        let Some(row) = match_arrival(stop, board, keys, origin_crs.as_deref(), now) else {
+            continue;
+        };
+        let Some(platform) = row.platform.clone() else {
+            continue;
+        };
+        stop.planned_platform = None;
+        stop.platform_changed = false;
+        stop.platform = Some(platform);
+        stop.platform_status = Some(if row.is_cancelled {
+            PlatformStatus::Cancelled
+        } else {
+            PlatformStatus::Active
+        });
+    }
+}
+
 /// Sets `board` on every stop of one train, and its platform fields where
 /// the matched row has a platform (see the module doc). Run after the
 /// movement overlay, which it reads to tell whether the train has left a
@@ -433,6 +604,7 @@ pub fn apply_station_sample_board_for_train(
             observed_at: polled_at,
         });
     }
+    apply_tracked_arrival_boards(stops, boards, keys, train, now);
 }
 
 /// The platform half of the overlay: a matched row with a platform
@@ -499,6 +671,48 @@ pub async fn tracked_boards_for_trains(
             })
         })
         .collect()
+}
+
+/// The tracked-stop arrival boards (`tracked_stop_arrival_boards`, DS-152)
+/// of every `(train_uid, service_date)` in `trains`. One query, on the
+/// table's key. A row whose arrivals do not decode is left out (logged).
+pub async fn tracked_arrivals_for_trains(
+    pool: &PgPool,
+    trains: &[(String, NaiveDate)],
+) -> anyhow::Result<Vec<TrackedArrivalRow>> {
+    if trains.is_empty() {
+        return Ok(Vec::new());
+    }
+    let uids: Vec<&str> = trains.iter().map(|(uid, _)| uid.as_str()).collect();
+    let dates: Vec<NaiveDate> = trains.iter().map(|(_, date)| *date).collect();
+    let rows: Vec<(String, NaiveDate, String, DateTime<Utc>, serde_json::Value)> = sqlx::query_as(
+        "SELECT b.train_uid, b.service_date, b.crs, b.polled_at, b.arrivals \
+         FROM UNNEST($1::text[], $2::date[]) AS k(train_uid, service_date) \
+         JOIN tracked_stop_arrival_boards b \
+           ON b.train_uid = k.train_uid AND b.service_date = k.service_date",
+    )
+    .bind(&uids)
+    .bind(&dates)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(train_uid, service_date, crs, polled_at, arrivals)| {
+            match serde_json::from_value(arrivals) {
+                Ok(arrivals) => Some(TrackedArrivalRow {
+                    train_uid,
+                    service_date,
+                    crs,
+                    polled_at,
+                    arrivals,
+                }),
+                Err(err) => {
+                    tracing::warn!(%train_uid, %service_date, %crs, error = %err, "skipping an arrival board that does not decode");
+                    None
+                }
+            }
+        })
+        .collect())
 }
 
 /// [`TrainBoardKeys`] for every `(train_uid, service_date)`, from
@@ -1475,5 +1689,159 @@ mod tests {
         let unmatched = serde_json::to_value(stop("WAT", "WATRLMN", Origin, None)).unwrap();
         assert!(unmatched.get("board").is_some(), "key must be present");
         assert!(unmatched["board"].is_null());
+    }
+
+    // ---- tracked-stop arrival boards (DS-152) ----
+
+    fn arrival(
+        service_id: &str,
+        sta: &str,
+        platform: Option<&str>,
+        rsid: Option<&str>,
+    ) -> common::StationArrival {
+        common::StationArrival {
+            service_id: service_id.to_string(),
+            operator: "SW".to_string(),
+            origin_crs: Some("WAT".to_string()),
+            scheduled: sta.to_string(),
+            estimated: "On time".to_string(),
+            is_cancelled: false,
+            platform: platform.map(str::to_string),
+            rsid: rsid.map(str::to_string),
+        }
+    }
+
+    /// The journey with WOK's booked arrival at 17:30 BST (16:30Z).
+    fn journey_arriving() -> Vec<JourneyStop> {
+        let mut stops = journey();
+        stops[2].timetable.working_minute_arrival = Some("2026-09-28T16:30:00Z".parse().unwrap());
+        stops
+    }
+
+    const TRAIN: (&str, &str) = ("W12345", "2026-09-28");
+
+    fn arrival_board(polled_at: &str, arrivals: Vec<common::StationArrival>) -> TrackedArrivalRow {
+        TrackedArrivalRow {
+            train_uid: TRAIN.0.to_string(),
+            service_date: TRAIN.1.parse().unwrap(),
+            crs: "WOK".to_string(),
+            polled_at: polled_at.parse().unwrap(),
+            arrivals,
+        }
+    }
+
+    fn apply_arrivals(
+        stops: &mut [JourneyStop],
+        boards: &[TrackedArrivalRow],
+        keys: &TrainBoardKeys,
+    ) {
+        let index = BoardIndex::new(&[]).with_tracked_arrivals(boards);
+        apply_station_sample_board_for_train(
+            stops,
+            &index,
+            keys,
+            Some((TRAIN.0, TRAIN.1.parse().unwrap())),
+            now(),
+        );
+    }
+
+    #[test]
+    fn an_arrival_board_gives_the_terminating_stop_its_platform() {
+        let mut stops = journey_arriving();
+        let boards = [arrival_board(
+            "2026-09-28T15:58:00Z",
+            vec![
+                arrival("1", "17:30", Some("5"), Some("SW999900")),
+                arrival("2", "17:31", Some("3"), Some("SW123400")),
+            ],
+        )];
+        apply_arrivals(&mut stops, &boards, &keys(Some("SW123400")));
+        assert_eq!(stops[2].platform.as_deref(), Some("3"));
+        assert_eq!(stops[2].platform_status, Some(Active));
+        assert!(!stops[2].platform_changed);
+        assert_eq!(stops[2].planned_platform, None);
+        assert_eq!(stops[2].board, None, "an arrival board never sets `board`");
+        assert_eq!(stops[0].platform, None, "only the board's own stop");
+    }
+
+    #[test]
+    fn an_arrival_board_without_rsids_matches_on_operator_and_origin() {
+        let mut stops = journey_arriving();
+        let boards = [arrival_board(
+            "2026-09-28T15:58:00Z",
+            vec![arrival("1", "17:30", Some("2"), None)],
+        )];
+        apply_arrivals(&mut stops, &boards, &keys(None));
+        assert_eq!(stops[2].platform.as_deref(), Some("2"));
+
+        // Another origin: not this train.
+        let mut stops = journey_arriving();
+        let mut other = arrival("1", "17:30", Some("2"), None);
+        other.origin_crs = Some("BSK".to_string());
+        apply_arrivals(
+            &mut stops,
+            &[arrival_board("2026-09-28T15:58:00Z", vec![other])],
+            &keys(None),
+        );
+        assert_eq!(stops[2].platform, None);
+    }
+
+    #[test]
+    fn a_stale_ambiguous_or_foreign_arrival_board_gives_nothing() {
+        // Older than BOARD_FRESHNESS.
+        let mut stops = journey_arriving();
+        let stale = [arrival_board(
+            "2026-09-28T15:40:00Z",
+            vec![arrival("1", "17:30", Some("5"), Some("SW123400"))],
+        )];
+        apply_arrivals(&mut stops, &stale, &keys(Some("SW123400")));
+        assert_eq!(stops[2].platform, None);
+
+        // Two rows with our RSID: ambiguous.
+        let mut stops = journey_arriving();
+        let twice = [arrival_board(
+            "2026-09-28T15:58:00Z",
+            vec![
+                arrival("1", "17:30", Some("5"), Some("SW123400")),
+                arrival("2", "17:32", Some("6"), Some("SW123400")),
+            ],
+        )];
+        apply_arrivals(&mut stops, &twice, &keys(Some("SW123400")));
+        assert_eq!(stops[2].platform, None);
+
+        // Only another train's RSID: never a guess.
+        let mut stops = journey_arriving();
+        let foreign = [arrival_board(
+            "2026-09-28T15:58:00Z",
+            vec![arrival("1", "17:30", Some("5"), Some("SW999900"))],
+        )];
+        apply_arrivals(&mut stops, &foreign, &keys(Some("SW123400")));
+        assert_eq!(stops[2].platform, None);
+    }
+
+    #[test]
+    fn an_arrival_board_never_replaces_a_live_platform() {
+        let mut stops = journey_arriving();
+        stops[2].platform = Some("9".to_string());
+        let boards = [arrival_board(
+            "2026-09-28T15:58:00Z",
+            vec![arrival("1", "17:30", Some("5"), Some("SW123400"))],
+        )];
+        apply_arrivals(&mut stops, &boards, &keys(Some("SW123400")));
+        assert_eq!(stops[2].platform.as_deref(), Some("9"));
+    }
+
+    #[test]
+    fn a_cancelled_arrival_keeps_its_platform_marked_cancelled() {
+        let mut stops = journey_arriving();
+        let mut row = arrival("1", "17:30", Some("5"), Some("SW123400"));
+        row.is_cancelled = true;
+        apply_arrivals(
+            &mut stops,
+            &[arrival_board("2026-09-28T15:58:00Z", vec![row])],
+            &keys(Some("SW123400")),
+        );
+        assert_eq!(stops[2].platform.as_deref(), Some("5"));
+        assert_eq!(stops[2].platform_status, Some(Cancelled));
     }
 }

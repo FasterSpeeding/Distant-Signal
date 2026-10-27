@@ -133,8 +133,8 @@ for i in api aggregator enricher notifier poller-incidents poller-stations polle
 done
 ```
 
-Redis is **not** in this table: the bundled Redis uses the upstream `redis`
-image (`redis.image.*`), which this repository does not build.
+Redis is **not** in this table: the bundled Redis is the upstream Valkey
+image (`redis.image.*`, `valkey/valkey`), which this repository does not build.
 
 Then point each `*.image.repository` value at `$REG/...`. An empty
 `image.tag` falls back to the chart's `appVersion`.
@@ -157,7 +157,7 @@ and pushing your own images per the table above and want the same
 guarantee for them. `postgresql`, `redis`, `devAuthentik` and
 `scheduleFeed.sftp` (all externally-sourced, not built by this repo) have
 no `digest` field. They are digest-pinned through the tag instead: their
-default `tag` values carry the digest (e.g. `7.4.11@sha256:...`), which
+default `tag` values carry the digest (e.g. `8.1.10-trixie@sha256:...`), which
 `distant-signal.image` appends after `:`, giving `<repository>:<tag>@<digest>`.
 Override one the same way, with a `<tag>@sha256:...` string.
 
@@ -238,6 +238,18 @@ helm upgrade distant-signal ./charts/distant-signal -n distant-signal
 ```
 
 Read the next section before upgrading if you rely on generated secrets.
+
+> **Upgrade note: Redis 7.4 to Valkey 8.1 (DS-174).** `redis.image` is now
+> `valkey/valkey:8.1.x` instead of `redis:7.4.11`. Every value, Secret, port,
+> probe and client is unchanged, but a running Redis 7.4's AOF has an RDB 12
+> preamble that Valkey cannot load. **Before upgrading an install with
+> `redis.persistence.enabled`, rewrite its AOF without the preamble**
+> (`CONFIG SET aof-use-rdb-preamble no`, then `BGREWRITEAOF`), or the new
+> pod crash-loops on startup. The steps, checks and rollback (back to
+> `redis:7.4.11`, which reads what Valkey 8.1 writes) are in
+> `docs/valkey-migration.md`. Keep the previous image with
+> `--set redis.image.repository=redis --set redis.image.tag=7.4.11@sha256:44960b3100c48159a66d28c18b0588c193492e25f7551d60e51dd464fc3eca5b`
+> until you are ready.
 
 > **Upgrade note: Redis PVC default 1Gi -> 4Gi (2026-09-27).** A PVC can only
 > grow, and only on a StorageClass with `allowVolumeExpansion: true`; k3s
@@ -648,10 +660,11 @@ random 32-character `redis-password` the chart generates in its own Secret
 and keeps across upgrades (see "Generated secrets and the `lookup`
 limitation").
 
-**Enabling it on a running deployment, without an outage.** Redis 7.4 (the
-chart's image) accepts `AUTH default <anything>` while the default user has
-no password yet, and that is the form the clients send (verified against
-`redis:7.4.11`). So give the clients the password first:
+**Enabling it on a running deployment, without an outage.** Valkey 8.1 (the
+chart's image), like Redis 7.4, accepts `AUTH default <anything>` while the
+default user has no password yet, and that is the form the clients send
+(verified against `redis:7.4.11` and `valkey/valkey:8.1.10`). So give the
+clients the password first:
 
 1. Create the Secret, then upgrade with `redis.auth.enabled=true`,
    `redis.auth.requirePass=false`, `redis.auth.existingSecret=<name>`. Only
@@ -1043,7 +1056,7 @@ item 2.
 Off by default (`postgresql.pgbackrest.enabled: false`), and while off the
 Postgres pod renders exactly as without it. When enabled, the bundled
 Postgres runs `postgresql.pgbackrest.image` (the same
-`postgres:16.15-trixie` plus pgBackRest and `pgbackrest-daily-check`, with
+`postgres:18.6-trixie` plus pgBackRest and `pgbackrest-daily-check`, with
 tini as PID 1; this repo doesn't build one, see docs/postgres-pitr.md),
 archives its WAL to an S3
 repository with client-side AES-256 encryption, and CronJobs take a weekly
@@ -1483,7 +1496,7 @@ StatefulSet with no replication, backup or restore story.
 | `postgresql.auth.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
 | `postgresql.auth.existingSecretPasswordKey` | `postgres-password` | Key within `postgresql.auth.existingSecret`. |
 | `postgresql.image.repository` | `postgres` | PostgreSQL image repository. |
-| `postgresql.image.tag` | `16.15-trixie@sha256:…` | Postgres 16, the major the compose stack uses, digest-pinned in the tag. |
+| `postgresql.image.tag` | `18.6-trixie@sha256:…` | Postgres 18, the major the compose stack and CI use, digest-pinned in the tag. An existing 16 data directory needs pg_upgrade first (docs/postgres-18-upgrade.md). |
 | `postgresql.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `postgresql.service.port` | `5432` | Port the headless Service and the container listen on. |
 | `postgresql.connectionBudget.externalClients` | `2` | Connections the render-time budget check reserves for clients deployed outside this chart that connect as the app role: Ranma-Config's postgres-exporter (1) and its nightly `pg_dump` (1). The app role is a superuser, so `superuser_reserved_connections` protects none of these. pgBackRest adds 2 more on its own when enabled. |
@@ -1637,7 +1650,7 @@ override only needs to name the keys it changes:
 | `max_wal_size` | `4GB` | `1GB` | Fewer size-triggered checkpoints during bulk writes. Needs up to this much `pg_wal` disk. |
 | `min_wal_size` | `1GB` | `80MB` | Keeps WAL segments recycled rather than deleted and recreated. |
 | `checkpoint_timeout` | `15min` | `5min` | Fewer full-page images. Crash recovery takes longer. |
-| `wal_compression` | `lz4` | `off` | Compresses the full-page images written after each checkpoint. Needs Postgres 15+ built with lz4 (the chart's `postgres:16` image is). |
+| `wal_compression` | `lz4` | `off` | Compresses the full-page images written after each checkpoint. Needs Postgres 15+ built with lz4 (the chart's `postgres:18` image is). |
 | `random_page_cost` | `1.1` | `4` | **Assumes SSD-class storage.** Set `"4"` on spinning disks. |
 | `max_connections` | `200` | `100` | Production's value. The service pools, migrations, backups and psql sessions outgrew 100; the render-time connection budget checks sum against it. Each backend can use `work_mem` per sort/hash node, so check memory before raising it. |
 | `huge_pages` | `off` | `try` | The pod requests no hugepages. `try` can SIGBUS on nodes where hugepages exist but aren't granted to the pod. |
@@ -1740,7 +1753,7 @@ and [docs/postgres-pitr.md](../../docs/postgres-pitr.md).
 |---|---|---|
 | `postgresql.pgbackrest.enabled` | `false` | Turn on WAL archiving, backups and checks with pgBackRest. Needs `postgresql.enabled`. Turning it on or off restarts Postgres once. |
 | `postgresql.pgbackrest.image.repository` | `""` | **Required when enabled**: a Postgres-plus-pgBackRest image: the `postgresql.image` Postgres with pgBackRest, tini as PID 1 and `/usr/local/bin/pgbackrest-daily-check` (e.g. lucy/postgres-pgbackrest). No default: this chart doesn't build one (docs/postgres-pitr.md). |
-| `postgresql.pgbackrest.image.tag` | `""` | **Required when enabled**: the stable tag with its digest, e.g. `pg16.15-pgbackrest2.59.1-tini0.19.0@sha256:…` (only `-tini` tags: see docs/postgres-pitr.md, "Why tini"). Never falls back to `appVersion`: a per-release image would restart Postgres on every deploy. |
+| `postgresql.pgbackrest.image.tag` | `""` | **Required when enabled**: the stable tag with its digest, e.g. `pg18.6-pgbackrest2.59.1-tini0.19.0@sha256:…` (only `-tini` tags: see docs/postgres-pitr.md, "Why tini"). Never falls back to `appVersion`: a per-release image would restart Postgres on every deploy. |
 | `postgresql.pgbackrest.image.digest` | `""` | Content digest, used instead of `tag` when set. |
 | `postgresql.pgbackrest.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `postgresql.pgbackrest.stanza` | `ds` | pgBackRest stanza name. |
@@ -1884,7 +1897,9 @@ Used only when `postgresql.enabled` is `false`.
 | `api.tripPlanGraphCache.maxAgeSecs` | `600` | Rebuild a cached graph after this long, or after a new schedule publish. |
 | `api.tripPlanMaxWaypoints` | `20` | Most `?waypoints=` one `/Trips/plan` request may name (clamped to 1-20). |
 | `api.tripPlanRoadWaterChangeMinutes` | `5` | Extra minutes `/Trips/plan` adds to a change on each bus or ferry side of it (clamped to 0-30): bus-to-train +N, bus-to-bus +2N, never at the start or end of the journey. |
-| `api.tripPlanMaxOptionsSearchSize` | `252` | Largest `results=options` `/Trips/plan` search: `(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2)` (a 400 above it; clamped to 8-504). |
+| `api.tripPlanTransitNetworks` | `[]` | Transit networks whose trams `/Trips/plan` plans with (`API_TRIP_PLAN_TRANSIT_NETWORKS`). Empty: the graph, its cache key and every response are as before. Listed, the tram trips join each cached day graph (about 6 MB a date for Metrolink) and a request plans with them when it sends `transit=true` or names a tram stop. Only `metrolink`; the render fails on anything else. Rollout: docs/transit-networks.md, "Trip planning". |
+| `api.tripPlanTransitChangeMinutes` | `2` | Extra minutes `/Trips/plan` adds on the tram side of a rail-to-tram or tram-to-rail change (clamped to 0-15). A change between two trams owes none. |
+| `api.tripPlanMaxOptionsSearchSize` | `252` | Largest `results=options` `/Trips/plan` search: `(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2)` (a 400 above it; clamped to 14-504). |
 | `api.tripPlanLive.enabled` | `true` | Apply TRUST and Darwin data to `/Trips/plan` for today's and yesterday's service dates: cancelled trains and calls are withdrawn, known delays applied, and the plan re-run. `false` is the kill-switch: every plan is timetable-only, as with `?live=false`. |
 | `api.tripPlanLive.maxReplans` | `3` | Extra planning passes per `results=fastest` request when newly read live data changes the plan. |
 | `api.tripPlanLive.maxReplansOptions` | `1` | The same for `results=options` (RAPTOR, the expensive pass); 1 keeps the worst case near 1 s. |
@@ -1979,6 +1994,7 @@ Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-
 | `ingestWriter.streams.ioi-nir` | `off` | Mode of `ds:ingest:ioi-nir` (`pollerNirStations`: `ioi-stations`, `ioi-lines`), as `ioi-gtfs`. |
 | `ingestWriter.streams.ioi-live` | `off` | Mode of `ds:ingest:ioi-live` (`pollerIrishRailLive`: `ioi-station-samples`), as `ioi-gtfs`. |
 | `ingestWriter.streams.transit-metrolink` | `off` | Mode of `ds:ingest:transit-metrolink` (the transit networks' metrolink producer: `transit-timetable`, `transit-timetable-commit`, `transit-situations`, which also writes the network's `line_status` rows). `apply` needs `postgresql.roles.perService.writer.connect`, as `tfl` does. |
+| `ingestWriter.streams.darwin` | `off` | Mode of `ds:ingest:darwin` (darwin-relay's Darwin Push Port batches, `darwin-pushport`; DS-152). `apply` needs `postgresql.roles.perService.writer.connect`, as `tfl` does; `darwinRelay.enabled` needs it on `apply`. |
 | `ingestWriter.streams.transit-net` | `off` | Mode of `ds:ingest:transit-net` (the transit networks' net producer, Nottingham Express Transit: its timetable only, as NET has no disruptions source). `apply` needs `postgresql.roles.perService.writer.connect`, as `tfl` does. |
 | `ingestWriter.changedRowsOnly` | `false` | Changed rows only (`INGEST_WRITER_CHANGED_ROWS_ONLY`, plan 3a.9): `station_full_coverage_samples` rows whose stats are unchanged are not rewritten, and readers derive their age from the feed's observed time. The other snapshot tables keep their per-row time. Turn on only after the api with the derived readers is deployed and `streams.full-coverage` has soaked on `apply`. |
 | `ingestWriter.unsupportedDeadlineSecs` | `3600` | `INGEST_WRITER_UNSUPPORTED_DEADLINE_SECS`: an entry pending as unsupported (a newer schema or envelope version) this long is dead-lettered, reason `unsupported_expired`, instead of blocking its stream for good. Roll the writer forward within this time. `0` never dead-letters it. |
@@ -2158,9 +2174,10 @@ used for and why persistence defaults on.
 | `redis.acl.clients.pollerTfl` / `.pollerTocs` | `false` | poller-tfl's and poller-tocs's stream sinks (ingest plan 3c.2), as users `poller-tfl` and `poller-tocs`. |
 | `redis.acl.clients.pollerIrishRailGtfs` / `.pollerIrishRailLive` / `.pollerNirStations` | `false` | The island-of-Ireland pollers (each one's only sink is its own `ds:ingest:ioi-gtfs`, `ds:ingest:ioi-live` or `ds:ingest:ioi-nir`, D8), as users `poller-irish-rail-gtfs`, `poller-irish-rail-live` and `poller-nir-stations`. |
 | `redis.acl.clients.pollerTransitMetrolink` | `false` | poller-transit-schedule for network metrolink (transit networks; off by default), as user `poller-transit-metrolink` (`~ds:ingest:transit-metrolink +xadd +xrevrange`). An `optional` user: rendered into the ACL file, and so needing the `poller-transit-metrolink-password` Secret key, only while this is on; turning it on restarts Redis once (docs/redis-acl.md). |
+| `redis.acl.clients.darwinRelay` | `false` | darwin-relay (off by default; DS-152), as user `darwin-relay` (`~ds:ingest:darwin +xadd +xrevrange`). An `optional` user like `pollerTransitMetrolink`: it needs the `darwin-relay-password` Secret key only while this is on, and turning it on restarts Redis once. |
 | `redis.acl.clients.pollerTransitNet` | `false` | poller-transit-schedule for network net (Nottingham Express Transit; off by default), as user `poller-transit-net` (`~ds:ingest:transit-net +xadd +xrevrange`). An `optional` user, as `pollerTransitMetrolink`: needs the `poller-transit-net-password` Secret key while on; turning it on restarts Redis once. |
-| `redis.image.repository` | `redis` | Redis image repository (upstream image; this repo builds no Redis image). |
-| `redis.image.tag` | `7.4.11@sha256:…` | Redis 7.4, digest-pinned in the tag. |
+| `redis.image.repository` | `valkey/valkey` | Server image repository: upstream Valkey, Redis-compatible (this repo builds no image for it). A running Redis 7.4 needs `docs/valkey-migration.md` before switching. |
+| `redis.image.tag` | `8.1.10-trixie@sha256:…` | Valkey 8.1, digest-pinned in the tag. Renovate skips majors: Valkey 9 writes RDB 80, which the `redis:7.4.11` rollback cannot read. |
 | `redis.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `redis.service.port` | `6379` | Service and container port; also sets the `REDIS_URL` every Redis client (api, enricher, the three consumers, movement-relay) gets. |
 | `redis.persistence.enabled` | `true` | Attach a PVC and run redis with `--appendonly yes`. When false an emptyDir is used and data is lost on reschedule. |
@@ -2189,7 +2206,7 @@ used for and why persistence defaults on.
 | `redis.tolerations` | `[]` | Pod tolerations. |
 | `redis.affinity` | `{}` | Pod affinity rules. |
 | `redis.podAnnotations` | `{}` | Pod annotations. |
-| `redis.podSecurityContext` | `{runAsUser: 999, runAsGroup: 999}` | Merged over the chart-wide pod securityContext defaults. Pinned (unlike most other `podSecurityContext` defaults in this chart) because the upstream `redis` image runs as root with no `USER` set at all -- confirmed against `redis:7`'s real image config; 999 is the `redis` user's actual uid/gid per docker-library/redis's own Dockerfile. Override if you point `redis.image` at a different image/tag whose non-root uid differs. |
+| `redis.podSecurityContext` | `{runAsUser: 999, runAsGroup: 999}` | Merged over the chart-wide pod securityContext defaults. Pinned (unlike most other `podSecurityContext` defaults in this chart) because the upstream `valkey/valkey` image (like `redis:7` before it) runs as root with no `USER` set at all; 999 is its `valkey` user's uid/gid, the same as the old `redis` user's, so an existing AOF volume stays readable. Override if you point `redis.image` at a different image/tag whose non-root uid differs. |
 
 ### enricher
 
@@ -2526,6 +2543,43 @@ credential of its own it uses trust-consumer's; see "Install" above.
 | `movementRelay.podAnnotations` | `{}` | Pod annotations. |
 | `movementRelay.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
 
+### darwinRelay
+
+The Darwin Push Port relay (DS-152; [docs/darwin-pushport.md](../../docs/darwin-pushport.md)):
+it reads the Rail Data Marketplace's Push Port JSON topic and produces the
+parts DS keeps (schedules, platforms with their confirmed and suppressed
+flags, forecasts, associations, cancellations) on `ds:ingest:darwin`, which
+the ingest-writer applies. Off by default. Enabling it needs
+`ingestWriter.streams.darwin: apply` and `redis.acl.clients.darwinRelay`;
+the render fails otherwise. Every Kafka setting comes from the Secret
+`darwinRelay.kafka.existingSecret`.
+
+| Key | Default | Description |
+|---|---|---|
+| `darwinRelay.enabled` | `false` | Deploy darwin-relay. |
+| `darwinRelay.image.repository` | `ghcr.io/fasterspeeding/distant-signal/darwin-relay` | darwin-relay image repository. |
+| `darwinRelay.image.tag` | `""` | Empty means "use the chart's appVersion". |
+| `darwinRelay.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
+| `darwinRelay.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
+| `darwinRelay.kafka.existingSecret` | `distant-signal-darwin-pushport` | The Secret holding the Push Port's Kafka connection, one key per setting. Never rendered by this chart. |
+| `darwinRelay.kafka.keys.bootstrapServer` / `.topic` / `.consumerGroup` / `.username` / `.password` / `.saslMechanism` / `.securityProtocol` / `.saslConfig` | `kafka-bootstrap-server`, `kafka-topic`, `consumer-group`, `username`, `password`, `sasl-mechanism`, `security-protocol`, `sasl-config` | That Secret's key names. `saslConfig` (the Java client's JAAS line) is optional and only a fallback for the user name and password. |
+| `darwinRelay.kafka.autoOffsetReset` | `latest` | Where to start when the group has no committed offset. `latest`: the Push Port is current state, and `earliest` would replay the topic's whole retention on the first start. |
+| `darwinRelay.kafka.brokerPorts` | `[9092]` | The bootstrap server's TCP port(s), for the egress policy when `networkPolicy.egress.internetPorts` restricts ports (the address is only in the Secret). |
+| `darwinRelay.batchMaxSecs` | `30` | A batch is published this many seconds after its first record. At least `minBatchMaxSecs`. |
+| `darwinRelay.minBatchMaxSecs` | `30` | The batch interval `ds:ingest:darwin`'s `MAXLEN` is budgeted for (two hours of writer outage); the render refuses a smaller `batchMaxSecs`. |
+| `darwinRelay.batchMaxRecords` | `5000` | ... or once it holds this many Kafka records. |
+| `darwinRelay.healthPort` | `8083` | Port for `/healthz` (readiness: partitions assigned) and `/livez` (liveness). |
+| `darwinRelay.progressStallSecs` | `900` | `/livez` answers 503 once no relay-loop iteration has completed for this many seconds (waiting for Kafka or out a Redis outage never counts). |
+| `darwinRelay.metricsPort` | `9095` | Prometheus `/metrics` port. |
+| `darwinRelay.logLevel` | `info` | `RUST_LOG` value. |
+| `darwinRelay.extraEnv` | `[]` | Extra env vars for the container. One named like a chart-set var replaces it; the rest follow the chart's own. |
+| `darwinRelay.resources` | requests `100m`/`128Mi`, limit `384Mi` | Container resource requests/limits. |
+| `darwinRelay.nodeSelector` | `{}` | Pod node selector. |
+| `darwinRelay.tolerations` | `[]` | Pod tolerations. |
+| `darwinRelay.affinity` | `{}` | Pod affinity rules. |
+| `darwinRelay.podAnnotations` | `{}` | Pod annotations. |
+| `darwinRelay.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
+
 ### frontend
 
 | Key | Default | Description |
@@ -2627,8 +2681,14 @@ separate top-level values (`pollerIrishRailGtfs`, `pollerIrishRailLive`,
 | `pollers.ldbws.hourlyRequestBudget` | `0` | ldbws only (LEG-18): max LDBWS requests per rolling hour, spread evenly over cycles; skipped stations count in `ldbws_budget_skipped_polls_total`. `0` = no budget, env not rendered. |
 | `pollers.ldbws.samplePinnedLinesOnly` | `false` | ldbws only (LEG-18): sample only stations on lines some user has pinned. |
 | `pollers.ldbws.sampleMaxStations` | `0` | ldbws only (LEG-18): cap on sample stations, chosen line-fairly by api, most-pinned lines first. `0` = no cap. |
-| `pollers.ldbws.trackedStops.enabled` | `false` | ldbws only (DS-127): also poll the boards of tracked trains' own stops, narrowed to each train's booked time. Off by default: it adds LDBWS requests. |
+| `pollers.ldbws.trackedStops.enabled` | `false` | ldbws only (DS-127): also poll the boards of tracked trains' own stops, narrowed to each train's booked time. Off by default: it adds LDBWS requests. Needs the grants job to have applied the writer's `tracked-stop-boards` freshness row policy (DS-183); without it every tracked-stop entry dead-letters. |
 | `pollers.ldbws.trackedStops.maxRequestsPerCycle` | `20` | ldbws only (DS-127): the tracked-stop lane's own budget, requests a cycle, soonest departure first. |
+| `pollers.ldbws.trackedStopArrivals.enabled` | `false` | ldbws only (DS-152): also poll the LDBWS arrivals product for tracked trains' alighting stops with a booked arrival, narrowed to that arrival, so a terminating or set-down-only stop gets a live platform. Its own RDM subscription. Needs `ingestWriter.streams.station-samples: apply`. |
+| `pollers.ldbws.trackedStopArrivals.maxRequestsPerCycle` | `6` | ldbws only (DS-152): the arrivals sub-lane's own budget, requests a cycle, soonest arrival first. It also gets 3 s of the cycle, taken from the departure lane's 10 s, so the 45 s rotation and both lanes stay under the 60 s interval. |
+| `pollers.ldbws.trackedStopArrivals.secretName` | `distant-signal-ldbws-arrivals` | The existing Secret with the arrivals product's URL and consumer key (never rendered by the chart). |
+| `pollers.ldbws.trackedStopArrivals.urlKey` | `url` | Its key with the product URL (`LDBWS_ARRIVALS_URL`): the product's base, an operation URL ending in `/Get...`, or a URL with a `{crs}` placeholder. |
+| `pollers.ldbws.trackedStopArrivals.consumerKeyKey` | `consumer-key` | Its key with the consumer key, sent as `x-apikey` (`LDBWS_ARRIVALS_CONSUMER_KEY`). |
+| `pollers.ldbws.trackedStopArrivals.consumerSecretKey` | `consumer-secret` | Its key with the consumer secret (`LDBWS_ARRIVALS_CONSUMER_SECRET`, optional): wired but not sent, as RDM API products authenticate with the consumer key alone. |
 | `pollers.ldbws.internalReads.database.maxConnections` | `1` | ldbws only: its Postgres pool under `db` (`DATABASE_MAX_CONNECTIONS`; spec §6.6). |
 
 ### pollerIrishRailGtfs

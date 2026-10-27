@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { CoverageTrendsResults, toCoverageChartPoints } from './CoverageTrendsResults';
@@ -50,6 +50,12 @@ function row(overrides: Partial<LineDailyCoverageStats> = {}): LineDailyCoverage
     ...overrides,
   };
 }
+
+// TrendsCharts loads its Recharts half on demand (next/dynamic); load it once
+// up front so the first chart assertion isn't timed against a cold import.
+beforeAll(async () => {
+  await import('@/app/lines/[id]/history/TrendsChartParts');
+});
 
 describe('toCoverageChartPoints', () => {
   it('preserves a day at or above the sparse-data floor', () => {
@@ -120,7 +126,7 @@ describe('CoverageTrendsResults', () => {
         /Rates shown cover every scheduled service on this line, cross-referenced against real train-movement data, not a sample of live departures at a handful of stations\./,
       ),
     ).toBeInTheDocument();
-    expect(screen.getAllByTestId('line-chart')).toHaveLength(2);
+    expect(await screen.findAllByTestId('line-chart')).toHaveLength(2);
   });
 
   it('a sparse day does not throw and does not render a flat-zero-looking point', async () => {
@@ -132,7 +138,7 @@ describe('CoverageTrendsResults', () => {
       await CoverageTrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }),
     );
 
-    const charts = screen.getAllByTestId('line-chart');
+    const charts = await screen.findAllByTestId('line-chart');
     const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
     expect(rateChart).toBeDefined();
     const points = JSON.parse(rateChart!.dataset.points as string);
@@ -148,7 +154,7 @@ describe('CoverageTrendsResults', () => {
     );
 
     expect(screen.getByRole('heading', { name: 'Every train' })).toBeInTheDocument();
-    const charts = screen.getAllByTestId('line-chart');
+    const charts = await screen.findAllByTestId('line-chart');
     expect(charts).toHaveLength(2);
     for (const chart of charts) {
       expect(chart.dataset.connectNulls).toBe('false');

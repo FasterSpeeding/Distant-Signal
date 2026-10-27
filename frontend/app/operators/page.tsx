@@ -13,7 +13,10 @@ export const revalidate = 0;
 const METADATA_TITLE = 'Operators';
 const METADATA_DESCRIPTION = "Every train operator, with its worst line status and today's delays and cancellations.";
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, {
+  ...OWN_PREVIEW_IMAGE,
+  path: '/operators',
+});
 
 // Fails closed to "nothing pinned" on a preferences-fetch failure, the
 // exact shape a 401 already returns (design spec Decision 5) -- same

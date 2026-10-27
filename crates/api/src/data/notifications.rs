@@ -69,18 +69,22 @@ pub async fn upsert_push_subscription(
     endpoint: &str,
     p256dh: &str,
     auth: &str,
+    device_label: Option<&str>,
 ) -> Result<PushSubscriptionUpsert> {
     let result = sqlx::query(
-        "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at, last_seen_at) \
-         VALUES ($1, $2, $3, $4, NOW(), NOW()) \
+        "INSERT INTO push_subscriptions \
+             (user_id, endpoint, p256dh, auth, created_at, last_seen_at, device_label) \
+         VALUES ($1, $2, $3, $4, NOW(), NOW(), $5) \
          ON CONFLICT (endpoint) DO UPDATE SET \
-           p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, last_seen_at = NOW() \
+           p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, last_seen_at = NOW(), \
+           device_label = COALESCE(EXCLUDED.device_label, push_subscriptions.device_label) \
          WHERE push_subscriptions.user_id = EXCLUDED.user_id",
     )
     .bind(user_id)
     .bind(endpoint)
     .bind(p256dh)
     .bind(auth)
+    .bind(device_label)
     .execute(pool)
     .await?;
     if result.rows_affected() == 0 {
@@ -116,6 +120,151 @@ async fn evict_push_subscriptions_over_cap(pool: &PgPool, user_id: &str) -> Resu
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// One of a user's devices with push on, for the Notifications page.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PushDevice {
+    pub id: i64,
+    /// "Chrome on Android"; `None` when it could not be worked out.
+    pub label: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// The later of the last push delivered to it and the last time it
+    /// subscribed.
+    pub last_used_at: chrono::DateTime<chrono::Utc>,
+    /// The SHA-256 of the push endpoint, hex: the page hashes its own
+    /// endpoint to mark "this device" without the endpoint being sent back.
+    pub endpoint_sha256: String,
+}
+
+/// `user_id`'s push subscriptions, most recently used first.
+pub async fn list_push_devices(pool: &PgPool, user_id: &str) -> Result<Vec<PushDevice>> {
+    Ok(sqlx::query_as(
+        "SELECT id, device_label AS label, created_at, \
+                GREATEST(last_seen_at, COALESCE(last_pushed_at, last_seen_at)) AS last_used_at, \
+                encode(sha256(convert_to(endpoint, 'UTF8')), 'hex') AS endpoint_sha256 \
+         FROM push_subscriptions WHERE user_id = $1 \
+         ORDER BY last_used_at DESC, id DESC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Removes one of `user_id`'s devices from the list: no more pushes to it.
+/// `false` when it is not theirs.
+pub async fn delete_push_device(pool: &PgPool, user_id: &str, id: i64) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM push_subscriptions WHERE user_id = $1 AND id = $2")
+        .bind(user_id)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// A short name for the browser and system a `User-Agent` names, such as
+/// "Chrome on Android" or "Safari on iPhone", or `None` when it names
+/// neither. Only this label is stored, never the header.
+pub fn device_label(user_agent: &str) -> Option<String> {
+    let ua = user_agent;
+    let browser = if ua.contains("SamsungBrowser/") {
+        Some("Samsung Internet")
+    } else if ua.contains("Edg/") || ua.contains("EdgA/") || ua.contains("EdgiOS/") {
+        Some("Edge")
+    } else if ua.contains("OPR/") || ua.contains("Opera") {
+        Some("Opera")
+    } else if ua.contains("Firefox/") || ua.contains("FxiOS/") {
+        Some("Firefox")
+    } else if ua.contains("Chrome/") || ua.contains("CriOS/") || ua.contains("Chromium/") {
+        Some("Chrome")
+    } else if ua.contains("Safari/") || ua.contains("AppleWebKit/") {
+        Some("Safari")
+    } else {
+        None
+    };
+    let system = if ua.contains("iPhone") {
+        Some("iPhone")
+    } else if ua.contains("iPad") {
+        Some("iPad")
+    } else if ua.contains("Android") {
+        Some("Android")
+    } else if ua.contains("CrOS") {
+        Some("ChromeOS")
+    } else if ua.contains("Windows") {
+        Some("Windows")
+    } else if ua.contains("Mac OS X") || ua.contains("Macintosh") {
+        Some("Mac")
+    } else if ua.contains("Linux") {
+        Some("Linux")
+    } else {
+        None
+    };
+    match (browser, system) {
+        (Some(browser), Some(system)) => Some(format!("{browser} on {system}")),
+        (Some(name), None) | (None, Some(name)) => Some(name.to_string()),
+        (None, None) => None,
+    }
+}
+
+/// "Turn off on this device": deletes `user_id`'s subscription for
+/// `endpoint`. `false` when they have none for it (never another user's:
+/// the endpoint alone does not identify the owner to the caller).
+pub async fn delete_push_subscription_by_endpoint(
+    pool: &PgPool,
+    user_id: &str,
+    endpoint: &str,
+) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2")
+        .bind(user_id)
+        .bind(endpoint)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+#[cfg(test)]
+mod device_label_tests {
+    use super::device_label;
+
+    #[test]
+    fn names_the_common_browsers_and_systems() {
+        for (ua, label) in [
+            (
+                "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) \
+                 Chrome/129.0.0.0 Mobile Safari/537.36",
+                "Chrome on Android",
+            ),
+            (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 \
+                 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+                "Safari on iPhone",
+            ),
+            (
+                "Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0",
+                "Firefox on Android",
+            ),
+            (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
+                 Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+                "Edge on Windows",
+            ),
+            (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
+                 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+                "Safari on Mac",
+            ),
+            (
+                "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) \
+                 SamsungBrowser/26.0 Chrome/122.0.0.0 Mobile Safari/537.36",
+                "Samsung Internet on Android",
+            ),
+        ] {
+            assert_eq!(device_label(ua).as_deref(), Some(label), "{ua}");
+        }
+        assert_eq!(device_label("curl/8.5.0"), None);
+        assert_eq!(device_label(""), None);
+    }
 }
 
 #[cfg(test)]
@@ -173,6 +322,7 @@ mod db_tests {
             "https://push.example/ep-same",
             "p256dh-a",
             "auth-a",
+            None,
         )
         .await
         .expect("first insert");
@@ -186,6 +336,7 @@ mod db_tests {
             "https://push.example/ep-same",
             "p256dh-b",
             "auth-b",
+            None,
         )
         .await
         .expect("second insert (conflict path, same owner)");
@@ -236,6 +387,7 @@ mod db_tests {
             "https://push.example/ep2",
             "p256dh-a",
             "auth-a",
+            None,
         )
         .await
         .expect("first insert");
@@ -249,6 +401,7 @@ mod db_tests {
             "https://push.example/ep2",
             "p256dh-b",
             "auth-b",
+            None,
         )
         .await
         .expect("second insert (conflict path, different owner)");
@@ -328,7 +481,7 @@ mod db_tests {
         // nothing is evicted and it becomes the most recently seen.
         let refreshed = format!("https://push.example/cap-{MAX_PUSH_SUBSCRIPTIONS_PER_USER}");
         assert_eq!(
-            upsert_push_subscription(&pool, USER, &refreshed, "p2", "a2")
+            upsert_push_subscription(&pool, USER, &refreshed, "p2", "a2", None)
                 .await
                 .expect("refresh"),
             PushSubscriptionUpsert::Saved
@@ -340,7 +493,7 @@ mod db_tests {
 
         // A brand-new device: saved, and the now-stalest (cap-19) evicted.
         assert_eq!(
-            upsert_push_subscription(&pool, USER, "https://push.example/cap-new", "p", "a")
+            upsert_push_subscription(&pool, USER, "https://push.example/cap-new", "p", "a", None)
                 .await
                 .expect("new device"),
             PushSubscriptionUpsert::Saved

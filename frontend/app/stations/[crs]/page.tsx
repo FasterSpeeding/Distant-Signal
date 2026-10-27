@@ -1,7 +1,7 @@
 import { Suspense } from 'react';
 import { Stack, Title, Text, Group, Divider } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
-import { notFound } from 'next/navigation';
+import { notFound, permanentRedirect } from 'next/navigation';
 import type { Metadata } from 'next';
 import {
   getStopPointDisruption,
@@ -24,11 +24,13 @@ import { TextLink } from '@/components/TextLink';
 import { StationTramLinks } from '@/components/TransitRailLinks';
 import { NationalRailCredit } from '@/components/NationalRailCredit';
 import { RecentlyCleared } from '@/components/RecentlyCleared';
-import { worstStatus, severityRank, severityLabel } from '@/lib/severity';
+import { worstStatus, severityRank } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport, Preferences, StationAccessibilityData, StationOperatorSampleStats } from '@/lib/types';
 import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
+import { stationJsonLd } from '@/lib/jsonLd';
+import { JsonLd, structuredDataOrigin } from '@/components/JsonLd';
 
 /** Three outcomes, not two. The previous version collapsed "there is no
  * such station" and "the name lookup failed" into a single `null`, so the
@@ -137,15 +139,25 @@ async function fetchStationAccessibility(crs: string): Promise<StationAccessibil
   }
 }
 
-/** Per-page Open Graph/Twitter/`<title>` metadata for a shared station
- * link. Reuses `lookupStation`/`fetchStationDisruptions` -- the exact same
- * helpers the page component calls -- so the resulting `fetch()` calls
- * (same URL/options) are deduped by Next's own request memoization within
- * this render, same reasoning as the equivalent, more detailed comment on
- * `app/train/[uid]/[date]/page.tsx`'s `generateMetadata`. Mirrors the page
- * component's own `notFound()`-for-an-unknown-CRS handling. */
+/** A well-formed code in lower or mixed case (`/stations/eus`) answers
+ * with a permanent redirect to its upper-case page, the one canonical URL.
+ * The name lookup is case-insensitive but the disruption lookup is not, so
+ * the lower-case page used to render with the wrong content. */
+function redirectToUpperCase(crs: string): void {
+  if (CRS_PATTERN.test(crs) && crs !== crs.toUpperCase()) {
+    permanentRedirect(`/stations/${crs.toUpperCase()}`);
+  }
+}
+
+/** Per-page `<title>`, description, canonical URL and link-preview cards
+ * for a station. The description is evergreen (what the page offers, not
+ * today's status), because a search snippet outlives any status by days.
+ * Reuses `lookupStation`, which the page component calls too, so the fetch
+ * is deduped by Next's request memoization. Mirrors the page component's
+ * own `notFound()` for an unknown CRS. */
 export async function generateMetadata({ params }: { params: Promise<{ crs: string }> }): Promise<Metadata> {
   const { crs } = await params;
+  redirectToUpperCase(crs);
 
   const lookup = await lookupStation(crs);
   if (lookup.outcome === 'unknown') {
@@ -153,30 +165,13 @@ export async function generateMetadata({ params }: { params: Promise<{ crs: stri
   }
 
   const heading = lookup.outcome === 'found' ? `${lookup.name} (${crs})` : crs;
-  const title = heading;
-
-  const { reports, coverage } = await fetchStationDisruptions(crs);
-  let description: string;
-  if (coverage === 'none') {
-    description = `${heading}: not currently covered by our line-status tracking.`;
-  } else {
-    const [firstReport, ...otherReports] = reports;
-    if (firstReport === undefined) {
-      description = `${heading}: no disruptions currently affecting this station.`;
-    } else {
-      const worst = otherReports.reduce((acc, report) => {
-        const candidate = worstStatus(report);
-        return severityRank(candidate.statusSeverity) > severityRank(acc.statusSeverity) ? candidate : acc;
-      }, worstStatus(firstReport));
-      description = `${heading}: ${severityLabel(worst.statusSeverity)} reported.`;
-    }
-  }
-
-  return pageMetadata(title, description, OWN_PREVIEW_IMAGE);
+  const description = `Live departures, disruption and accessibility at ${heading}.`;
+  return pageMetadata(heading, description, { ...OWN_PREVIEW_IMAGE, path: `/stations/${crs}` });
 }
 
 export default async function StationDisruptionPage({ params }: { params: Promise<{ crs: string }> }) {
   const { crs } = await params;
+  redirectToUpperCase(crs);
 
   // Deliberately awaited before the disruption fetch rather than in
   // parallel with it: `getStationName` is an hour-cached reference lookup,
@@ -187,7 +182,7 @@ export default async function StationDisruptionPage({ params }: { params: Promis
     notFound();
   }
 
-  const [{ reports, coverage }, preferences, sampleStatsResult, accessibilityResult, tocs, tramLinks] =
+  const [{ reports, coverage }, preferences, sampleStatsResult, accessibilityResult, tocs, tramLinks, origin] =
     await Promise.all([
       fetchStationDisruptions(crs),
       // Per-user, so it fails closed to "nothing pinned" (the shape a 401
@@ -204,6 +199,8 @@ export default async function StationDisruptionPage({ params }: { params: Promis
       // Tram stops to change to (transit spec §12.1); empty while no tram
       // network is served, and never throws.
       getTransitRailLinks(crs),
+      // For the structured data's absolute URLs.
+      structuredDataOrigin(),
     ]);
   const heading = lookup.outcome === 'found' ? `${lookup.name} (${crs})` : crs;
 
@@ -229,6 +226,13 @@ export default async function StationDisruptionPage({ params }: { params: Promis
 
   return (
     <Stack p="lg" gap="md">
+      {/* A `<script>` is `display: none`, so it takes no flex gap. Only for
+          a station the lookup named: structured data with a bare code for
+          a name would say less than the page. Coordinates (`geo`) once a
+          station read carries them. */}
+      {lookup.outcome === 'found' && origin !== null && (
+        <JsonLd data={stationJsonLd({ origin, crs, name: lookup.name })} />
+      )}
       <Group justify="space-between">
         {/* review §3.5.1: this page is 85% accessibility & facilities
             content with no way to jump to it, and an `<h1>` reading

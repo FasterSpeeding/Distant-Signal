@@ -477,9 +477,37 @@ pub enum PlatformBasis {
     /// A live departure board shows it (`platform`). Boards show the
     /// booked platform until it changes, so this is not a confirmation.
     Board,
-    /// Confirmed by the operator. Needs the Darwin Push Port (phase 3);
-    /// never served yet.
+    /// Tracking data ties the train (or the unit that will form it) to
+    /// this platform (DS-180): see [`PlatformEvidence`] for what counts.
+    /// The Darwin Push Port's `conf` flag is one such source (DS-152).
     Confirmed,
+}
+
+/// Why a stop's platform is [`PlatformBasis::Confirmed`] (DS-180). Not
+/// served: the wire only says `confirmed`. A new source (Darwin's
+/// platform confirmation, DS-152) adds a variant and sets
+/// `JourneyStop::platform_evidence` before `apply_platform_basis` runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformEvidenceSource {
+    /// This train's own automatic (train describer berth) TRUST arrival or
+    /// departure at this call reported the platform.
+    TrainReport,
+    /// Origin only, before departure: the train that forms this one (its
+    /// previous working) arrived at this platform, automatically reported,
+    /// and has not moved since.
+    PreviousWorkingArrival,
+    /// The Darwin Push Port marks this call's platform confirmed (`conf`,
+    /// DS-152): the operator confirmed it, and it is not suppressed from
+    /// public display.
+    DarwinConfirmed,
+}
+
+/// A platform tracking data ties to this stop, and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformEvidence {
+    /// Normalized (trimmed, upper case), as TRUST reported it.
+    pub platform: String,
+    pub source: PlatformEvidenceSource,
 }
 
 /// One calling point of a train's journey, booked schedule merged with the
@@ -597,16 +625,32 @@ pub struct JourneyStop {
     /// field -- "not known", never guessed. Since DS-127 it is what
     /// `platform_changed` compares against when both are known.
     pub booked_platform: Option<String>,
-    /// What `display_platform` rests on (DS-127): `board` when a live board
-    /// shows `platform`, `booked` when only `booked_platform` is known
-    /// (show it as provisional), `None` when neither is. Set by
+    /// What `display_platform` rests on (DS-127): `confirmed` when
+    /// `platform_evidence` is set (DS-180, or Darwin's confirmation, DS-152; `platform` is then that
+    /// platform), else `board` when a live board shows `platform`, `booked`
+    /// when only `booked_platform` is known (show it as provisional),
+    /// `None` when none is. Set by
     /// `api::data::journey::apply_platform_basis`.
     pub platform_basis: Option<PlatformBasis>,
+    /// Darwin's Push Port has a platform for this stop but suppresses it
+    /// from public display (`platsup`, or a station CIS's `cisPlatsup`;
+    /// DS-152). That platform is not served: `platform` stays as any board
+    /// shows it (boards hide it too), and `displayPlatform` falls back to
+    /// the booked one. So "hidden" and "not allocated" differ: `true` here
+    /// means a platform exists but is not yet public.
+    pub platform_suppressed: bool,
     /// The platform to show (DS-127): the live `platform` when known, else
     /// `booked_platform`. A server-side convenience so every client applies
     /// the same precedence; `platform` and `booked_platform` keep their
     /// meanings.
     pub display_platform: Option<String>,
+    /// The platform tracking data confirms for this stop, if any (DS-180).
+    /// Internal, never serialized: `apply_platform_basis` turns it into
+    /// `platform`, `platform_changed` and `platform_basis: confirmed`. Set
+    /// by `api::data::platform_confirmation`, and from the Darwin Push
+    /// Port's confirmed flag by `api::data::pushport_platform` (DS-152).
+    #[serde(skip)]
+    pub platform_evidence: Option<PlatformEvidence>,
     /// LDBWS-style live status of this stop (`OnTime`, `Late`, `Cancelled`,
     /// `NoReport`, `Arrived`, `Departed`, `Scheduled`), served as `status`.
     /// See `data::stop_live_status` for the mapping. Computed last, by the
@@ -617,6 +661,13 @@ pub struct JourneyStop {
     /// How many minutes late this stop is expected to be; `Some` only when
     /// `live_status` is `Late`.
     pub late_minutes: Option<i32>,
+    /// Whether this call is in a cancelled part of the train's run (DS-181):
+    /// the train is cancelled, terminated short before it, starts after it,
+    /// or is cancelled between two stations around it. Set with
+    /// `live_status` by the train-detail routes from the train's
+    /// `cancellation` (`api::data::cancellation`); `false` on a freshly built
+    /// stop. A skipped call (`stop_status` `Skipped`) is not counted here.
+    pub cancelled: bool,
     /// This train's row on the stop's current LDBWS departure board
     /// (Darwin's `delayReason`/`cancelReason`/`isCancelled`/`etd`), or
     /// `None` when there is no unique fresh match. Set by
@@ -691,9 +742,12 @@ impl JourneyStop {
             booked_platform: cp.platform.clone(),
             // Both set by `apply_platform_basis`, after the board overlay.
             platform_basis: None,
+            platform_suppressed: false,
             display_platform: None,
+            platform_evidence: None,
             live_status: None,
             late_minutes: None,
+            cancelled: false,
             board: None,
             timetable: StopTimetable::from_calling_point(cp, calling_point_date, departure_date),
         }

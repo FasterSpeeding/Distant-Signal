@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { gapSpans, TrendsCharts } from './TrendsCharts';
@@ -45,6 +45,12 @@ vi.mock('@mantine/charts', () => ({
 function point(bucketKey: string, delayRate: number | null) {
   return { bucketKey, delayRate };
 }
+
+// TrendsCharts loads its Recharts half on demand (next/dynamic); load it once
+// up front so the first chart assertion isn't timed against a cold import.
+beforeAll(async () => {
+  await import('@/app/lines/[id]/history/TrendsChartParts');
+});
 
 describe('gapSpans', () => {
   it('returns no spans when there are no gap days', () => {
@@ -168,9 +174,9 @@ describe('TrendsCharts granularity prop', () => {
 
   it.each(['halfHour', 'hour', 'sixHour'] as const)(
     'gives the x-axis a time-of-day tickFormatter for the %s granularity',
-    (granularity) => {
+    async (granularity) => {
       renderWithMantine(<TrendsCharts points={points} granularity={granularity} order={2} />);
-      const chart = screen.getAllByTestId('line-chart')[0];
+      const chart = (await screen.findAllByTestId('line-chart'))[0];
       expect(chart).toHaveAttribute('data-has-tick-formatter', 'true');
       expect(chart).toHaveAttribute('data-formatted-first-point', '13:00');
     },
@@ -179,9 +185,9 @@ describe('TrendsCharts granularity prop', () => {
   // Review §3.3/I10: the day axis used to print the raw bucket key
   // ("2026-08-01") verbatim -- every other date in the app reads "15 Sep"
   // style. Now formatted, not omitted.
-  it('gives the x-axis a human short-date tickFormatter for the day granularity', () => {
+  it('gives the x-axis a human short-date tickFormatter for the day granularity', async () => {
     renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} />);
-    const chart = screen.getAllByTestId('line-chart')[0];
+    const chart = (await screen.findAllByTestId('line-chart'))[0];
     expect(chart).toHaveAttribute('data-has-tick-formatter', 'true');
     expect(chart).toHaveAttribute('data-formatted-first-point', '1 Aug');
   });
@@ -205,24 +211,24 @@ describe('TrendsCharts showVolume prop', () => {
     expect(screen.queryByTestId('bar-chart')).not.toBeInTheDocument();
   });
 
-  it('renders the bar chart, reading total, when showVolume is true', () => {
+  it('renders the bar chart, reading total, when showVolume is true', async () => {
     renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} showVolume />);
-    const barChart = screen.getByTestId('bar-chart');
+    const barChart = await screen.findByTestId('bar-chart');
     expect(barChart).toHaveAttribute('data-series', 'total');
     const barPoints = JSON.parse(barChart.dataset.points as string);
     expect(barPoints[0].total).toBe(42);
   });
 
-  it('renders the bar chart above (before) the rate line chart in document order', () => {
+  it('renders the bar chart above (before) the rate line chart in document order', async () => {
     renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} showVolume />);
-    const barChart = screen.getByTestId('bar-chart');
-    const lineCharts = screen.getAllByTestId('line-chart');
+    const barChart = await screen.findByTestId('bar-chart');
+    const lineCharts = await screen.findAllByTestId('line-chart');
     expect(barChart.compareDocumentPosition(lineCharts[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('still renders the two rate/delay line charts unchanged when showVolume is true', () => {
+  it('still renders the two rate/delay line charts unchanged when showVolume is true', async () => {
     renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} showVolume />);
-    expect(screen.getAllByTestId('line-chart')).toHaveLength(2);
+    expect(await screen.findAllByTestId('line-chart')).toHaveLength(2);
   });
 });
 
@@ -239,9 +245,9 @@ describe('TrendsCharts theming', () => {
     },
   ];
 
-  it('draws straight lines in the theme colours, with the site units', () => {
+  it('draws straight lines in the theme colours, with the site units', async () => {
     renderWithMantine(<TrendsCharts points={points} granularity="halfHour" order={2} />);
-    const [rates, delay] = screen.getAllByTestId('line-chart');
+    const [rates, delay] = await screen.findAllByTestId('line-chart');
     expect(rates).toHaveAttribute('data-curve', 'linear');
     expect(delay).toHaveAttribute('data-curve', 'linear');
     expect(rates).toHaveAttribute(
@@ -253,9 +259,9 @@ describe('TrendsCharts theming', () => {
     expect(rates).toHaveAttribute('data-tooltip-label', '1 Aug, 13:00');
   });
 
-  it('puts thousands separators on the trains counted chart', () => {
+  it('puts thousands separators on the trains counted chart', async () => {
     renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} showVolume />);
-    const bars = screen.getByTestId('bar-chart');
+    const bars = await screen.findByTestId('bar-chart');
     expect(bars).toHaveAttribute('data-formatted-value', '80,000');
     expect(bars).toHaveAttribute('data-colors', 'var(--ds-chart-count)');
   });

@@ -129,6 +129,17 @@ fn assert_agreement(
                  CSA says {}, RAPTOR says {raptor_arrival}",
                 csa.arrival_min
             );
+            // RAPTOR's entry at that arrival is the first round to reach
+            // it, so it has the fewest changes; CSA must match it.
+            let raptor_changes = raptor_results
+                .iter()
+                .find(|j| j.arrival_min == raptor_arrival)
+                .map(|j| j.changes);
+            assert_eq!(
+                Some(train_changes(csa)),
+                raptor_changes,
+                "CSA and RAPTOR disagree on the fewest changes for {from} -> {to} departing {departure_min}"
+            );
         }
         (None, None) => {}
         (csa, raptor) => panic!(
@@ -260,4 +271,98 @@ fn set_down_only_and_pick_up_only_stops_agree() {
     assert_eq!(arrival(&connections, &interchange, "D", "Z"), None);
     // Riding through both is fine.
     assert_eq!(arrival(&connections, &interchange, "A", "Z"), Some(510));
+}
+
+/// A journey's changes, as `RaptorJourney::changes` counts them.
+fn train_changes(journey: &trip_planner::Journey) -> u32 {
+    let trains = journey
+        .legs
+        .iter()
+        .filter(|leg| matches!(leg, trip_planner::JourneyLeg::Train(_)))
+        .count();
+    u32::try_from(trains).unwrap().saturating_sub(1)
+}
+
+/// Pseudo-random small networks, dense enough that several routes often
+/// tie on arrival with different numbers of changes: CSA's answer must have
+/// RAPTOR's earliest arrival AND its fewest changes at that arrival. With
+/// change times, a same-CRS sibling pair (B, B2) and a fixed link (C to D).
+#[test]
+fn random_networks_agree_on_arrival_and_fewest_changes() {
+    let stops = ["A", "B", "B2", "C", "D", "E", "F", "G"];
+    let mut seed: u64 = 0x00c5_a0ff;
+    let mut next = |n: u64| {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 33) % n
+    };
+    let mut interchange = InterchangeData {
+        modal_change: schedule_query::ModalChangeBuffer::default(),
+        change_time_by_tiploc: [("C", 3), ("E", 0), ("F", 8)]
+            .iter()
+            .map(|(t, m)| ((*t).to_string(), *m))
+            .collect(),
+        tiploc_to_crs: HashMap::new(),
+        crs_to_tiplocs: HashMap::new(),
+        fixed_links_from_crs: HashMap::new(),
+    };
+    for (tiploc, crs) in [("B", "BBB"), ("B2", "BBB"), ("C", "CCC"), ("D", "DDD")] {
+        interchange
+            .tiploc_to_crs
+            .insert(tiploc.to_string(), crs.to_string());
+        interchange
+            .crs_to_tiplocs
+            .entry(crs.to_string())
+            .or_default()
+            .push(tiploc.to_string());
+    }
+    interchange.fixed_links_from_crs.insert(
+        "CCC".to_string(),
+        vec![FixedLink {
+            mode: "WALK".to_string(),
+            to_crs: "DDD".to_string(),
+            minutes: 7,
+            valid_from: "0000".to_string(),
+            valid_to: "2359".to_string(),
+            days_mask: "1111111".to_string(),
+        }],
+    );
+    let (mut checked, mut changed) = (0, 0);
+    for _ in 0..80 {
+        let mut connections = Vec::new();
+        for train in 0..40 {
+            let mut at = stops[usize::try_from(next(8)).unwrap()];
+            let mut time = 300 + u32::try_from(next(240)).unwrap();
+            for _ in 0..=next(1) {
+                let mut to = stops[usize::try_from(next(8)).unwrap()];
+                if to == at {
+                    to = stops[(stops.iter().position(|s| *s == at).unwrap() + 1) % 8];
+                }
+                // Coarse times, so arrivals tie often.
+                let run = 10 * (1 + u32::try_from(next(4)).unwrap());
+                connections.push(conn(&format!("T{train}"), at, to, time, time + run));
+                time += run + u32::try_from(next(2)).unwrap();
+                at = to;
+            }
+        }
+        connections.sort_by(|a, b| {
+            (a.departure_min, &a.uid, &a.from_tiploc).cmp(&(
+                b.departure_min,
+                &b.uid,
+                &b.from_tiploc,
+            ))
+        });
+        for (from, to) in [("A", "G"), ("B", "F"), ("E", "D"), ("G", "A")] {
+            for departure in [300, 360, 420] {
+                let (csa, _) = assert_agreement(&connections, &interchange, from, to, departure);
+                checked += 1;
+                changed += usize::from(csa.is_some_and(|j| train_changes(&j) >= 1));
+            }
+        }
+    }
+    assert!(
+        changed * 4 > checked,
+        "only {changed} of {checked} cases needed a change"
+    );
 }

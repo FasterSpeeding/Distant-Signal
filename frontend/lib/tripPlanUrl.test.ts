@@ -60,6 +60,22 @@ describe('planPageSearch / parsePlanSearchParams', () => {
     expect(parsePlanSearchParams(toRaw(search)).maxChanges).toBe(0);
   });
 
+  it('keeps a two-digit maxChanges up to the API ceiling of 12', () => {
+    for (const maxChanges of [10, 12]) {
+      const search = planPageSearch({
+        originCrs: 'EUS',
+        destinationCrs: 'MKC',
+        waypointCrs: [],
+        date: '2026-10-08',
+        results: 'options',
+        maxChanges,
+      });
+      expect(parsePlanSearchParams(toRaw(search)).maxChanges).toBe(maxChanges);
+    }
+    expect(parsePlanSearchParams({ maxChanges: '13' }).maxChanges).toBeUndefined();
+    expect(parsePlanSearchParams({ maxChanges: '012' }).maxChanges).toBeUndefined();
+  });
+
   it('drops malformed values instead of passing them to the API', () => {
     expect(
       parsePlanSearchParams({
@@ -68,7 +84,7 @@ describe('planPageSearch / parsePlanSearchParams', () => {
         date: 'tomorrow',
         departAfter: '25:00',
         results: 'all',
-        maxChanges: '7',
+        maxChanges: '13',
         via: 'ZZZZ',
         avoid: '',
       }),
@@ -140,5 +156,35 @@ describe('planPageSearch / parsePlanSearchParams', () => {
     expect(parsePlanSearchParams({ departAfter: '08:00', arriveBy: '09:00' })).toEqual({ arriveBy: '09:00' });
     expect(parsePlanSearchParams({ departAfter: '08:00', arriveBy: '25:00' })).toEqual({ departAfter: '08:00' });
     expect(parsePlanSearchParams({ arriveBy: '9am' })).toEqual({});
+  });
+});
+
+describe('tram stops as From and To', () => {
+  it('takes either NaPTAN spelling as origin or destination, upper-cased', () => {
+    expect(parsePlanSearchParams({ origin: '9400ZZMAPIC', destination: 'man' })).toMatchObject({
+      originCrs: '9400ZZMAPIC',
+      destinationCrs: 'MAN',
+    });
+    expect(parsePlanSearchParams({ origin: '940gzzcrwmb', destination: '9400zzmavic' })).toMatchObject({
+      originCrs: '940GZZCRWMB',
+      destinationCrs: '9400ZZMAVIC',
+    });
+  });
+
+  it('round-trips a tram station end', () => {
+    const search = planPageSearch({
+      originCrs: '9400ZZMAPIC',
+      destinationCrs: 'MCV',
+      waypointCrs: [],
+      date: '2026-11-04',
+      results: 'fastest',
+    });
+    expect(toRaw(search).origin).toBe('9400ZZMAPIC');
+    expect(parsePlanSearchParams(toRaw(search)).originCrs).toBe('9400ZZMAPIC');
+  });
+
+  it('drops a malformed code, and keeps stops out of the waypoint and avoid lists', () => {
+    expect(parsePlanSearchParams({ origin: '9400', destination: '9401ZZMAPIC' })).toEqual({});
+    expect(parsePlanSearchParams({ via: '9400ZZMAPIC', avoid: '940GZZCRWMB' })).toEqual({});
   });
 });

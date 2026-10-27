@@ -13,6 +13,7 @@ describe('app/robots.ts', () => {
   it('reads NEXT_PUBLIC_SITE_URL at call time, trimming a trailing slash', () => {
     process.env.NEXT_PUBLIC_SITE_URL = 'https://ds.example/';
     expect(robots().host).toBe('https://ds.example');
+    expect(robots().sitemap).toBe('https://ds.example/sitemap.xml');
   });
 
   it('omits host and sitemap when NEXT_PUBLIC_SITE_URL is unset', () => {

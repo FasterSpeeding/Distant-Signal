@@ -5,6 +5,7 @@ import { TrainJourneyPanel } from '@/components/TrainJourneyPanel';
 import { TicketPanel } from '@/components/TicketPanel';
 import { LoginControl } from '@/components/LoginControl';
 import { TrackedTrainOwnerControls } from '@/components/TrackedTrainOwnerControls';
+import { TrainNotificationsSwitch } from '@/components/TrainNotificationsSwitch';
 import { LastUpdated } from '@/components/LastUpdated';
 import { REFRESH_INTERVAL_MS } from '@/lib/refresh';
 import { TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
@@ -104,6 +105,9 @@ export default async function TrackedTrainByIdPage({ params }: { params: Promise
           <TrackedTrainOwnerControls train={state} />
         </Group>
       </Group>
+      {state.notificationsEnabled !== undefined && (
+        <TrainNotificationsSwitch trackingId={state.id} initiallyEnabled={state.notificationsEnabled} />
+      )}
       <TrainJourneyPanel state={state} />
       <Group gap={4}>
         <LastUpdated timestamp={renderedAt} />

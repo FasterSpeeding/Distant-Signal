@@ -20,8 +20,100 @@ pub fn router() -> Router {
         )
         .route(
             "/notifications/subscribe",
-            axum::routing::post(post_subscribe),
+            axum::routing::post(post_subscribe).delete(delete_subscribe),
         )
+        .route("/notifications/devices", axum::routing::get(get_devices))
+        .route(
+            "/notifications/devices/{id}",
+            axum::routing::delete(delete_device),
+        )
+}
+
+/// `GET /notifications/devices`: the caller's devices with push on, most
+/// recently used first, for the Notifications page (DS-153). Each has a
+/// label from its browser ("Chrome on Android", or `null`), when it was
+/// added and last used, and `endpointSha256`, so the page can mark "this
+/// device" by hashing its own endpoint. The endpoint itself and its keys
+/// are never sent.
+async fn get_devices(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+) -> Result<Json<Vec<notifications::PushDevice>>, (StatusCode, String)> {
+    notifications::list_push_devices(&app.database, &user.id)
+        .await
+        .map(Json)
+        .map_err(|err| device_error(&err, "failed to list push devices"))
+}
+
+/// `DELETE /notifications/devices/{id}`: stops pushes to one of the
+/// caller's devices. 204; 404 when it is not theirs.
+async fn delete_device(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    match notifications::delete_push_device(&app.database, &user.id, id).await {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err((
+            StatusCode::NOT_FOUND,
+            "That device isn't in your list.".to_string(),
+        )),
+        Err(err) => Err(device_error(&err, "failed to delete a push device")),
+    }
+}
+
+fn device_error(err: &anyhow::Error, message: &'static str) -> (StatusCode, String) {
+    if let Some(unavailable) = crate::unavailable::response_for(err) {
+        return unavailable;
+    }
+    tracing::error!(error = ?err, "{message}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "operation failed".to_string(),
+    )
+}
+
+/// `DELETE /notifications/subscribe` `{endpoint}`: "Turn off on this
+/// device". The browser unsubscribes its own `PushSubscription`; this
+/// forgets the server's copy so nothing is sent to it again.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UnsubscribeRequest {
+    endpoint: String,
+}
+
+/// 204 once deleted; 404 when the caller has no subscription for that
+/// endpoint (already removed, or never theirs).
+async fn delete_subscribe(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Json(body): Json<UnsubscribeRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    super::validate_short_text("The push endpoint", &body.endpoint, MAX_PUSH_ENDPOINT_CHARS)
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    match notifications::delete_push_subscription_by_endpoint(
+        &app.database,
+        &user.id,
+        &body.endpoint,
+    )
+    .await
+    {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err((
+            StatusCode::NOT_FOUND,
+            "No notifications are on for that device.".to_string(),
+        )),
+        Err(err) => {
+            if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                return Err(unavailable);
+            }
+            tracing::error!(error = ?err, "failed to delete push subscription");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to turn off notifications".to_string(),
+            ))
+        }
+    }
 }
 
 /// Unauthenticated on purpose -- the browser needs this key BEFORE it has
@@ -79,6 +171,7 @@ fn validate_subscribe_request(body: &SubscribeRequest) -> Result<(), String> {
 async fn post_subscribe(
     State(app): State<App>,
     user: AuthenticatedUser,
+    headers: axum::http::HeaderMap,
     Json(body): Json<SubscribeRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     // SECURITY (2026-09 review): rejects a non-`https` endpoint or one
@@ -94,12 +187,18 @@ async fn post_subscribe(
         .await
         .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
 
+    // The device list's label ("Chrome on Android"); only the label is kept.
+    let device_label = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .and_then(notifications::device_label);
     match notifications::upsert_push_subscription(
         &app.database,
         &user.id,
         &body.endpoint,
         &body.keys.p256dh,
         &body.keys.auth,
+        device_label.as_deref(),
     )
     .await
     {

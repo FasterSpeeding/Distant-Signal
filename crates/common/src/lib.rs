@@ -12,6 +12,7 @@ pub mod advisory_locks;
 pub mod backoff;
 pub mod config;
 pub mod corpus_inference;
+pub mod darwin;
 pub mod full_coverage_window;
 #[cfg(feature = "http")]
 pub mod gcp_external_account;
@@ -1342,6 +1343,53 @@ pub struct TrackedStopBoard {
 /// The stream schema name of [`TrackedStopBoard`] snapshots.
 pub const TRACKED_STOP_BOARDS_SCHEMA: &str = "tracked-stop-boards";
 
+/// One row of an LDBWS arrival board (`GetArrBoardWithDetails`), compacted
+/// to what the api's per-stop match needs (pre-departure prediction phase
+/// 3, DS-152). Stored inside `tracked_stop_arrival_boards.arrivals`, so
+/// absent values are omitted rather than stored as `null`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StationArrival {
+    /// LDBWS's board-relative `serviceID` (see
+    /// [`StationDeparture::service_id`]).
+    pub service_id: String,
+    /// `operatorCode` (ATOC).
+    pub operator: String,
+    /// The first `origin` CRS, when the board gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_crs: Option<String>,
+    /// `sta`: the scheduled (public) arrival, `"HH:MM"`.
+    pub scheduled: String,
+    /// `eta`: `"HH:MM"`, `"On time"`, `"Delayed"` or `"Cancelled"`.
+    pub estimated: String,
+    pub is_cancelled: bool,
+    /// The current platform for this arrival; `None` when absent, `null`
+    /// or hidden (the public board cannot tell those apart).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// The Retail Service ID, as on [`StationDeparture::rsid`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rsid: Option<String>,
+}
+
+/// One targeted LDBWS arrival board for a tracked train's alighting stop
+/// (DS-152): the arrivals at `crs` in a narrow window around that train's
+/// booked arrival there, polled by `poller-ldbws`'s tracked-stop lane and
+/// applied to `tracked_stop_arrival_boards` by ingest-writer (schema
+/// `tracked-stop-arrival-boards/1`, on the station-samples stream).
+/// Departure boards never list a terminating or set-down-only call; this is
+/// how such a stop gets a live platform without the Darwin Push Port.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackedStopArrivalBoard {
+    pub train_uid: String,
+    pub service_date: NaiveDate,
+    pub crs: String,
+    pub polled_at: DateTime<Utc>,
+    pub arrivals: Vec<StationArrival>,
+}
+
+/// The stream schema name of [`TrackedStopArrivalBoard`] snapshots.
+pub const TRACKED_STOP_ARRIVAL_BOARDS_SCHEMA: &str = "tracked-stop-arrival-boards";
+
 /// How old a [`StationSample`] may be (by `polled_at`) and still count as
 /// live data. The aggregator ignores older `station_samples` rows; see
 /// `aggregator::aggregation::drop_stale_samples` for why 15 minutes.
@@ -1559,6 +1607,12 @@ pub struct TrainMovementEventMessage {
     pub actual_timestamp: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variation_status: Option<String>,
+    /// The platform an AUTOMATIC (berth-derived) arrival or departure
+    /// reports, from `trust_schema::schema::movement_reported_platform`
+    /// (DS-180); `None` otherwise. Stored as
+    /// `train_movement_events.platform`. Optional on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
     pub raw_body: serde_json::Value,
 
     // Derived current-state fields, computed by trust-consumer (Tasks
@@ -1621,6 +1675,12 @@ pub struct TrustBacklogEventMessage {
     /// wire both ways, so an older consumer or `api` interoperates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gbtt_timestamp: Option<DateTime<Utc>>,
+    /// The platform a Movement reports, as on
+    /// [`TrainMovementEventMessage::platform`] (DS-180). Stored as
+    /// `trust_event_backlog.platform` and replayed onto
+    /// `train_movement_events.platform` when the train is matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
 }
 
 /// Response body of `POST /private/trust-event-backlog`, shared by `api`
@@ -1700,9 +1760,10 @@ mod trust_backlog_event_message_tests {
 
 /// One TRUST reason code, the wire shape `trust-backlog-consumer` POSTs in
 /// batches to `api`'s `/private/train-reasons` route (stored in
-/// `train_reasons`, see `api::data::train_reasons`). Sent for a `0002`
-/// Cancellation's `canx_reason_code` and a `0006` Change of Origin's
-/// `reason_code`, and only when the message carries one.
+/// `train_reasons`, see `api::data::train_reasons`). Sent for every `0002`
+/// Cancellation (its `canx_reason_code`), `0005` Reinstatement and `0006`
+/// Change of Origin (its `reason_code`); `reason_code` is empty when the
+/// message carries none, which a `0005` never does (DS-181).
 ///
 /// Deliberately its own type and route, not a field on
 /// [`TrustBacklogEventMessage`]: `0006` has no place in the backlog table
@@ -1717,15 +1778,17 @@ pub struct TrainReasonMessage {
     pub train_uid: Option<String>,
     /// Derived exactly as the same message's backlog row's `service_date`.
     pub service_date: NaiveDate,
-    /// `"0002"` or `"0006"`.
+    /// `"0002"`, `"0005"` or `"0006"`.
     pub msg_type: String,
+    /// The delay attribution code, or `""` when there is none.
     pub reason_code: String,
     /// `0002` only: `"AT ORIGIN"`, `"EN ROUTE"`, `"ON CALL"` or `"OUT OF PLAN"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canx_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loc_stanox: Option<String>,
-    /// `canx_timestamp` (`0002`) or `dep_timestamp` (`0006`), corrected.
+    /// `canx_timestamp` (`0002`), `reinstatement_timestamp` (`0005`) or
+    /// `dep_timestamp` (`0006`), corrected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_at: Option<DateTime<Utc>>,
 }

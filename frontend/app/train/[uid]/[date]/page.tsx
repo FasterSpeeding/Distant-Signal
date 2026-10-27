@@ -16,6 +16,7 @@ import { ServiceModeIcon } from '@/components/ServiceModeIcon';
 import { ProvisionalTimetableNote } from '@/components/ProvisionalTimetableNote';
 import type { PublicTrainState, TrainJourneyState, TrackedTrainListItem } from '@/lib/types';
 import { delayLabel } from '@/lib/serviceStatus';
+import { cancellationSummary, trainCancellation } from '@/lib/cancellation';
 import { pageMetadata } from '@/lib/pageMetadata';
 import { trainIdentifiers, trainName } from '@/lib/trainName';
 
@@ -78,6 +79,12 @@ export function toJourneyState(train: PublicTrainState): TrainJourneyState {
     // the api for the shared train the same way as for a tracked one.
     trackingPhase: train.trackingPhase ?? null,
     firstReportExpectedAt: train.firstReportExpectedAt ?? null,
+    // What is cancelled and why (DS-181), with the older reason fields for
+    // a backend that predates it (`lib/cancellation.ts`).
+    cancelled: train.cancelled ?? false,
+    cancelReasonCode: train.cancelReasonCode ?? null,
+    cancelReason: train.cancelReason ?? null,
+    cancellation: train.cancellation ?? null,
   };
 }
 
@@ -148,8 +155,12 @@ export function trainStatusSummary(state: TrainJourneyState): string {
     return 'Matched to a timetabled train. Waiting for its first movement report.';
   }
 
-  if (state.status === 'cancelled') {
-    return 'This train was cancelled.';
+  const cancellation = trainCancellation(state);
+  if (cancellation && (state.status === 'cancelled' || cancellation.kind === 'partial')) {
+    // "Cancelled: a fault with the signalling system.", "Terminates at
+    // Raynes Park.", ...; the plain sentence when there is nothing more.
+    const summary = cancellationSummary(cancellation);
+    return summary === 'Cancelled' ? 'This train was cancelled.' : `${summary}.`;
   }
 
   if (state.status === 'completed') {
@@ -216,7 +227,8 @@ export async function generateMetadata({
   const title = publicTrainName(train) ?? `${serviceHeading(train)} ${uid}`;
   const description = trainStatusSummary(toJourneyState(train));
 
-  return pageMetadata(title, description);
+  // One train on one day: worth following, not worth indexing.
+  return pageMetadata(title, description, { noindex: true });
 }
 
 /** `/train/[uid]/[date]` -- the PUBLIC page for a real-world train,

@@ -39,6 +39,7 @@ explains the format). The kinds:
 | `poller-incidents` | final | XADD on `incident-text-changed` (phase 2c) |
 | `poller-ldbws`, `poller-tfl`, `poller-tocs`, the three island-of-Ireland pollers | final | XADD and XREVRANGE on their own `ds:ingest:*` stream (one each: the island-of-Ireland pollers have `ds:ingest:ioi-gtfs`, `-live` and `-nir`; `poller-tfl` also has `ds:ingest:tfl-stops`, its daily stops job's) |
 | `poller-transit-metrolink` | optional | XADD and XREVRANGE on `ds:ingest:transit-metrolink` (transit networks; rendered only with `redis.acl.clients.pollerTransitMetrolink`) |
+| `darwin-relay` | optional | XADD and XREVRANGE on `ds:ingest:darwin` (the Darwin Push Port, DS-152; rendered only with `redis.acl.clients.darwinRelay`) |
 | `poller-transit-net` | optional | XADD and XREVRANGE on `ds:ingest:transit-net` (Nottingham Express Transit; rendered only with `redis.acl.clients.pollerTransitNet`, Secret key `poller-transit-net-password`) |
 | `ingest-writer` | final | consumer-group and gauge commands on `ds:ingest:*` (never XADD, XTRIM or XDEL there); XADD, XTRIM, XLEN, XRANGE and MEMORY USAGE on `ds:dlq:*` |
 | `ds-admin` | admin | everything |
@@ -74,7 +75,8 @@ refused. Edit the template and that test together.
   `poller-irish-rail-gtfs-password`, `poller-irish-rail-live-password`,
   `poller-nir-stations-password`, `ingest-writer-password`,
   `ds-admin-password`. An `optional` user's key
-  (`poller-transit-metrolink-password`) only once its client is on.
+  (`poller-transit-metrolink-password`, `darwin-relay-password`) only once
+  its client is on.
   `api-password` is no longer needed: the `api` user went with the api's
   Redis client (ingest phase 5, step 5.4; see
   [Retired users](#retired-users)).
@@ -216,6 +218,12 @@ and about 10k entries were redelivered. The consumers' dedup keys absorbed
 it with no duplicate rows, but it happens again on every restart.
 `on-unshared` replays cleanly. `"off"` still renders, for anyone who
 accepts that.
+
+Valkey 8.1 (the chart's server since DS-174) does not ACL-check that
+replay: in the docs/valkey-migration.md rehearsal it loaded the same AOF
+with `default` off identically and an empty `ACL LOG`, where Redis 7.4
+lost the groups' progress. Stay on `on-unshared` anyway while a rollback
+to Redis 7.4 is possible; revisit `"off"` once it is not.
 
 Steps:
 

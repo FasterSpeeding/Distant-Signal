@@ -18,7 +18,9 @@ use serde::Deserialize;
 
 use crate::app::App;
 use crate::data::station_groups::{self, StationChoice};
-use crate::data::{tfl_access, trip_plan_live, trip_planning, trip_planning_itinerary};
+use crate::data::{
+    tfl_access, transit_planning, trip_plan_live, trip_planning, trip_planning_itinerary,
+};
 
 /// Hard cap on `?waypoints=`, enforced before any database read (2026-09-25
 /// review, High 4b): before it, `?waypoints=YRK,YRK,YRK,...` repeated a few
@@ -83,10 +85,14 @@ const MAX_VIA_STATIONS: usize = 54;
 ///
 /// The default bound is 252, twice what 20 waypoints at `maxChanges=4` (the
 /// worst case before the ceiling was raised to 6) cost: the user's decision
-/// of 2026-10-06. Without vias that never binds below [`MAX_WAYPOINTS`];
-/// with 1 via, `maxChanges` 2/4/5/6 allow 20/13/11/9 waypoints; with 3
-/// vias, 8/5/4/3. `fastest` (one CSA sweep, no rounds) is not limited
-/// beyond [`MAX_WAYPOINTS`] and [`MAX_VIAS`].
+/// of 2026-10-06, kept when the ceiling went to 12 (2026-10-24, DS-85).
+/// Without vias it binds only above `maxChanges=10` (18 waypoints at 11,
+/// 17 at 12); with 1 via, `maxChanges` 2/4/6/8/10/12 allow 20/13/9/7/6/5
+/// waypoints; with 3 vias, 8/5/3/2/2/1. A request that leaves `maxChanges`
+/// out gets the default of 4 only where it fits, else the most that does
+/// down to the old default of 2 ([`default_max_changes`]), so no request
+/// valid before the default rose is refused. `fastest` (one CSA sweep, no
+/// rounds) is not limited beyond [`MAX_WAYPOINTS`] and [`MAX_VIAS`].
 ///
 /// `TRIP_PLAN_MAX_OPTIONS_SEARCH_SIZE` (chart `api.tripPlanMaxOptionsSearchSize`)
 /// sets it, clamped to [`MIN_OPTIONS_SEARCH_SIZE`]..=[`MAX_OPTIONS_SEARCH_SIZE`];
@@ -94,8 +100,9 @@ const MAX_VIA_STATIONS: usize = 54;
 /// docs/superpowers/specs/2026-10-06-trips-plan-via-and-max-changes-design.md.
 const DEFAULT_OPTIONS_SEARCH_SIZE: usize = 252;
 /// The lowest bound accepted: every request with no waypoints and no vias
-/// still fits at any allowed `maxChanges` (1 * 1 * 8).
-const MIN_OPTIONS_SEARCH_SIZE: usize = 8;
+/// still fits at any allowed `maxChanges` (1 * 1 * 14 at 12).
+const MIN_OPTIONS_SEARCH_SIZE: usize =
+    trip_planning_itinerary::max_rounds(trip_planning_itinerary::MAX_CHANGES_LIMIT) as usize;
 /// The highest bound accepted: four times the pre-2026-10-06 worst case,
 /// about 4x the latency of 20 waypoints at `maxChanges=4`.
 const MAX_OPTIONS_SEARCH_SIZE: usize = 504;
@@ -251,9 +258,9 @@ struct TripPlanParams {
     via: Option<String>,
     #[serde(default = "default_results")]
     results: String,
-    /// Optional interchange cap, `?maxChanges=0`..`=6` (inclusive). Absent
-    /// or empty means [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (2),
-    /// exactly this route's behaviour before the parameter existed. Kept as
+    /// Optional interchange cap, `?maxChanges=0`..`=12` (inclusive). Absent
+    /// or empty means [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (4;
+    /// 2 before 2026-10-24), see [`default_max_changes`]. Kept as
     /// a raw string and validated by [`parse_max_changes`] rather than
     /// deserialized straight into an integer, so a bad value gets this
     /// route's own clear 400 message rather than axum's generic
@@ -265,6 +272,12 @@ struct TripPlanParams {
     /// response. Validated by [`parse_live`].
     #[serde(default)]
     live: Option<String>,
+    /// `?transit=true|false` (default `false`; DS-164): plan with the
+    /// transit networks in `API_TRIP_PLAN_TRANSIT_NETWORKS` (trams as
+    /// `kind: "transit"` legs). Ignored while that list is empty. A tram
+    /// stop as `origin` or `destination` opts in too. See [`parse_transit`].
+    #[serde(default)]
+    transit: Option<String>,
 }
 
 /// The live overlay's configuration, read once from the environment.
@@ -387,7 +400,7 @@ fn default_results() -> String {
 
 /// `GET /Trips/plan?origin=&destination=&date=[&waypoints=][&via=]
 /// [&departAfter=|&arriveBy=][&dayOffset=0|1][&acrossMidnight=true][&avoid=][&avoidStop=][&avoidChange=]
-/// [&results=fastest|options][&maxChanges=0..6][&live=true|false]`.
+/// [&results=fastest|options][&maxChanges=0..12][&live=true|false]`.
 ///
 /// - `dayOffset=1` (2026-10-19): the `departAfter`/`arriveBy` time is on
 ///   the morning after `date`, still on `date`'s trains -- "arrive by 00:30
@@ -486,8 +499,10 @@ fn default_results() -> String {
 ///   `cappedByMaxChanges: true` when a strictly faster itinerary needing more
 ///   changes exists.
 /// - `maxChanges`: integer `0..=`[`trip_planning_itinerary::MAX_CHANGES_LIMIT`]
-///   (6 since 2026-10-06, 4 before); absent/empty =>
-///   [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (2). Anything else (out
+///   (12 since 2026-10-24, 6 from 2026-10-06, 4 before); absent/empty =>
+///   [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (4 since 2026-10-24,
+///   2 before), or less where `options`' search-size guard needs it (see
+///   [`default_max_changes`]). Anything else (out
 ///   of range, negative, non-integer) is a 400 naming the allowed range,
 ///   rejected before any database read. The effective value is echoed back
 ///   as the response's top-level `maxChanges`. With `results=options`, the
@@ -510,12 +525,14 @@ fn default_results() -> String {
 ///    [`OPTIONS_SEARCH_SIZE_LIMIT`], also checked before any database read --
 ///    bound how deep and how wide each `options`-mode search can go. RAPTOR
 ///    does one full sweep of the day's connections per round, and runs
-///    `maxChanges + 2` rounds at most (fewer if a round improves nothing): 8
-///    sweeps at `maxChanges=6`, 6 at 4, 4 at the default of 2. Each sweep
-///    carries one label set per (waypoint stage, via progress) state,
-///    `(waypoints + 1) * (vias + 1)` of them, so the work is about states *
-///    rounds (a via state weighing about two waypoint states); the guard
-///    keeps that at or below what 20 waypoints at
+///    `maxChanges + 2` rounds at most (fewer if a round improves nothing): 14
+///    sweeps at `maxChanges=12`, 6 at the default of 4. On prod's timetable
+///    every search measured had stopped improving by its 8th round (DS-85,
+///    2026-10-24), so a cap above 6 costs only searches that don't converge.
+///    Each sweep carries one label set per (waypoint stage, via progress)
+///    state, `(waypoints + 1) * (vias + 1)` of them, so the work is about
+///    states * rounds (a via state weighing about two waypoint states); the
+///    guard keeps that at or below twice what 20 waypoints at
 ///    `maxChanges=4` (the most allowed before 2026-10-06) already cost.
 ///    (The whole-day read and graph build, which dominate memory, are
 ///    unchanged, and `fastest` mode's single CSA scan doesn't depend on
@@ -562,7 +579,7 @@ async fn get_trip_plan(
     }
 
     let waypoints = parse_waypoints(params.waypoints.as_deref())?;
-    let max_changes = parse_max_changes(params.max_changes.as_deref())?;
+    let requested_max_changes = parse_max_changes(params.max_changes.as_deref())?;
     let live_requested = parse_live(params.live.as_deref())?;
     let day_offset = parse_day_offset(
         params.day_offset.as_deref(),
@@ -571,8 +588,24 @@ async fn get_trip_plan(
     let time = parse_time_bound(params.depart_after, params.arrive_by, day_offset)?;
     let across_midnight = parse_across_midnight(params.across_midnight.as_deref(), day_offset)?;
     // A CRS, or a bus stop's or ferry terminal's `tiploc:` code.
-    let origin = common::location_naming::normalize_location_code(&params.origin);
-    let destination = common::location_naming::normalize_location_code(&params.destination);
+    let mut origin = common::location_naming::normalize_location_code(&params.origin);
+    let mut destination = common::location_naming::normalize_location_code(&params.destination);
+    // Transit networks (DS-164): only while the switch lists any. A tram
+    // stop end (either NaPTAN spelling, or a platform) becomes its station
+    // node and opts in, as `transit=true` does; checked before any graph is
+    // built.
+    let transit_networks = transit_planning::enabled_networks();
+    let transit_requested = parse_transit(params.transit.as_deref(), !transit_networks.is_empty())?;
+    let transit_ends = resolve_transit_ends(
+        &app,
+        &transit_networks,
+        transit_requested,
+        &mut origin,
+        &mut destination,
+    )
+    .await?;
+    let transit = !transit_networks.is_empty()
+        && (transit_requested || transit_ends.iter().any(Option::is_some));
     let avoid_choices = AvoidChoices {
         avoid: parse_station_list("avoid", params.avoid.as_deref())?,
         avoid_stop: parse_station_list("avoidStop", params.avoid_stop.as_deref())?,
@@ -590,8 +623,24 @@ async fn get_trip_plan(
     let waypoint_codes = apply_waypoint_choices(&waypoints, &avoid)?;
     let via_choices = parse_vias(params.via.as_deref())?;
     check_via_conflicts(&via_choices, &avoid, &origin, &destination)?;
+    if transit {
+        check_no_transit_stops(
+            waypoints
+                .iter()
+                .chain(&via_choices)
+                .chain(avoid_choices.all()),
+        )?;
+    }
     // A group via is ONE via to the search (one progress step), measured to
     // cost about what a single-station via does (`bench_group_vias_against_single`).
+    let max_changes = requested_max_changes.unwrap_or_else(|| {
+        default_max_changes(
+            &params.results,
+            waypoints.len(),
+            via_choices.len(),
+            *OPTIONS_SEARCH_SIZE_LIMIT,
+        )
+    });
     check_options_search_size(
         &params.results,
         waypoints.len(),
@@ -610,8 +659,22 @@ async fn get_trip_plan(
     let vias: Vec<String> = via_choices.iter().map(|via| via.label.clone()).collect();
     let via_codes: Vec<Vec<String>> = via_choices.into_iter().map(|via| via.codes).collect();
     // A `TfL` stop end (DS-135): its access candidates, read before the
-    // permit like the other checks (a few hundred `tfl_stops` rows).
-    let access = load_access_ends(&app, &origin, &destination).await?;
+    // permit like the other checks (a few hundred `tfl_stops` rows). A tram
+    // stop end of a planner network is a graph node instead (spec §12.2).
+    let access = load_access_ends(
+        &app,
+        if transit_ends[0].is_some() {
+            ""
+        } else {
+            &origin
+        },
+        if transit_ends[1].is_some() {
+            ""
+        } else {
+            &destination
+        },
+    )
+    .await?;
 
     // Acquired BEFORE the reads below, not just around the search: the
     // whole-day row read and the graph built from it are the memory half of
@@ -628,9 +691,7 @@ async fn get_trip_plan(
     };
 
     let permit = Arc::new(permit);
-    let marker = trip_planning::latest_schedule_publish(&app.database)
-        .await
-        .map_err(internal_error("read the latest schedule publish"))?;
+    let marker = graph_marker(&app, &transit_networks).await?;
     let date = params.date;
     let Some(graph) = load_graph(&app, date, marker).await? else {
         return Err((
@@ -641,10 +702,13 @@ async fn get_trip_plan(
             ),
         ));
     };
+    if transit {
+        check_transit_ends_planned(&graph, &transit_ends)?;
+    }
     let access = match access {
         Some(mut access) => {
             access
-                .retain_known(&graph.interchange)
+                .retain_known(planning_interchange(&graph, transit))
                 .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
             Some(Arc::new(access))
         }
@@ -663,6 +727,7 @@ async fn get_trip_plan(
         live_requested,
         allowed_uids: None,
         access: access.clone(),
+        transit,
     };
     // `acrossMidnight` (2026-10-20): the next service date's trains too,
     // from the same clock time, merged in (`data::trip_plan_overnight`).
@@ -694,6 +759,12 @@ async fn get_trip_plan(
     )?;
     drop(permit);
     let request = first.request.clone();
+    let transit_skipped: Vec<(String, transit_planning::SkipReason)> = first
+        .transit_skipped
+        .iter()
+        .chain(second.iter().flat_map(|second| &second.transit_skipped))
+        .cloned()
+        .collect();
     let (segments, live_outcome, service_dates) = match (second, next_date) {
         (Some(second), Some(next)) => (
             crate::data::trip_plan_overnight::merge_across_midnight(
@@ -842,6 +913,12 @@ async fn get_trip_plan(
     if let Some(access) = &access {
         body["access"] = access.to_json();
     }
+    // Additive (2026-10-24, DS-164), only when planned with transit
+    // networks: each network whose timetable does not cover the date
+    // (`noTimetable`), so the plan was made without it. Never "no trams".
+    if transit {
+        body["transitNotices"] = transit_planning::notices_json(&transit_skipped);
+    }
     // Additive (2026-10-08): whether `date`'s timetable is still
     // provisional. Once per response, not per journey or leg. With
     // `acrossMidnight`, the later of the two dates: it is the one that can
@@ -900,6 +977,10 @@ struct DateInputs {
     /// The `TfL` stop ends and their access candidates (DS-135); `None`
     /// when both ends are stations.
     access: Option<Arc<tfl_access::AccessEnds>>,
+    /// Plan with the transit networks (DS-164): `transit=true` or a tram
+    /// stop end, with the switch on. Searches the graph's transit
+    /// interchange data, and dresses the transit legs.
+    transit: bool,
 }
 
 /// One service date's finished plan: searched, live-checked (when asked)
@@ -910,6 +991,9 @@ struct DatePlan {
     /// `None` when live data was not asked for; `Err(reason)` when it was
     /// but did not apply.
     live: Option<Result<LiveSummary, &'static str>>,
+    /// The transit networks left out of this date's graph (empty unless
+    /// planned with transit).
+    transit_skipped: Vec<(String, transit_planning::SkipReason)>,
 }
 
 /// TRIPS-1: `date`'s graph from the per-date cache, keyed on the latest
@@ -921,9 +1005,11 @@ async fn load_graph(
     marker: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Option<Arc<trip_planning::PlanningGraph>>, (StatusCode, String)> {
     let pool = app.database.clone();
+    // Read here, not in the build: the build may run on another task.
+    let transit_networks = transit_planning::enabled_networks();
     let cached = GRAPH_CACHE
         .get_or_build(date, marker, move || async move {
-            let Some(calling_points) =
+            let Some(mut calling_points) =
                 trip_planning::fetch_calling_points_for_date(&pool, date).await?
             else {
                 return Ok(None);
@@ -944,16 +1030,44 @@ async fn load_graph(
                 &road_or_water,
                 trip_planning::road_water_change_minutes(),
             );
+            // The transit networks' trips join the trains before the one
+            // sort (DS-164); with the switch empty, nothing is read.
+            let transit_days = if transit_networks.is_empty() {
+                None
+            } else {
+                let (days, skipped) =
+                    transit_planning::read_days(&pool, &transit_networks, date).await;
+                calling_points.extend(transit_planning::calling_points(&days));
+                Some((days, skipped))
+            };
             // The sort over every calling point of the day, on the blocking
-            // pool (bound 4 in `get_trip_plan`'s doc comment).
-            let (connections, passes) = tokio::task::spawn_blocking(move || {
-                trip_planning::build_connections_with_passes(calling_points)
-            })
-            .await?;
+            // pool (bound 4 in `get_trip_plan`'s doc comment), and the
+            // transit interchange data (a copy of the rail data).
+            let (connections, passes, interchange, transit) =
+                tokio::task::spawn_blocking(move || {
+                    let (connections, passes) =
+                        trip_planning::build_connections_with_passes(calling_points);
+                    let transit = transit_days.map(|(days, skipped)| {
+                        transit_planning::build_transit_graph(
+                            &interchange,
+                            &days,
+                            &transit_planning::count_connections(&connections),
+                            skipped,
+                            transit_planning::change_minutes(),
+                            trip_planning::road_water_change_minutes(),
+                        )
+                    });
+                    (connections, passes, interchange, transit)
+                })
+                .await?;
+            if let Some(transit) = &transit {
+                transit_planning::record_connections(transit);
+            }
             Ok(Some(trip_planning::PlanningGraph {
                 connections,
                 interchange,
                 passes,
+                transit,
             }))
         })
         .await
@@ -1034,10 +1148,14 @@ async fn plan_on_date(
     };
     // A `TfL` stop end (DS-135): this request's own copy of the interchange
     // data with the stop's access links; the cached graph is not changed.
-    let interchange = inputs
-        .access
-        .as_ref()
-        .map(|access| Arc::new(access.interchange(&graph.interchange)));
+    // With transit (DS-164), the graph's transit interchange data, shared.
+    let interchange = match (&inputs.access, graph.transit.as_ref()) {
+        (Some(access), _) => Some(Arc::new(
+            access.interchange(planning_interchange(graph, inputs.transit)),
+        )),
+        (None, Some(transit_graph)) if inputs.transit => Some(transit_graph.interchange.clone()),
+        (None, _) => None,
+    };
     let request = Arc::new(PlanRequest {
         interchange,
         date,
@@ -1143,11 +1261,176 @@ async fn plan_on_date(
         );
     }
     crate::data::tfl_stops::merge_transfer_rides(&app.database, &mut segments).await;
+    // Transit legs (DS-164): `kind: "transit"`, the rail-link walks'
+    // `transitWalk`, `scheduledOnly` and the lines' disruption notices.
+    let transit_skipped = match graph.transit.as_ref().filter(|_| inputs.transit) {
+        Some(transit_graph) => {
+            transit_planning::dress_segments(
+                transit_graph,
+                &graph.connections,
+                date,
+                &mut segments,
+            );
+            transit_planning::attach_line_notices(&app.database, &mut segments).await;
+            transit_graph.skipped.clone()
+        }
+        None => Vec::new(),
+    };
     Ok(DatePlan {
         request,
         segments,
         live,
+        transit_skipped,
     })
+}
+
+/// The interchange data a request plans on before any `TfL` access links:
+/// the graph's transit copy when it plans with transit, else its own.
+fn planning_interchange(
+    graph: &trip_planning::PlanningGraph,
+    transit: bool,
+) -> &schedule_query::InterchangeData {
+    match graph.transit.as_ref().filter(|_| transit) {
+        Some(transit_graph) => &transit_graph.interchange,
+        None => &graph.interchange,
+    }
+}
+
+/// The graph cache key (TRIPS-1): the latest schedule publish, or (DS-164)
+/// the latest activation of a switched-on transit network's feed when that
+/// is later. With the switch empty, the publish marker alone, as before.
+async fn graph_marker(
+    app: &App,
+    transit_networks: &[String],
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, (StatusCode, String)> {
+    let schedule = trip_planning::latest_schedule_publish(&app.database)
+        .await
+        .map_err(internal_error("read the latest schedule publish"))?;
+    // A failed read only loses the early invalidation (the cache's
+    // max-age still applies): a rail plan never fails because of trams.
+    let activation =
+        match transit_planning::latest_activation(&app.database, transit_networks).await {
+            Ok(activation) => activation,
+            Err(err) => {
+                tracing::warn!(error = ?err, "could not read the transit activation marker");
+                None
+            }
+        };
+    Ok(transit_planning::cache_marker(schedule, activation))
+}
+
+/// `?transit=`: `true` or `false` (default). Read only while the switch
+/// lists a network; with it empty the parameter is ignored, so every
+/// response stays as before.
+fn parse_transit(raw: Option<&str>, switch_on: bool) -> Result<bool, (StatusCode, String)> {
+    if !switch_on {
+        return Ok(false);
+    }
+    match raw.map(str::trim) {
+        None | Some("" | "false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(_) => Err((
+            StatusCode::BAD_REQUEST,
+            "transit must be 'true' or 'false'".to_string(),
+        )),
+    }
+}
+
+/// Resolves a tram stop `origin` or `destination` (spec §5.2) to its
+/// station node, in place, and returns each end's network (`None` for any
+/// other end). Only with the switch on and a `NaPTAN`-shaped code: either
+/// spelling (`9400ZZMAPIC`, `940GZZMAPIC`) or a platform, any case. A
+/// `9400` code no switched-on network knows is a 400 when the request
+/// opted in (otherwise it is left to the station lookup, as before); a
+/// `940G` code no network knows stays a `TfL` stop. The same station at
+/// both ends is a 400.
+async fn resolve_transit_ends(
+    app: &App,
+    networks: &[String],
+    transit_requested: bool,
+    origin: &mut String,
+    destination: &mut String,
+) -> Result<[Option<String>; 2], (StatusCode, String)> {
+    let mut ends = [None, None];
+    if networks.is_empty() {
+        return Ok(ends);
+    }
+    for (slot, end) in ends.iter_mut().zip([&mut *origin, &mut *destination]) {
+        let code = end.trim().to_ascii_uppercase();
+        if !transit_planning::looks_like_naptan(&code) {
+            continue;
+        }
+        match transit_planning::find_station(&app.database, networks, &code)
+            .await
+            .map_err(internal_error("read the transit stops"))?
+        {
+            Some((network, station)) => {
+                *end = station;
+                *slot = Some(network);
+            }
+            None if transit_requested && code.starts_with("9400") => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("'{code}' is not a stop the planner knows"),
+                ));
+            }
+            None => {}
+        }
+    }
+    if ends.iter().any(Option::is_some) && origin == destination {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "origin and destination must differ".to_string(),
+        ));
+    }
+    Ok(ends)
+}
+
+/// A tram stop end whose network has no timetable for the date (spec §7.3)
+/// cannot be planned from: a 400 saying so, rather than "unknown station".
+fn check_transit_ends_planned(
+    graph: &trip_planning::PlanningGraph,
+    ends: &[Option<String>; 2],
+) -> Result<(), (StatusCode, String)> {
+    let planned = |network: &str| {
+        graph.transit.as_ref().is_some_and(|transit| {
+            transit
+                .networks
+                .iter()
+                .any(|known| known.network == network)
+        })
+    };
+    if ends.iter().flatten().all(|network| planned(network)) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            "Tram times aren't available for this date, so the plan can't start or end at a tram stop."
+                .to_string(),
+        ))
+    }
+}
+
+/// Tram stops are not waypoints, vias or avoided stations yet (Q9): a 400
+/// for a `NaPTAN`-shaped entry, when planning with transit.
+fn check_no_transit_stops<'c>(
+    choices: impl Iterator<Item = &'c StationChoice>,
+) -> Result<(), (StatusCode, String)> {
+    for choice in choices {
+        if let Some(code) = choice
+            .codes
+            .iter()
+            .find(|code| transit_planning::looks_like_naptan(code))
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "'{code}' is a tram stop: waypoints, vias and avoided stations must be stations"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Both dates' live outcomes as one: applied when either applied (its
@@ -1521,9 +1804,7 @@ pub(crate) async fn plan_for_journey(
         })?,
     };
     let permit = Arc::new(permit);
-    let marker = trip_planning::latest_schedule_publish(&app.database)
-        .await
-        .map_err(internal_error("read the latest schedule publish"))?;
+    let marker = graph_marker(app, &transit_planning::enabled_networks()).await?;
     let Some(graph) = load_graph(app, query.date, marker).await? else {
         return Ok(None);
     };
@@ -1542,6 +1823,8 @@ pub(crate) async fn plan_for_journey(
         live_requested: true,
         allowed_uids: query.allowed_uids.clone(),
         access: None,
+        // Journey alternatives and re-plans ride trains only (spec §9).
+        transit: false,
     };
     let plan = plan_on_date(
         app,
@@ -1992,24 +2275,45 @@ fn parse_time_bound(
     }
 }
 
-/// Validates `?maxChanges=`: absent, empty or whitespace-only means the
-/// default ([`trip_planning_itinerary::DEFAULT_MAX_CHANGES`], matching how an
-/// empty `?waypoints=` means "none"); otherwise it must be an integer in
+/// The cap for a request that left `?maxChanges=` out:
+/// [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (4), or, for an
+/// `options` search too large for the guard at 4 (`limit`, see
+/// [`check_options_search_size`]), the most that fits down to
+/// [`LEGACY_DEFAULT_MAX_CHANGES`]. Every request that omitted `maxChanges`
+/// and fitted before the default rose from 2 (2026-10-24) still fits, and
+/// still gets at least what it got then; one too large even at 2 gets 2 and
+/// its 400, as before. Echoed as the response's `maxChanges`.
+fn default_max_changes(results: &str, waypoints: usize, vias: usize, limit: usize) -> u32 {
+    (LEGACY_DEFAULT_MAX_CHANGES..=trip_planning_itinerary::DEFAULT_MAX_CHANGES)
+        .rev()
+        .find(|&max_changes| {
+            check_options_search_size(results, waypoints, vias, max_changes, limit).is_ok()
+        })
+        .unwrap_or(LEGACY_DEFAULT_MAX_CHANGES)
+}
+
+/// The default `maxChanges` before 2026-10-24: the floor
+/// [`default_max_changes`] steps down to.
+const LEGACY_DEFAULT_MAX_CHANGES: u32 = 2;
+
+/// Validates `?maxChanges=`: absent, empty or whitespace-only is `None`, the
+/// default ([`default_max_changes`], matching how an empty `?waypoints=`
+/// means "none"); otherwise it must be an integer in
 /// `0..=`[`trip_planning_itinerary::MAX_CHANGES_LIMIT`]. Like
 /// [`parse_waypoints`], this is a pure function checked before the permit and
 /// any database read, so a rejected request costs a string parse, not a
 /// query -- and it's a 400 naming the allowed range, never a silent clamp: a
 /// plan computed under a different cap than the one asked for answers a
 /// different question.
-fn parse_max_changes(raw: Option<&str>) -> Result<u32, (StatusCode, String)> {
+fn parse_max_changes(raw: Option<&str>) -> Result<Option<u32>, (StatusCode, String)> {
     use trip_planning_itinerary::{DEFAULT_MAX_CHANGES, MAX_CHANGES_LIMIT};
 
     let raw = raw.unwrap_or("").trim();
     if raw.is_empty() {
-        return Ok(DEFAULT_MAX_CHANGES);
+        return Ok(None);
     }
     match raw.parse::<u32>() {
-        Ok(value) if value <= MAX_CHANGES_LIMIT => Ok(value),
+        Ok(value) if value <= MAX_CHANGES_LIMIT => Ok(Some(value)),
         _ => Err((
             StatusCode::BAD_REQUEST,
             format!(
@@ -2064,6 +2368,9 @@ fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusC
 /// path axum's `FromRequestParts` impl for `Query` uses at request time (see
 /// `axum::extract::query::Query::try_from_uri`, which
 /// `from_request_parts` calls directly).
+#[cfg(test)]
+mod transit_db_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2155,29 +2462,74 @@ mod tests {
         );
     }
 
-    /// Omitted (or empty) `?maxChanges=` must mean exactly the pre-parameter
-    /// cap of 2, so existing callers see no behaviour change.
+    /// Omitted (or empty) `?maxChanges=` is the default, resolved once the
+    /// waypoints and vias are known ([`default_max_changes`]).
     #[test]
-    fn max_changes_defaults_to_two_when_omitted_or_empty() {
-        assert_eq!(trip_planning_itinerary::DEFAULT_MAX_CHANGES, 2);
-        assert_eq!(parse_max_changes(None), Ok(2));
-        assert_eq!(parse_max_changes(Some("")), Ok(2));
-        assert_eq!(parse_max_changes(Some("  ")), Ok(2));
+    fn max_changes_is_none_when_omitted_or_empty() {
+        assert_eq!(parse_max_changes(None), Ok(None));
+        assert_eq!(parse_max_changes(Some("")), Ok(None));
+        assert_eq!(parse_max_changes(Some("  ")), Ok(None));
+    }
+
+    /// The default is 4 (DS-85, 2026-10-24), stepping down towards the old
+    /// default of 2 only where `options`' search-size guard needs it, so
+    /// every request that left `maxChanges` out and fitted before still fits.
+    #[test]
+    fn the_default_max_changes_is_four_where_the_search_size_guard_allows() {
+        assert_eq!(trip_planning_itinerary::DEFAULT_MAX_CHANGES, 4);
+        let limit = DEFAULT_OPTIONS_SEARCH_SIZE;
+        for results in ["fastest", "options"] {
+            assert_eq!(default_max_changes(results, 0, 0, limit), 4, "{results}");
+            assert_eq!(default_max_changes(results, MAX_WAYPOINTS, 0, limit), 4);
+            assert_eq!(default_max_changes(results, 13, 1, limit), 4);
+        }
+        // fastest has no rounds, so its default never steps down.
+        assert_eq!(default_max_changes("fastest", 20, 3, limit), 4);
+        // options: 4 where it fits, else the most that does, never below 2.
+        for (waypoints, vias, expected) in [
+            (14, 1, 3), // 15 * 3 * 6 = 270 > 252; 15 * 3 * 5 = 225
+            (20, 1, 2), // 21 * 3 * 5 = 315; 21 * 3 * 4 = 252
+            (5, 3, 4),  // 6 * 7 * 6 = 252
+            (6, 3, 3),  // 7 * 7 * 6 = 294; 7 * 7 * 5 = 245
+            (8, 3, 2),  // 9 * 7 * 5 = 315; 9 * 7 * 4 = 252
+            (9, 3, 2),  // over even at 2: 2, and its 400 as before
+        ] {
+            assert_eq!(
+                default_max_changes("options", waypoints, vias, limit),
+                expected,
+                "{waypoints} waypoints, {vias} vias"
+            );
+        }
+        // Every combination that fitted at the old default of 2 still fits.
+        for waypoints in 0..=MAX_WAYPOINTS {
+            for vias in 0..=MAX_VIAS {
+                let old_fits = check_options_search_size("options", waypoints, vias, 2, limit);
+                let new = default_max_changes("options", waypoints, vias, limit);
+                assert!(new >= 2);
+                if old_fits.is_ok() {
+                    assert!(
+                        check_options_search_size("options", waypoints, vias, new, limit).is_ok(),
+                        "{waypoints} waypoints, {vias} vias"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
     fn max_changes_accepts_every_value_from_zero_to_the_limit() {
-        assert_eq!(trip_planning_itinerary::MAX_CHANGES_LIMIT, 6);
+        assert_eq!(trip_planning_itinerary::MAX_CHANGES_LIMIT, 12);
         for value in 0..=trip_planning_itinerary::MAX_CHANGES_LIMIT {
-            assert_eq!(parse_max_changes(Some(&value.to_string())), Ok(value));
+            assert_eq!(parse_max_changes(Some(&value.to_string())), Ok(Some(value)));
         }
-        assert_eq!(parse_max_changes(Some(" 3 ")), Ok(3));
+        assert_eq!(parse_max_changes(Some(" 3 ")), Ok(Some(3)));
     }
 
     #[test]
     fn max_changes_out_of_range_or_non_integer_is_a_400_naming_the_range() {
         for bad in [
-            "7",
+            "13",
+            "16",
             "99",
             "-1",
             "abc",
@@ -2190,7 +2542,9 @@ mod tests {
                 parse_max_changes(Some(bad)).expect_err(&format!("'{bad}' must be rejected"));
             assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
             assert!(
-                message.contains("maxChanges") && message.contains("0 to 6"),
+                message.contains("maxChanges")
+                    && message.contains("0 to 12")
+                    && message.contains("default 4"),
                 "the error must name the parameter and its range: {message}"
             );
         }
@@ -2608,20 +2962,27 @@ mod tests {
         let fits = |waypoints, vias, max_changes| {
             check_options_search_size("options", waypoints, vias, max_changes, limit).is_ok()
         };
-        // No vias: every waypoint count allowed, at any maxChanges.
-        for max_changes in 0..=trip_planning_itinerary::MAX_CHANGES_LIMIT {
+        // No vias: every waypoint count allowed up to maxChanges=10.
+        for max_changes in 0..=10 {
             assert!(fits(MAX_WAYPOINTS, 0, max_changes), "{max_changes}");
         }
         // At the bound exactly, and one waypoint over it.
         for (waypoints, vias, max_changes) in [
-            (20, 1, 2), // 21 * 3 * 4 = 252
-            (13, 1, 4), // 14 * 3 * 6 = 252
-            (11, 1, 5), // 12 * 3 * 7 = 252
-            (9, 1, 6),  // 10 * 3 * 8 = 240
-            (8, 3, 2),  // 9 * 7 * 4 = 252
-            (5, 3, 4),  // 6 * 7 * 6 = 252
-            (4, 3, 5),  // 5 * 7 * 7 = 245
-            (3, 3, 6),  // 4 * 7 * 8 = 224
+            (18, 0, 11), // 19 * 1 * 13 = 247
+            (17, 0, 12), // 18 * 1 * 14 = 252
+            (20, 1, 2),  // 21 * 3 * 4 = 252
+            (13, 1, 4),  // 14 * 3 * 6 = 252
+            (11, 1, 5),  // 12 * 3 * 7 = 252
+            (9, 1, 6),   // 10 * 3 * 8 = 240
+            (7, 1, 8),   // 8 * 3 * 10 = 240
+            (6, 1, 10),  // 7 * 3 * 12 = 252
+            (5, 1, 12),  // 6 * 3 * 14 = 252
+            (8, 3, 2),   // 9 * 7 * 4 = 252
+            (5, 3, 4),   // 6 * 7 * 6 = 252
+            (4, 3, 5),   // 5 * 7 * 7 = 245
+            (3, 3, 6),   // 4 * 7 * 8 = 224
+            (2, 3, 10),  // 3 * 7 * 12 = 252
+            (1, 3, 12),  // 2 * 7 * 14 = 196
         ] {
             assert!(
                 fits(waypoints, vias, max_changes),
@@ -2642,8 +3003,14 @@ mod tests {
         assert!(check_options_search_size("fastest", 20, 3, 6, limit).is_ok());
         // The configurable bound is honoured, and its floor still admits a
         // direct plan at the highest maxChanges.
-        assert!(check_options_search_size("options", 0, 0, 6, MIN_OPTIONS_SEARCH_SIZE).is_ok());
-        assert!(check_options_search_size("options", 1, 0, 6, MIN_OPTIONS_SEARCH_SIZE).is_err());
+        assert_eq!(MIN_OPTIONS_SEARCH_SIZE, 14);
+        let highest = trip_planning_itinerary::MAX_CHANGES_LIMIT;
+        assert!(
+            check_options_search_size("options", 0, 0, highest, MIN_OPTIONS_SEARCH_SIZE).is_ok()
+        );
+        assert!(
+            check_options_search_size("options", 1, 0, highest, MIN_OPTIONS_SEARCH_SIZE).is_err()
+        );
         assert!(check_options_search_size("options", 20, 3, 6, MAX_OPTIONS_SEARCH_SIZE).is_err());
         assert!(check_options_search_size("options", 8, 3, 6, MAX_OPTIONS_SEARCH_SIZE).is_ok());
     }
@@ -3495,7 +3862,9 @@ mod db_tests {
         let router = test_router(test_app(pool.clone()));
         let (status, body) = get(
             router,
-            format!("/Trips/plan?origin=ZZC&destination=ZZD&date={date}&results=options"),
+            format!(
+                "/Trips/plan?origin=ZZC&destination=ZZD&date={date}&results=options&maxChanges=2"
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body:?}");
@@ -3506,8 +3875,7 @@ mod db_tests {
             .expect("itineraries array");
         for itinerary in itineraries {
             assert!(
-                itinerary["changeCount"].as_u64().unwrap()
-                    <= u64::from(trip_planning_itinerary::DEFAULT_MAX_CHANGES),
+                itinerary["changeCount"].as_u64().unwrap() <= 2,
                 "{itinerary:?}"
             );
         }
@@ -3558,7 +3926,7 @@ mod db_tests {
                 routes::trips -- --ignored --test-threads=1`"]
     async fn an_invalid_max_changes_is_a_clear_400_before_the_date_is_looked_up() {
         let pool = connect().await;
-        for bad in ["7", "-1", "abc", "2.5", "4294967296"] {
+        for bad in ["13", "-1", "abc", "2.5", "4294967296"] {
             let router = test_router(test_app(pool.clone()));
             let (status, body) = get(
                 router,
@@ -3572,18 +3940,44 @@ mod db_tests {
             );
             let message = body.as_str().expect("plain-text error body");
             assert!(
-                message.contains("maxChanges") && message.contains("0 to 6"),
+                message.contains("maxChanges")
+                    && message.contains("0 to 12")
+                    && message.contains("default 4"),
                 "the error must name the parameter and its range: {message}"
             );
         }
     }
 
+    /// `max_changes_lifts_the_cap_only_when_asked`'s one route: 3 changes,
+    /// its four seeded trains, not capped.
+    fn assert_three_change_route(body: &Value) {
+        let segment = &body["segments"][0];
+        let itineraries = segment["itineraries"]
+            .as_array()
+            .expect("itineraries array");
+        assert_eq!(itineraries.len(), 1, "{body:?}");
+        assert_eq!(itineraries[0]["changeCount"], 3, "{body:?}");
+        let uids: Vec<&str> = itineraries[0]["legs"]
+            .as_array()
+            .expect("legs array")
+            .iter()
+            .filter_map(|leg| leg["trainUid"].as_str())
+            .collect();
+        assert_eq!(
+            uids,
+            ["TESTPLANMXA", "TESTPLANMXB", "TESTPLANMXC", "TESTPLANMXD"],
+            "{body:?}"
+        );
+        assert_eq!(segment["cappedByMaxChanges"], false, "{body:?}");
+    }
+
     /// The end-to-end proof for `?maxChanges=`: a synthetic network whose
     /// ONLY route needs exactly 3 changes (4 legs,
-    /// ORIGIN -> P -> Q -> R -> DEST). At the default cap `options` mode
-    /// returns nothing but flags `cappedByMaxChanges`, and an explicit
-    /// `maxChanges=2` is byte-for-byte the same response as omitting it; at
-    /// `maxChanges=3` the real 3-change itinerary comes back, uncapped.
+    /// ORIGIN -> P -> Q -> R -> DEST). At the default cap of 4 (2 before
+    /// 2026-10-24, DS-85) `options` mode returns it, and an explicit
+    /// `maxChanges=4` is byte-for-byte the same response as omitting it; at
+    /// `maxChanges=2` it returns nothing but flags `cappedByMaxChanges`; the
+    /// new ceiling of 12 is accepted and changes nothing here.
     /// `fastest` mode ignores the cap as a limit (the over-cap route is still
     /// returned) and only uses it as the `exceedsRecommendedChanges` threshold.
     /// Synthetic CRS codes/TIPLOCs for the same isolation reason as
@@ -3634,62 +4028,52 @@ mod db_tests {
             }
         };
 
-        // options, omitted => the pre-parameter default of 2.
+        // options, omitted => the default of 4: the real 3-change itinerary.
         let (status, omitted) = plan("&results=options").await;
         assert_eq!(status, StatusCode::OK, "{omitted:?}");
-        assert_eq!(omitted["maxChanges"], 2, "{omitted:?}");
-        let segment = &omitted["segments"][0];
+        assert_eq!(omitted["maxChanges"], 4, "{omitted:?}");
+        assert_three_change_route(&omitted);
+
+        // options, explicit 4 => identical to omitted.
+        let (status, explicit_four) = plan("&results=options&maxChanges=4").await;
+        assert_eq!(status, StatusCode::OK, "{explicit_four:?}");
+        assert_eq!(explicit_four, omitted);
+
+        // options, the new ceiling of 12 => the same route, echoed as 12.
+        let (status, twelve) = plan("&results=options&maxChanges=12").await;
+        assert_eq!(status, StatusCode::OK, "{twelve:?}");
+        assert_eq!(twelve["maxChanges"], 12, "{twelve:?}");
+        assert_three_change_route(&twelve);
+
+        // options, 2 (the old default) => nothing, flagged as capped.
+        let (status, two) = plan("&results=options&maxChanges=2").await;
+        assert_eq!(status, StatusCode::OK, "{two:?}");
+        assert_eq!(two["maxChanges"], 2, "{two:?}");
+        let segment = &two["segments"][0];
         assert_eq!(
             segment["itineraries"]
                 .as_array()
                 .expect("itineraries array")
                 .len(),
             0,
-            "the only route needs 3 changes, over the default cap: {omitted:?}"
+            "the only route needs 3 changes, over a cap of 2: {two:?}"
         );
-        assert_eq!(segment["cappedByMaxChanges"], true, "{omitted:?}");
-
-        // options, explicit 2 => identical to omitted.
-        let (status, explicit_two) = plan("&results=options&maxChanges=2").await;
-        assert_eq!(status, StatusCode::OK, "{explicit_two:?}");
-        assert_eq!(explicit_two, omitted);
-
-        // options, 3 => the real 3-change itinerary, not capped.
-        let (status, three) = plan("&results=options&maxChanges=3").await;
-        assert_eq!(status, StatusCode::OK, "{three:?}");
-        assert_eq!(three["maxChanges"], 3, "{three:?}");
-        let segment = &three["segments"][0];
-        let itineraries = segment["itineraries"]
-            .as_array()
-            .expect("itineraries array");
-        assert_eq!(itineraries.len(), 1, "{three:?}");
-        assert_eq!(itineraries[0]["changeCount"], 3, "{three:?}");
-        let uids: Vec<&str> = itineraries[0]["legs"]
-            .as_array()
-            .expect("legs array")
-            .iter()
-            .filter_map(|leg| leg["trainUid"].as_str())
-            .collect();
-        assert_eq!(
-            uids,
-            ["TESTPLANMXA", "TESTPLANMXB", "TESTPLANMXC", "TESTPLANMXD"],
-            "{three:?}"
-        );
-        assert_eq!(segment["cappedByMaxChanges"], false, "{three:?}");
+        assert_eq!(segment["cappedByMaxChanges"], true, "{two:?}");
 
         // fastest: the same route either way, flagged against the cap in effect.
         let (status, fastest_default) = plan("").await;
         assert_eq!(status, StatusCode::OK, "{fastest_default:?}");
+        assert_eq!(fastest_default["maxChanges"], 4, "{fastest_default:?}");
         let itinerary = &fastest_default["segments"][0]["itineraries"][0];
         assert_eq!(itinerary["changeCount"], 3, "{fastest_default:?}");
-        assert_eq!(itinerary["exceedsRecommendedChanges"], true);
+        assert_eq!(itinerary["exceedsRecommendedChanges"], false);
         assert_eq!(fastest_default["segments"][0]["cappedByMaxChanges"], false);
 
-        let (status, fastest_three) = plan("&maxChanges=3").await;
-        assert_eq!(status, StatusCode::OK, "{fastest_three:?}");
-        let itinerary = &fastest_three["segments"][0]["itineraries"][0];
-        assert_eq!(itinerary["changeCount"], 3, "{fastest_three:?}");
-        assert_eq!(itinerary["exceedsRecommendedChanges"], false);
+        let (status, fastest_two) = plan("&maxChanges=2").await;
+        assert_eq!(status, StatusCode::OK, "{fastest_two:?}");
+        let itinerary = &fastest_two["segments"][0]["itineraries"][0];
+        assert_eq!(itinerary["changeCount"], 3, "{fastest_two:?}");
+        assert_eq!(itinerary["exceedsRecommendedChanges"], true);
 
         for uid in ["TESTPLANMXA", "TESTPLANMXB", "TESTPLANMXC", "TESTPLANMXD"] {
             sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = $1")

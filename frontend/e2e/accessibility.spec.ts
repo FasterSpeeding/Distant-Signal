@@ -237,6 +237,7 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   ['/groups (anonymous login prompt)', '/groups'],
   ['/chat (anonymous login prompt)', '/chat'],
   ['/account/preferences', '/account/preferences'],
+  ['/account/notifications (anonymous login prompt)', '/account/notifications'],
   ['/attribution', '/attribution'],
   // The draft legal pages 404 unless the server has LEGAL_PAGES_PREVIEW or
   // LEGAL_PAGES_PUBLISHED on (frontend/lib/legal.ts). CI sets
@@ -369,6 +370,7 @@ test.describe('accessibility: logged in', () => {
     ['/track/mine/add-ticket', '/track/mine/add-ticket'],
     ['/groups', '/groups'],
     ['/chat', '/chat'],
+    ['/account/notifications', '/account/notifications'],
   ] as const) {
     test(name, async ({ page }) => {
       // Next's error shell is itself accessible, so without this a route that
@@ -456,6 +458,19 @@ test.describe('accessibility: /train/[uid]/[date]', () => {
     await expectNoViolations(owned);
     await context.close();
   });
+
+  // A train cut short (DS-181, the seed's W81181): the red notice, and the
+  // struck-through call with its "Cancelled" badge, in both schemes.
+  for (const colorScheme of ['light', 'dark'] as const) {
+    test.describe(`part cancelled, ${colorScheme} scheme`, () => {
+      test.use({ colorScheme });
+      test('anonymous', async ({ page }) => {
+        await page.goto('/train/W81181/2026-12-03');
+        await expect(page.getByRole('alert').filter({ hasText: 'Terminates at York' })).toBeVisible();
+        await expectNoViolations(page);
+      });
+    });
+  }
 });
 
 // The states below do not exist in any page's first-paint DOM, so a

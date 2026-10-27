@@ -4,13 +4,7 @@ import { renderWithMantine } from '@/test/render';
 import { expectShrinkGuarded, expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
 import JourneysPage from './page';
 import * as api from '@/lib/api';
-import type {
-  TrackedTrainListItem,
-  TicketListItem,
-  SharedGroupTrain,
-  SharedGroupJourney,
-  JourneyListItem,
-} from '@/lib/types';
+import type { TrackedTrainListItem, TicketListItem, SharedGroupTrain, JourneyListItem, SharedVia } from '@/lib/types';
 import { journeyDetail, journeyListItem } from '@/test/journeyFixtures';
 import { byVisibleText, visibleText } from '@/test/routeText';
 
@@ -113,7 +107,6 @@ describe('JourneysPage', () => {
   beforeEach(() => {
     vi.mocked(api.getSharedGroupTrains).mockResolvedValue([]);
     vi.mocked(api.getMyJourneys).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupJourneys).mockResolvedValue([]);
     // The page puts rows from a past London day under "Past". Pin
     // "today" to the fixtures' own service date so they stay active.
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -446,47 +439,52 @@ describe('JourneysPage', () => {
   // where it came from so it can't be mistaken for one the caller tracked.
   // DS-124: a tracked train is shared as its one-leg journey, so most
   // shares arrive through `GET /groups/shared-journeys`.
+  // DS-178: journeys other members shared into the caller's groups come
+  // from `GET /Journeys/mine?include=followed,shared`, merged with the
+  // caller's own and in the api's travel order, each with `sharedVia`.
   describe('group-shared journeys', () => {
-    function sharedJourney(overrides: Partial<SharedGroupJourney> = {}): SharedGroupJourney {
+    function via(overrides: Partial<SharedVia> = {}): SharedVia {
       return {
         groupId: 'group-1',
         groupName: 'Family',
-        journeyId: 501,
-        customName: null,
-        legCount: 1,
-        pinOriginCrs: 'PAD',
-        pinDestinationCrs: 'RDG',
-        pinOriginName: 'London Paddington',
-        pinDestinationName: 'Reading',
-        pinScheduledDeparture: '2026-08-31T07:15:00Z',
-        firstOriginCrs: 'PAD',
-        firstOriginName: 'London Paddington',
-        lastDestinationCrs: 'RDG',
-        lastDestinationName: 'Reading',
-        serviceDate: '2026-08-31',
-        resolutionStatus: 'resolved',
-        trainUid: 'S99999',
-        status: 'en_route',
-        delayMinutes: null,
-        addedBy: 'user-2',
         addedByName: 'Sam',
         addedByTag: null,
+        addedAt: '2026-08-30T08:00:00Z',
         ...overrides,
       };
     }
 
+    function sharedJourney(id: number, sharedVia: SharedVia[], overrides: Partial<JourneyListItem> = {}) {
+      return {
+        ...journeyListItem(journeyDetail(id, [], 'Paddington to Reading')),
+        sharedVia,
+        trainSubscriptionId: null,
+        ...overrides,
+      };
+    }
+
+    it('asks the api for one merged list of own, followed and shared journeys', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockClear();
+
+      renderWithMantine(await JourneysPage());
+
+      expect(api.getMyJourneys).toHaveBeenCalledWith({ includeFollowed: true, includeShared: true });
+      expect(api.getSharedGroupJourneys).not.toHaveBeenCalled();
+    });
+
     it('lists a journey shared into two groups once, linked and tagged with both', async () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
-      vi.mocked(api.getSharedGroupJourneys).mockResolvedValue([
-        sharedJourney(),
-        sharedJourney({ groupId: 'group-2', groupName: 'Commute Club' }),
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        sharedJourney(501, [via(), via({ groupId: 'group-2', groupName: 'Commute Club' })]),
       ]);
 
       renderWithMantine(await JourneysPage());
 
       expect(screen.queryByText(/You have no journeys yet/)).not.toBeInTheDocument();
-      const link = screen.getByRole('link', { name: /Paddington.*Reading/ });
+      const link = screen.getByRole('link', { name: /Paddington to Reading/ });
       expect(link).toHaveAttribute('href', '/journeys/501');
       expect(screen.getByText('From Family')).toBeInTheDocument();
       expect(screen.getByText('From Commute Club')).toBeInTheDocument();
@@ -496,20 +494,54 @@ describe('JourneysPage', () => {
     it('offers to follow a shared journey through its group', async () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
-      vi.mocked(api.getSharedGroupJourneys).mockResolvedValue([sharedJourney()]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([sharedJourney(501, [via()])]);
 
       renderWithMantine(await JourneysPage());
 
       expect(screen.getByRole('button', { name: 'Follow this journey' })).toBeInTheDocument();
     });
 
+    it('credits a sharer with no name as "a member", never a raw id', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        sharedJourney(501, [via({ addedByName: null, addedByTag: '7f3a' })]),
+      ]);
+
+      renderWithMantine(await JourneysPage());
+
+      expect(screen.getByText(/Shared by a member/)).toBeInTheDocument();
+    });
+
+    it("keeps the api's merged order in each list: shared journeys sit among the caller's own", async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        { ...journeyListItem(journeyDetail(601, [], 'Own soon')), travelled: false },
+        sharedJourney(602, [via()], { customName: 'Shared later', travelled: false }),
+        sharedJourney(603, [via()], { customName: 'Shared yesterday', travelled: true }),
+        { ...journeyListItem(journeyDetail(604, [], 'Own last week')), travelled: true },
+        sharedJourney(605, [via()], { customName: 'Shared last month', travelled: true }),
+      ]);
+
+      renderWithMantine(await JourneysPage());
+
+      const hrefs = (name: string) =>
+        within(screen.getByRole('region', { name }))
+          .getAllByRole('link')
+          .map((link) => link.getAttribute('href'));
+      expect(hrefs('Upcoming')).toEqual(['/journeys/601', '/journeys/602']);
+      expect(hrefs('Past')).toEqual(['/journeys/603', '/journeys/604', '/journeys/605']);
+      // Each shared row keeps its badge; the caller's own rows have none.
+      expect(within(screen.getByRole('region', { name: 'Past' })).getAllByText('From Family')).toHaveLength(2);
+    });
+
     // DS-146: a followed journey comes back from `GET /Journeys/mine` with
     // the caller's own, so it lists once, in travel order with theirs,
-    // labelled and with Unfollow, never as a group-shared row too.
+    // labelled and with Unfollow.
     it("lists a followed journey in Upcoming and Past with the caller's own, saying whose it is", async () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
-      vi.mocked(api.getMyJourneys).mockClear();
       const followedFrom = {
         via: 'group',
         ownerName: 'Sam',
@@ -527,11 +559,9 @@ describe('JourneysPage', () => {
           travelled: true,
         },
       ]);
-      vi.mocked(api.getSharedGroupJourneys).mockResolvedValue([sharedJourney()]);
 
       renderWithMantine(await JourneysPage());
 
-      expect(api.getMyJourneys).toHaveBeenCalledWith({ includeFollowed: true });
       const upcoming = screen.getByRole('region', { name: 'Upcoming' });
       const links = within(upcoming)
         .getAllByRole('link')
@@ -539,7 +569,6 @@ describe('JourneysPage', () => {
       expect(links).toEqual(['/journeys/501', '/journeys/502']);
       expect(within(upcoming).getByText('Shared by Sam')).toBeInTheDocument();
       expect(within(upcoming).getAllByRole('button', { name: 'Unfollow' })).toHaveLength(1);
-      // Followed, so not offered again as a group-shared row.
       expect(screen.queryByText('From Family')).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Follow this journey' })).not.toBeInTheDocument();
       const past = screen.getByRole('region', { name: 'Past' });
@@ -547,15 +576,28 @@ describe('JourneysPage', () => {
       expect(within(past).getByText('Shared with you by link')).toBeInTheDocument();
     });
 
-    it('leaves out a shared journey the caller owns', async () => {
+    it('a followed journey that is also group-shared lists as followed, with Unfollow and no Follow', async () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
-      vi.mocked(api.getMyJourneys).mockResolvedValue([journeyListItem(journeyDetail(501, []))]);
-      vi.mocked(api.getSharedGroupJourneys).mockResolvedValue([sharedJourney()]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        sharedJourney(501, [via()], {
+          followedFrom: {
+            via: 'group',
+            ownerName: 'Sam',
+            ownerTag: null,
+            groupId: 'group-1',
+            groupName: 'Family',
+            followedAt: '2026-08-30T08:00:00Z',
+          },
+        }),
+      ]);
 
       renderWithMantine(await JourneysPage());
 
       expect(screen.queryByText('From Family')).not.toBeInTheDocument();
+      expect(screen.getAllByText('Shared by Sam')).toHaveLength(1);
+      expect(screen.getByRole('button', { name: 'Unfollow' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Follow this journey' })).not.toBeInTheDocument();
     });
   });
 
@@ -851,23 +893,29 @@ describe('JourneysPage', () => {
       expect(screen.queryByText(byVisibleText(/PAD to RDG/))).not.toBeInTheDocument();
     });
 
-    it('puts the caller’s own rows before the shared ones, each half in its endpoint’s order', async () => {
+    it('merges shared trains with the caller’s own by departure, not in a block after them (DS-178)', async () => {
+      // Own at 18:32; shared at 07:15 and 20:00 the same day, listed by the
+      // group endpoint newest share first. Upcoming is soonest first.
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-        sharedTrain({ trainSubscriptionId: 50, customName: 'Shared first' }),
-        sharedTrain({ trainSubscriptionId: 51, customName: 'Shared second' }),
+        sharedTrain({
+          trainSubscriptionId: 51,
+          customName: 'Shared evening',
+          pinScheduledDeparture: '2026-08-31T20:00:00Z',
+        }),
+        sharedTrain({ trainSubscriptionId: 50, customName: 'Shared morning' }),
       ]);
 
       renderWithMantine(await JourneysPage());
 
       const rendered = [...document.querySelectorAll('.mantine-Card-root')].map((card) => visibleText(card));
-      const ownIndex = rendered.findIndex((text) => text.includes('WAT to WOK'));
-      const firstSharedIndex = rendered.findIndex((text) => text.includes('Shared first'));
-      const secondSharedIndex = rendered.findIndex((text) => text.includes('Shared second'));
-      expect(ownIndex).toBeGreaterThanOrEqual(0);
-      expect(ownIndex).toBeLessThan(firstSharedIndex);
-      expect(firstSharedIndex).toBeLessThan(secondSharedIndex);
+      const morning = rendered.findIndex((text) => text.includes('Shared morning'));
+      const own = rendered.findIndex((text) => text.includes('WAT to WOK'));
+      const evening = rendered.findIndex((text) => text.includes('Shared evening'));
+      expect(morning).toBeGreaterThanOrEqual(0);
+      expect(morning).toBeLessThan(own);
+      expect(own).toBeLessThan(evening);
     });
 
     it('a failing shared-trains fetch still renders the caller’s own list rather than erroring the page', async () => {
@@ -1276,7 +1324,7 @@ describe('JourneysPage', () => {
         expect(within(past).getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
       });
 
-      it('places each shared train by its own status, after the caller’s own rows', async () => {
+      it('places each shared train by its own status, among the caller’s own rows by departure', async () => {
         vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ journeyIds: [] })]);
         vi.mocked(api.getMyTickets).mockResolvedValue([]);
         vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
@@ -1293,9 +1341,11 @@ describe('JourneysPage', () => {
 
         const upcoming = region('Upcoming');
         expect(within(upcoming).getByText(byVisibleText(/PAD to RDG/))).toBeInTheDocument();
+        // The shared train leaves at 07:15, the caller's own at 18:32:
+        // soonest first, so the shared one leads.
         const ownRow = within(upcoming).getByText(byVisibleText(/WAT to WOK/));
         const sharedRow = within(upcoming).getByText(byVisibleText(/PAD to RDG/));
-        expect(ownRow.compareDocumentPosition(sharedRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(sharedRow.compareDocumentPosition(ownRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(within(region('Past')).getByText(byVisibleText(/BTN to VIC/))).toBeInTheDocument();
       });
     });

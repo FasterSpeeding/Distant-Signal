@@ -311,6 +311,7 @@ pub(crate) fn process_message(
                 delay_minutes: None,
                 dedup_key: dedup,
                 gbtt_timestamp: None,
+                platform: None,
             })
         }
 
@@ -454,6 +455,7 @@ pub(crate) fn process_message(
                 delay_minutes,
                 dedup_key: dedup,
                 gbtt_timestamp: gbtt,
+                platform: trust_schema::schema::movement_reported_platform(movement),
             })
         }
 
@@ -540,6 +542,7 @@ pub(crate) fn process_message(
                 delay_minutes: None,
                 dedup_key: dedup,
                 gbtt_timestamp: None,
+                platform: None,
             })
         }
 
@@ -627,6 +630,7 @@ pub(crate) fn process_message(
                 delay_minutes: None,
                 dedup_key: dedup,
                 gbtt_timestamp: None,
+                platform: None,
             })
         }
 
@@ -704,6 +708,8 @@ mod tests {
             toc_id: None,
             variation_status: variation_status.map(str::to_string),
             timetable_variation: None,
+            event_source: None,
+            platform: None,
         }
     }
 
@@ -1096,6 +1102,8 @@ mod tests {
             toc_id: None,
             variation_status: Some("ON TIME".to_string()),
             timetable_variation: None,
+            event_source: None,
+            platform: None,
         });
         let mut state = ProcessorState::default();
         // Deliberately a THIRD, unrelated date from both `today` and the
@@ -1136,6 +1144,8 @@ mod tests {
             toc_id: None,
             variation_status: Some("ON TIME".to_string()),
             timetable_variation: None,
+            event_source: None,
+            platform: None,
         });
         let mut state = ProcessorState::default();
         let result = process_message(
@@ -1431,6 +1441,7 @@ mod tests {
             // 2026-09-27 01:59:30, raw TRUST epoch millis.
             dep_timestamp: Some("1790474370000".to_string()),
             reinstatement_timestamp: None,
+            loc_stanox: None,
         });
         let mut state = ProcessorState::default();
         let mut key_on = |day: &str| {
@@ -1613,6 +1624,9 @@ mod tests {
         // And on the wire to `api`.
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["gbtt_timestamp"], "2026-08-28T18:31:00Z");
+        // DS-180: the automatic report's platform, trimmed.
+        assert_eq!(event.platform.as_deref(), Some("1"));
+        assert_eq!(json["platform"], "1");
     }
 
     /// An empty, whitespace-only or absent `gbtt_timestamp` (a pass, or a
@@ -1707,6 +1721,7 @@ mod tests {
                 train_id: "221832406".to_string(),
                 dep_timestamp: Some("1790836380000".to_string()),
                 reinstatement_timestamp: Some(at.to_string()),
+                loc_stanox: None,
             })
         };
         let sequence = [
@@ -1746,6 +1761,7 @@ mod tests {
             train_id: "221832406".to_string(),
             dep_timestamp: None,
             reinstatement_timestamp: None,
+            loc_stanox: None,
         });
         let mut state = ProcessorState::default();
         let result = process_message(
@@ -1777,6 +1793,7 @@ mod tests {
             train_id: "999999999".to_string(),
             dep_timestamp: Some("1788568200000".to_string()),
             reinstatement_timestamp: None,
+            loc_stanox: None,
         });
         let mut state = ProcessorState::default();
         let result = process_message(
@@ -1805,6 +1822,7 @@ mod tests {
             train_id: "999999999".to_string(),
             dep_timestamp: Some("1788568200000".to_string()),
             reinstatement_timestamp: None,
+            loc_stanox: None,
         });
         let result = process_message(
             &reinstatement,

@@ -490,6 +490,67 @@ async fn delegated_reads_need_an_active_grant_and_the_scope() {
     .await
     .unwrap();
     assert!(last_used.is_some(), "a use is recorded");
+    // Journeys shared with the user (DS-178) stay a session feature: a
+    // delegated caller asking for them gets its own journeys only.
+    let group_owner = format!("{prefix}sharer");
+    seed_user(&pool, &group_owner, &format!("{prefix}s2")).await;
+    let group = format!("{prefix}g");
+    sqlx::query("INSERT INTO groups (id, name, created_by) VALUES ($1, 'Shared', $2)")
+        .bind(&group)
+        .bind(&group_owner)
+        .execute(&pool)
+        .await
+        .expect("seed group");
+    sqlx::query(
+        "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner'), ($1, $3, 'member')",
+    )
+    .bind(&group)
+    .bind(&group_owner)
+    .bind(&user)
+    .execute(&pool)
+    .await
+    .expect("seed members");
+    let shared: i64 = sqlx::query_scalar(
+        "WITH j AS (INSERT INTO journeys (user_id) VALUES ($1) RETURNING id), \
+              l AS (INSERT INTO journey_legs (journey_id, leg_order, service_date, match_mode, \
+                                              kind, transit_mode, planned_departure, planned_arrival) \
+                    SELECT id, 1, CURRENT_DATE, 'manual', 'untracked', 'bus', now(), \
+                           now() + INTERVAL '1 hour' FROM j) \
+         SELECT id FROM j",
+    )
+    .bind(&group_owner)
+    .fetch_one(&pool)
+    .await
+    .expect("seed shared journey");
+    sqlx::query("INSERT INTO group_journeys (group_id, journey_id, added_by) VALUES ($1, $2, $3)")
+        .bind(&group)
+        .bind(shared)
+        .bind(&group_owner)
+        .execute(&pool)
+        .await
+        .expect("share the journey");
+    let reply = send(
+        &h,
+        "GET",
+        "/Journeys/mine?include=followed,shared",
+        &Auth::Bearer(&read),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+    assert_eq!(reply.json(), json!([]));
+    let reply = send(
+        &h,
+        "GET",
+        "/Journeys/mine?include=followed,shared",
+        &Auth::Cookie(&cookie),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+    assert_eq!(reply.json()[0]["id"], shared);
 
     // The token's scope: empty, or another one.
     for scope in ["", "journeys:write"] {
@@ -640,6 +701,77 @@ async fn delegated_reads_need_an_active_grant_and_the_scope() {
     .await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.text);
     assert_eq!(reply.error(), "not_found");
+    cleanup(&pool, prefix).await;
+}
+
+/// DS-153: `preferences:read` reads the notification settings, and only
+/// reads them.
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
+async fn a_delegated_client_may_read_the_notification_settings_with_their_scope() {
+    let pool = connect().await;
+    let prefix = "TEST-DLG-PREFS-";
+    cleanup(&pool, prefix).await;
+    let h = harness(pool.clone()).await;
+    let user = format!("{prefix}user");
+    let cookie = seed_user(&pool, &user, &format!("{prefix}s1")).await;
+    let uri = "/public/preferences/notifications";
+    let reply = send(
+        &h,
+        "PUT",
+        uri,
+        &Auth::Cookie(&cookie),
+        Some(json!({ "trainDelay": false })),
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+
+    // A grant without the scope, then a token without it: refused.
+    grant(&h, &cookie, &["journeys:read"]).await;
+    let reply = send(
+        &h,
+        "GET",
+        uri,
+        &Auth::Bearer(&token(&h, &user, "journeys:read preferences:read", 0)),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.text);
+    assert_eq!(reply.error(), "insufficient_scope");
+
+    grant(&h, &cookie, &["journeys:read", "preferences:read"]).await;
+    let reply = send(
+        &h,
+        "GET",
+        uri,
+        &Auth::Bearer(&token(&h, &user, "journeys:read", 0)),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.text);
+    assert_eq!(reply.error(), "insufficient_scope");
+
+    let read = token(&h, &user, "preferences:read", 0);
+    let reply = send(&h, "GET", uri, &Auth::Bearer(&read), None, &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+    assert_eq!(reply.json()["trainDelay"], json!(false));
+    assert_eq!(reply.json()["journeySuggestions"], json!(true));
+
+    // Read only: the PUT is not a delegated route.
+    let reply = send(
+        &h,
+        "PUT",
+        uri,
+        &Auth::Bearer(&read),
+        Some(json!({ "trainDelay": true })),
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.text);
+    assert_eq!(reply.error(), "insufficient_scope");
     cleanup(&pool, prefix).await;
 }
 

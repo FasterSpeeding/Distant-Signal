@@ -103,13 +103,16 @@ postgresql:
     repository: postgres
     # -- Pinned to an exact patch release, Debian base AND content digest
     # (INF-11); Renovate (renovate.json5, helm-values manager) proposes
-    # bumps, digest included. Stays on major 16: a new major needs
-    # pg_upgrade. Stays on the trixie base the floating `16` tag moved
-    # production to (16.15-1.pgdg13, checked 2026-09-27): switching the
-    # base OS changes glibc, whose collation changes can silently corrupt
-    # text indexes, so never change the `-trixie` suffix without a REINDEX
-    # plan.
-    tag: "16.15-trixie@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97"
+    # minor and digest bumps. Major 18: a new major needs pg_upgrade
+    # (docs/postgres-18-upgrade.md for 16 -> 18), so renovate.json5 never
+    # proposes postgres majors, and an existing 16 data directory must be
+    # upgraded before this image starts on it (an 18 server won't start on it).
+    # Stays on the trixie base production has run since 16.15-1.pgdg13
+    # (checked 2026-09-27): switching the base OS changes glibc, whose
+    # collation changes can silently corrupt text indexes, so never change
+    # the `-trixie` suffix without a REINDEX plan. With pgBackRest on, the
+    # postgres-pgbackrest image must be built on this exact base and digest.
+    tag: "18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6"
     pullPolicy: IfNotPresent
   service:
     # -- Port the headless Service and the container listen on.
@@ -851,7 +854,7 @@ postgresql:
       # build or publish one (docs/postgres-pitr.md).
       repository: ""
       # -- REQUIRED when enabled: the stable tag WITH its digest, e.g.
-      # "pg16.15-pgbackrest2.59.1-tini0.19.0@sha256:...". Only `-tini`
+      # "pg18.6-pgbackrest2.59.1-tini0.19.0@sha256:...". Only `-tini`
       # tags: older images run the postmaster as PID 1, which crash-restarts
       # on every failing async archive-push. Unlike the first-party images
       # this never falls back to the chart's appVersion: a new digest in the
@@ -1355,6 +1358,46 @@ pollers:
       # -- The lane's own budget: at most this many requests a cycle,
       # soonest departure first (TRACKED_STOP_MAX_REQUESTS_PER_CYCLE).
       maxRequestsPerCycle: 20
+    # Pre-departure prediction phase 3 (DS-152): the tracked-stop lane's
+    # arrivals sub-lane. Departure boards never list a stop where the train
+    # terminates or only sets down (usually the user's destination), so it
+    # also asks the LDBWS arrivals product (GetArrBoardWithDetails, its own
+    # RDM subscription) for each tracked train's alighting stops with a
+    # booked arrival, narrowed to that arrival, on the same cadence. The
+    # api then shows the arrival board's platform there (platformBasis
+    # board). Independent of trackedStops.enabled. Off by default: it adds
+    # requests on the arrivals product. Needs
+    # ingestWriter.streams.station-samples: apply (its boards ride that
+    # stream as tracked-stop-arrival-boards/1). The product's URL and
+    # consumer key come from an existing Secret (never from values): url is
+    # the product's base (up to /LDBWS/api/20220120; the poller appends
+    # /GetArrBoardWithDetails/{crs}), an operation URL (ending in
+    # /Get...; the poller appends /{crs}) or a URL with a {crs}
+    # placeholder. Its host is reached by the internet egress rule on 443
+    # (networkPolicy.egress.internetPorts); a URL on another port needs
+    # networkPolicy.components.poller-ldbws.internetPorts.
+    trackedStopArrivals:
+      # -- Poll tracked trains' alighting stops' arrival boards
+      # (TRACKED_STOP_ARRIVALS_ENABLED).
+      enabled: false
+      # -- The sub-lane's own budget: at most this many requests a cycle,
+      # soonest arrival first (TRACKED_STOP_ARRIVALS_MAX_REQUESTS_PER_CYCLE).
+      # It also has 3 s of the cycle, taken from the departure lane's 10 s,
+      # so the 45 s station rotation and both lanes stay under the 60 s
+      # interval: raise this only with that in mind.
+      maxRequestsPerCycle: 6
+      # -- The existing Secret holding the arrivals product's credentials
+      # (created out of band; the chart never renders it).
+      secretName: distant-signal-ldbws-arrivals
+      # -- Its key with the product URL (LDBWS_ARRIVALS_URL).
+      urlKey: url
+      # -- Its key with the consumer key, sent as x-apikey
+      # (LDBWS_ARRIVALS_CONSUMER_KEY).
+      consumerKeyKey: consumer-key
+      # -- Its key with the consumer secret (LDBWS_ARRIVALS_CONSUMER_SECRET).
+      # Wired but not sent: RDM API products authenticate with the consumer
+      # key alone.
+      consumerSecretKey: consumer-secret
     # Ingest architecture plan 4.5/4.7: the station list is computed by the
     # poller from the line catalogue in its image and the views
     # `ingest_custom_line_stations` and `ingest_sample_station_pins`, as the
@@ -1613,10 +1656,10 @@ api:
     # (the Authentik provider's issuer and client_id; both must differ from
     # every other client id and issuer the api trusts, or it refuses to
     # start), `maxScopes` (any of journeys:read, journeys:write,
-    # journeys:delete), `enabled` (default true; false is the kill switch:
-    # every token for the client gets 401 at once) and `serviceGroup` (the
-    # internal-OAuth group whose token may call POST /delegated-grants/revoke
-    # for this client). For example:
+    # journeys:delete, preferences:read), `enabled` (default true; false is
+    # the kill switch: every token for the client gets 401 at once) and
+    # `serviceGroup` (the internal-OAuth group whose token may call
+    # POST /delegated-grants/revoke for this client). For example:
     #   - name: ds-mcp
     #     displayName: Distant Signal assistant
     #     issuerUrl: https://sso.cursed.solutions/application/o/distant-signal-api/
@@ -1768,10 +1811,24 @@ api:
   # berth is further from the platforms than the station's own minimum
   # change time assumes.
   tripPlanRoadWaterChangeMinutes: 5
+  # -- Transit networks whose trams /Trips/plan plans with
+  # (API_TRIP_PLAN_TRANSIT_NETWORKS; docs/superpowers/specs/2026-10-24-
+  # transit-trip-planning-design.md). Empty by default: the graph, its cache
+  # key and every response are as before. Listed, the network's tram trips
+  # join each cached day graph (about 6 MB a date for Metrolink), and a
+  # request plans with them when it sends `transit=true` or names a tram
+  # stop. Only `metrolink` is accepted; the render fails on anything else.
+  # Rollout: docs/transit-networks.md, "Trip planning".
+  tripPlanTransitNetworks: []
+  # -- Extra minutes /Trips/plan adds on the tram side of a rail-to-tram or
+  # tram-to-rail change (TRIP_PLAN_TRANSIT_CHANGE_MINUTES, 0-15; values
+  # outside are clamped). A change between two trams owes none; the tram
+  # stop's own platform change time covers it.
+  tripPlanTransitChangeMinutes: 2
   # -- Largest `results=options` /Trips/plan search allowed:
   # (waypoints + 1) * (2 * vias + 1) * (maxChanges + 2) must not exceed it
   # (a 400 otherwise). 252 is twice what 20 waypoints at maxChanges=4 cost;
-  # values outside 8-504 are clamped. `fastest` is not limited by it.
+  # values outside 14-504 are clamped. `fastest` is not limited by it.
   tripPlanMaxOptionsSearchSize: 252
   # -- /Trips/plan live overlay
   # (docs/superpowers/specs/2026-09-28-trips-plan-live-overlay-design.md):
@@ -2233,6 +2290,12 @@ ingestWriter:
     # `apply` needs postgresql.roles.perService.writer.connect, as tfl
     # does (the writer's ingest_freshness row policy binds its own role).
     transit-metrolink: "off"
+    # darwin-relay's Darwin Push Port batches (DS-152; off by default):
+    # ds:ingest:darwin (darwin-pushport). `apply` needs
+    # postgresql.roles.perService.writer.connect, as tfl does (the writer's
+    # ingest_freshness row policy binds its own role), and darwinRelay
+    # needs it on `apply`.
+    darwin: "off"
     # ds:ingest:transit-net (pollerTransitSchedule's net network,
     # Nottingham Express Transit: its timetable only; NET design §7). The
     # same `apply` prerequisite.
@@ -2794,8 +2857,9 @@ redis:
   # redis-cli in it (the `exec` probes) authenticates (`REDISCLI_AUTH`).
   #
   # SAFE ENABLE SEQUENCE FOR A RUNNING DEPLOYMENT (no outage). The chart's
-  # Redis is 7.4: the default user accepts `AUTH default <anything>` while
-  # it has no password (verified against redis:7.4.11), and the clients
+  # server is Valkey 8.1: the default user accepts `AUTH default <anything>`
+  # while it has no password (verified against redis:7.4.11 and
+  # valkey/valkey:8.1.10), and the clients
   # send exactly that form, so clients can hold the password before the
   # server requires it:
   #   1. Create the Secret (outside this repo), then deploy with
@@ -2939,6 +3003,12 @@ redis:
       # `poller-transit-metrolink-password` key of `existingSecret`, only
       # while this is on. Turning it on restarts Redis once.
       pollerTransitMetrolink: false
+      # -- darwin-relay (off by default; DS-152), as user `darwin-relay`
+      # (`~ds:ingest:darwin +xadd +xrevrange`). An `optional` user, like
+      # pollerTransitMetrolink: it needs the `darwin-relay-password` key of
+      # `existingSecret` only while this is on, and turning it on restarts
+      # Redis once.
+      darwinRelay: false
       # -- poller-transit-schedule for network net (Nottingham Express
       # Transit; off by default), as user `poller-transit-net`
       # (`~ds:ingest:transit-net +xadd +xrevrange`). An `optional` user, as
@@ -2946,11 +3016,17 @@ redis:
       # of `existingSecret` while on; turning it on restarts Redis once.
       pollerTransitNet: false
   image:
-    repository: redis
-    # -- Pinned to an exact 7.4 patch release and content digest (INF-11);
-    # Renovate (helm-values manager) proposes bumps, digest included. 7.4.11
-    # is what the floating `7` tag resolved to on 2026-09-27.
-    tag: "7.4.11@sha256:44960b3100c48159a66d28c18b0588c193492e25f7551d60e51dd464fc3eca5b"
+    # -- Valkey (BSD-licensed, wire- and data-compatible with Redis 7.2),
+    # in place of `redis` 7.4.11 since DS-174. The Redis-named commands,
+    # config options, `redis-cli` and `REDISCLI_AUTH` all still work. A
+    # running Redis 7.4 must not be switched by a plain image bump: Valkey
+    # cannot read Redis 7.4's RDB 12 AOF preamble (docs/valkey-migration.md).
+    repository: valkey/valkey
+    # -- Pinned to an exact 8.1 patch release and content digest (INF-11);
+    # Renovate (helm-values manager) proposes minor and patch bumps, digest
+    # included. Majors are disabled in renovate.json5: Valkey 9 writes RDB 80,
+    # which redis:7.4.11 (the rollback) cannot read.
+    tag: "8.1.10-trixie@sha256:640c5e62cea04b6d6f2084232651d0cc70362d31f4f805e7be94dbed6855e8f2"
     pullPolicy: IfNotPresent
   service:
     port: 6379
@@ -3044,8 +3120,8 @@ redis:
   # rate the `60 10000` point fires every ~2 minutes: in production
   # (2026-09-26) that was a fork and a ~105 MB dump.rdb write every 2
   # minutes, for a file nothing reads. When AOF is on, Redis loads the AOF
-  # at startup and ignores dump.rdb entirely. The AOF itself (Redis 7
-  # multi-part, `aof-use-rdb-preamble yes`) already has a compact RDB base
+  # at startup and ignores dump.rdb entirely. The AOF itself (multi-part,
+  # `aof-use-rdb-preamble yes`, the server default) already has a compact RDB base
   # file, which is what gives a fast restart (~3.7s for ~400 MB in
   # production). AOF rewrites still fork, but only when the AOF has doubled
   # in size (`auto-aof-rewrite-percentage 100`), not every 2 minutes.
@@ -3132,25 +3208,16 @@ redis:
   # distant-signal.podSecurityContext helper every other non-postgres
   # workload here uses. runAsUser/runAsGroup are pinned here (unlike most
   # other callers of that helper, which leave this empty and rely on the
-  # image's own numeric USER) because the official `redis` image runs as
-  # root with no USER set at all -- confirmed 2026-09-03 by pulling this
-  # exact repository:tag's manifest/config from Docker Hub's real registry
-  # API: `redis:7`'s resolved digest (org.opencontainers.image.version
-  # 7.4.11, debian/bookworm-slim base) has Config.User == null, which is
-  # exactly what makes kubelet's runAsNonRoot admission check fail with
-  # "container has runAsNonRoot and image will run as root" -- distinct
-  # from the "non-numeric user, cannot verify" failure the chart's 12
-  # custom Rust images hit before their own Dockerfiles pinned a numeric
-  # USER. redis's own docker-entrypoint.sh drops root to a `redis` user via
-  # gosu when started as root; 999 is that user's real uid/gid, confirmed
-  # against docker-library/redis's own Dockerfile source for the exact
-  # revision this digest was built from (debian/Dockerfile:
-  # `groupadd -r -g 999 redis; useradd -r -g redis -u 999 redis`) -- the
-  # same uid postgres:16 happens to use, verified independently rather
-  # than assumed from that coincidence. Pinning both runAsUser AND
-  # runAsGroup (not just runAsUser) skips the image's own root-to-999 gosu
-  # step entirely, matching how postgres-statefulset.yaml's inline
-  # equivalent already works.
+  # image's own numeric USER) because the image runs as root with no USER
+  # set at all, which kubelet's runAsNonRoot admission check refuses
+  # ("container has runAsNonRoot and image will run as root"). Its
+  # docker-entrypoint.sh drops root to the `valkey` user (setpriv) when
+  # started as root; that user is uid/gid 999, the same as the `redis`
+  # user of the redis:7.4.11 image this replaced (both checked 2026-10-26
+  # on the pinned digests: Config.User empty, `id valkey` is 999:999, and
+  # /data is owned by it), so an existing AOF volume keeps working.
+  # Pinning both runAsUser AND runAsGroup skips the entrypoint's
+  # root-to-999 step entirely, matching postgres-statefulset.yaml.
   podSecurityContext:
     runAsUser: 999
     runAsGroup: 999
@@ -3933,6 +4000,91 @@ movementRelay:
       memory: 128Mi
     limits:
       memory: 192Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  podSecurityContext: {}
+
+# ---------------------------------------------------------------------------
+# darwinRelay -- the Darwin Push Port relay (DS-152; docs/darwin-pushport.md;
+# docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md phase
+# 3). Reads the Rail Data Marketplace's Push Port JSON topic and produces
+# the parts DS keeps (schedules, train status platforms with their confirmed
+# and suppressed flags, forecasts, associations, cancellations) on
+# ds:ingest:darwin, which the ingest-writer applies to the darwin_* tables.
+# The api then serves `platformBasis: confirmed`, platforms at every stop
+# (terminating ones too), and the notifier/api late-start prediction prefers
+# Darwin's live next-working links.
+#
+# Off by default. Switching on (docs/darwin-pushport.md): the ingest-writer
+# must apply the stream (`ingestWriter.streams.darwin: apply`, which needs
+# `postgresql.roles.perService.writer.connect`), and the relay needs its
+# own Redis user (`redis.acl.clients.darwinRelay`, an `optional` ACL user:
+# the `darwin-relay-password` key of `redis.acl.existingSecret`; turning it
+# on restarts Redis once). The render fails otherwise.
+# ---------------------------------------------------------------------------
+darwinRelay:
+  # -- Deploy darwin-relay.
+  enabled: false
+  image:
+    repository: ghcr.io/fasterspeeding/distant-signal/darwin-relay
+    tag: ""
+    # -- Content digest override (see api.image.digest).
+    digest: ""
+    pullPolicy: IfNotPresent
+  kafka:
+    # -- The Secret with the Push Port's Kafka connection, one key per
+    # setting (deployed by Ranma; never rendered by this chart).
+    existingSecret: distant-signal-darwin-pushport
+    # -- That Secret's key names. Every value comes from the Secret:
+    # bootstrap server(s), topic (the Push Port JSON topic), the RDM-issued
+    # consumer group, SASL user name, password and mechanism, security
+    # protocol, and the Java client's JAAS line (`saslConfig`; optional,
+    # only a fallback source of the user name and password).
+    keys:
+      bootstrapServer: kafka-bootstrap-server
+      topic: kafka-topic
+      consumerGroup: consumer-group
+      username: username
+      password: password
+      saslMechanism: sasl-mechanism
+      securityProtocol: security-protocol
+      saslConfig: sasl-config
+    # -- Where to start when the group has no committed offset
+    # (KAFKA_AUTO_OFFSET_RESET). `latest` (default): the Push Port is
+    # current state, and `earliest` would replay the topic's whole
+    # retention into the writer on the first start.
+    autoOffsetReset: latest
+    # -- The bootstrap server's TCP port(s). The broker address is only in
+    # the Secret, so with `networkPolicy.egress.internetPorts` set the
+    # egress policy cannot read its port: list it here.
+    brokerPorts: [9092]
+  # -- A batch is published this many seconds after its first record
+  # (BATCH_MAX_SECS). At least minBatchMaxSecs: ds:ingest:darwin's MAXLEN
+  # (crates/ingest-stream/src/budget.rs) is budgeted for one batch that
+  # often, covering a two-hour writer outage.
+  batchMaxSecs: 30
+  # -- The budget's batch interval (ingest_stream::budget::DARWIN_BATCH_SECS);
+  # the render refuses a smaller batchMaxSecs.
+  minBatchMaxSecs: 30
+  # -- ... or once it holds this many Kafka records (BATCH_MAX_RECORDS).
+  batchMaxRecords: 5000
+  healthPort: 8083
+  # -- Liveness watchdog (PROGRESS_STALL_SECS); waiting on Kafka or on a
+  # Redis outage never counts.
+  progressStallSecs: 900
+  metricsPort: 9095
+  logLevel: info
+  extraEnv: []
+  # One batch (a few thousand rows) in memory plus librdkafka's fetch
+  # buffers; the topic is far busier than Train Movements.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 384Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -5360,6 +5512,7 @@ metrics:
         "ds:ingest:ioi-nir": 500
         "ds:ingest:ioi-live": 1000
         "ds:ingest:transit-metrolink": 320
+        "ds:ingest:darwin": 240
         "ds:ingest:transit-net": 24
     # DistantSignalIngestStreamStalled (critical): producers' XADDs to a
     # stream succeeded within its stallAfterSecs, but the writer has
@@ -5369,7 +5522,8 @@ metrics:
     # tfl-stops daily (poller-tfl's stops job; off by default),
     # reference daily, ioi-live 1/5 min, ioi-gtfs and ioi-nir daily,
     # transit-metrolink 1/5 min (its situations; off by default),
-    # transit-net daily (its timetable only; off by default).
+    # transit-net daily (its timetable only; off by default), darwin
+    # 2/min (darwin-relay; off by default).
     ingestStreamStalled:
       enabled: true
       for: 5m
@@ -5384,6 +5538,7 @@ metrics:
         "ds:ingest:ioi-nir": 259200
         "ds:ingest:ioi-live": 900
         "ds:ingest:transit-metrolink": 900
+        "ds:ingest:darwin": 180
         "ds:ingest:transit-net": 259200
     # DistantSignalIngestDeadLetters: any entry dead-lettered within
     # `window`.
@@ -5521,6 +5676,9 @@ metrics:
         # situations every 5 minutes (written from batch 4).
         transit-metrolink-timetable: 129600
         transit-metrolink-situations: 1800
+        # The Darwin Push Port (DS-152): batches every 30 s, and Darwin
+        # sends something every few seconds all day.
+        darwin-pushport: 900
         # NET: the timetable only (no situations source; NET design §8).
         transit-net-timetable: 129600
       whileStreamApplies:
@@ -5534,9 +5692,34 @@ metrics:
         island_of_ireland_lines_nir: "ds:ingest:ioi-nir"
         transit-metrolink-timetable: "ds:ingest:transit-metrolink"
         transit-metrolink-situations: "ds:ingest:transit-metrolink"
+        darwin-pushport: "ds:ingest:darwin"
         transit-net-timetable: "ds:ingest:transit-net"
       for: 10m
       severity: warning
+    # darwin-relay (DS-152), rendered only with darwinRelay.enabled.
+    # Runbooks: docs/alerts.md.
+    #
+    # DistantSignalDarwinPushPortStale: the newest Darwin message the relay
+    # relayed (distant_signal_darwin_relay_last_message_timestamp_seconds,
+    # Darwin's own `ts`) is older than maxAgeSeconds for `for`, or the gauge
+    # is absent for `for`: the topic, the credentials or the relay is down,
+    # and platforms and associations are going stale. Darwin sends messages
+    # every few seconds all day.
+    #
+    # DistantSignalDarwinConsumerLagHigh: the relay is more than
+    # maxMessages behind the topic's newest message on some partition
+    # (distant_signal_darwin_relay_consumer_lag, from librdkafka every
+    # 30 s) for `for`: it, Redis or the writer cannot keep up.
+    darwinRelay:
+      enabled: true
+      stale:
+        maxAgeSeconds: 600
+        for: 10m
+        severity: warning
+      consumerLag:
+        maxMessages: 50000
+        for: 15m
+        severity: warning
     # DistantSignalDbPoolAcquireTimeouts: a component's Postgres pool timed
     # out handing out a connection (distant_signal_db_pool_acquire_timeouts_total,
     # ds_store::pool) within `window`. Counted only for acquires through

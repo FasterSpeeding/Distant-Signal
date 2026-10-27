@@ -16,7 +16,7 @@ import { DeleteLineButton } from '@/components/DeleteLineButton';
 import { LineDefinitionTooltip } from '@/components/LineDefinitionTooltip';
 import { ShareButton } from '@/components/ShareButton';
 import { TextLink } from '@/components/TextLink';
-import { worstStatus, severityLabel } from '@/lib/severity';
+import { worstStatus } from '@/lib/severity';
 import { resolveHalfHourlyRange } from '@/lib/history';
 import { londonDayKey } from '@/lib/dateFormat';
 import { parseLinePageParams } from '@/lib/lineTrains';
@@ -163,14 +163,13 @@ function resolveLineOperators(
   return customLine?.operators ?? summary?.operators ?? definition?.operators ?? [];
 }
 
-/** The three pieces of no-status-yet copy, kept together so they stay
- * consistent with each other. Deliberately none of them says "Good
+/** The two pieces of no-status-yet copy, kept together so they stay
+ * consistent with each other. Deliberately neither says "Good
  * Service": `worstStatus` synthesises a severity-10 Good Service reading
  * for a report with no statuses, which is the right answer for a line the
  * aggregator has looked at and found nothing wrong with, and exactly the
  * wrong one for a line it has never looked at. */
 const NO_STATUS_BADGE = 'No status yet';
-const NO_STATUS_SUMMARY = 'no status computed yet';
 const NO_STATUS_BODY = 'No status for this line yet. It appears within a few minutes.';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata for a shared line link.
@@ -231,19 +230,21 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     if (name === undefined) {
       notFound();
     }
-    const title = name;
-    const description = `${name}: ${NO_STATUS_SUMMARY}`;
-    return pageMetadata(title, description, OWN_PREVIEW_IMAGE);
+    return lineMetadata(id, name);
   }
 
-  const report = statusResult.report;
-  const worst = worstStatus(report);
-  const title = report.name;
-  const description = worst.reason
-    ? `${report.name}: ${severityLabel(worst.statusSeverity)}. ${worst.reason}`
-    : `${report.name}: ${severityLabel(worst.statusSeverity)}`;
+  return lineMetadata(id, statusResult.report.name);
+}
 
-  return pageMetadata(title, description, OWN_PREVIEW_IMAGE);
+/** The line page's metadata. The description is evergreen, what the page
+ * offers rather than the current status (which used to be quoted, went
+ * stale in search snippets and repeated itself when the reason was the
+ * status). A TfL line has no trains panel (see the page component). */
+function lineMetadata(id: string, name: string): Metadata {
+  const description = id.startsWith('tfl-')
+    ? `Live status, disruption and recent trends for ${name}.`
+    : `Live status, disruption, today's trains and recent trends for ${name}.`;
+  return pageMetadata(name, description, { ...OWN_PREVIEW_IMAGE, path: `/lines/${id}` });
 }
 
 export default async function LineDetailPage({

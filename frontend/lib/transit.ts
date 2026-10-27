@@ -5,10 +5,7 @@ import type { TransitLine, TransitLineStatus } from './types';
 // In their own module so a Client Component (`lib/stationSearch.ts`) can
 // check ids without pulling in this module's server-only `./api`.
 export { TRANSIT_ID, TRANSIT_STOP_ID } from './transitIds';
-
-/** The caption every scheduled board and timetable carries: the times are
- * the published timetable, not live tram times (transit spec §2). */
-export const SCHEDULED_CAPTION = 'Scheduled times, not live';
+export { lineColour, SCHEDULED_CAPTION } from './transitStops';
 
 /** `value`, or `notFound()` when the api answered 404 (an unknown network,
  * line or stop, or a network the api does not serve). */
@@ -24,11 +21,6 @@ export async function orNotFound<T>(value: Promise<T>): Promise<T> {
 /** `HH:MM` of an RFC 3339 time already in UK local time. */
 export function departureClock(rfc3339: string): string {
   return rfc3339.slice(11, 16);
-}
-
-/** A line's display colour for a swatch, or a neutral grey. */
-export function lineColour(line: Pick<TransitLine, 'colour'> | null | undefined): string {
-  return line?.colour ?? 'var(--mantine-color-gray-5)';
 }
 
 /** `metrolink:blue` -> `blue`. */

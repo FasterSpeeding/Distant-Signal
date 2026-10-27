@@ -3,6 +3,298 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-27: `cancellation` on list rows, and reasons in pushes
+
+Additive. DS-MCP can keep reading `status`; it should read `cancellation`
+to tell a train that terminates short from one that does not run at all
+(DS-184; `crates/api/src/data/cancellation.rs`).
+
+- `GET /Journeys/mine` rows (the current leg's train) and `GET /Train/mine`
+  rows gain `cancellation`, `null` when no part of the train's run is
+  cancelled (and for an open or untracked leg):
+
+  ```json
+  "cancellation": {
+    "kind": "partial",
+    "startsFrom": null,
+    "terminatesAt": { "crs": "YRK", "name": "York" },
+    "reason": { "code": "IA", "text": "Signal failure (including no fault found)", "source": "trust" }
+  }
+  ```
+
+  It is the detail's `cancellation` (2026-10-26 below) without the
+  stop-indexed fields: `kind` `full` or `partial`; `startsFrom` and
+  `terminatesAt` (`{crs, name}`, `name` may be `null`) when the train
+  starts or ends short; `reason` as on the detail. A row can have `status:
+  "cancelled"` with a `partial` cancellation (TRUST marks a train cancelled
+  en route as cancelled), or a running status with one (a change of
+  origin).
+- Push notifications (no API change): a cancellation push now says where
+  the train runs ("Your train terminates at York", "now starts from
+  York", "is part cancelled") and why ("Reason: Signal failure."). When
+  the reason is not known yet, one follow-up with the same tag replaces
+  the push if the reason arrives within 15 minutes.
+
+## 2026-10-27: a train's push switch sticks, and covers its suggestions
+
+Behaviour only; no field changes. DS-MCP needs no change.
+
+- `notificationsEnabled` FALSE on a tracked train (`PATCH
+  /Train/{trackingId}`) now stays FALSE when the same user and train are
+  used again: tracking it again, or a journey leg (picked or
+  auto-committed) on the same train, returns the same subscription with
+  its switch as it was. Only a brand-new subscription starts with it on.
+  Before, any such reuse turned it back on.
+- A train with its pushes off sends no journey break suggestion for a
+  break it triggers either (the break and its suggestions still show in
+  the app), and such a break no longer holds back the pushes of the
+  journey's other trains.
+
+## 2026-10-26: notification settings
+
+Additive. Nothing existing changes for a client that does not use the new
+routes. DS-MCP needs no change.
+
+- **New: `DELETE /public/notifications/subscribe`** `{endpoint}` (session
+  only): forgets the caller's push subscription for that endpoint, "Turn
+  off on this device". `204`; `404` when the caller has none for it
+  (including another user's endpoint). Unknown fields are refused (`422`).
+- **New: `PATCH /Train/{trackingId}`** `{notificationsEnabled}` (session
+  only, owner only): turns that tracked train's pushes (delay,
+  cancellation, skipped stop, predicted late start) on or off. `200` with
+  the body echoed; `404` for a train that is not the caller's. Unknown
+  fields are refused (`422`).
+- `GET /Train/{trackingId}` and the owner's `GET /Journeys/{id}` (each
+  leg's `trackedTrainState`) gain `notificationsEnabled`. Absent on every
+  other reader's view.
+- `GET /public/preferences/notifications` gains a switch per kind of
+  push, each `true` unless turned off: `lineStatus`, `trainDelay`,
+  `trainCancel`, `predictedStart`, `stationSkip` and `templateAttention`
+  (beside `journeySuggestions`); `delayThresholdMinutes` (`5`, `10`, `15`
+  or `30`, `null` for the default, 15); and `quietHours` (`{start, end,
+  timezone}`: `HH:MM` local times, `end` may be before `start`, and an
+  IANA zone; `null` for none). In quiet hours line and train pushes are
+  held and the latest state is sent when they end; cancellations still go
+  through, and the "app connected" notice is never held.
+- `PUT /public/preferences/notifications` takes any of those fields and
+  changes only the ones present (`journeySuggestions` is no longer
+  required; `null` clears the threshold or the quiet hours), and answers
+  with every setting instead of echoing the body. `400` for a threshold
+  outside the four, quiet hours that start and end at the same time or
+  an unknown zone; unknown fields are still refused (`422`).
+- `GET`/`PUT /public/preferences/notifications` also take
+  `snoozedUntil` (RFC 3339, at most a week ahead, else `400`; `null` to
+  resume): pushes are held as in quiet hours until then. It reads as
+  `null` once past.
+- New delegated scope `preferences:read`: a connected app holding it may
+  read `GET /public/preferences/notifications` on the delegated listener
+  (read only). Additive; DS-MCP needs it in its client's `maxScopes`, in
+  its token request and in a tool before it can use it
+  (docs/connected-apps.md).
+- **New: `PUT /public/preferences/pinned-lines/{lineId}/alerts`**
+  `{notify}`: whether a pinned line's status changes are pushed. Pinning
+  and alerting are separate; every existing pin alerts, and so does a new
+  one until this says otherwise. `204`; `404` when the caller has not
+  pinned that line. `PUT /public/preferences/pinned-lines` keeps the
+  switch of every line it keeps pinned.
+- `GET /public/preferences` gains `silentPinnedLines`: the pinned lines
+  whose alerts are off.
+- **New: `GET /public/notifications/devices`**: the caller's devices with
+  push on, most recently used first: `[{id, label, createdAt, lastUsedAt,
+  endpointSha256}]`. `label` names the browser ("Chrome on Android"), from
+  the User-Agent sent when it subscribed, or is `null`; `lastUsedAt` is
+  the later of the last push delivered and the last subscribe;
+  `endpointSha256` (hex) lets a browser find itself by hashing its own
+  endpoint. The endpoint and keys are never sent.
+- **New: `DELETE /public/notifications/devices/{id}`**: stops pushes to
+  one of the caller's devices. `204`; `404` when it is not theirs.
+
+## 2026-10-26: `cancellation`, full or partial, with its reason
+
+Additive. DS-MCP can keep reading `cancelled` and `cancelReason*`, which
+are unchanged, but should prefer `cancellation` (DS-181; rules in
+`crates/api/src/data/cancellation.rs`, docs/trust-reason-codes.md).
+
+- New on `GET /Train/by-uid/{uid}/{date}`, `GET /Train/{trackingId}` and
+  each journey leg's `trackedTrainState`: `cancellation`, `null` when no
+  part of the run is cancelled (including a train reinstated from where it
+  was cancelled):
+
+  ```json
+  "cancellation": {
+    "kind": "partial",
+    "startsFrom": null,
+    "terminatesAt": { "crs": "RAY", "name": "Raynes Park", "stopIndex": 5 },
+    "from": { "crs": "RAY", "name": "Raynes Park", "stopIndex": 5 },
+    "to": { "crs": "WAT", "name": "London Waterloo", "stopIndex": 11 },
+    "sections": [{ "from": { ... }, "to": { ... } }],
+    "reason": { "code": "JP", "text": "Failure to maintain vegetation ...", "source": "trust" },
+    "at": "2026-10-25T20:50:00Z"
+  }
+  ```
+
+  `kind` is `full` or `partial`. `sections` are the parts of the route not
+  run, each named by the calls either side ("cancelled between `from` and
+  `to`"). `startsFrom`/`terminatesAt` name the first/last call still
+  served when the train starts or terminates short. `from`/`to` repeat the
+  only section's ends, `null` with several. `stopIndex` indexes
+  `journeyStops`. `reason.source` is `ldbws` (Darwin's own sentence from a
+  live departure board) ahead of `trust` (the delay attribution code and
+  its Network Rail glossary text, `text` `null` for `PD`/`ZW`); `darwin`
+  is reserved for Darwin Push Port and will rank first. `at` is when the
+  cancellation was made.
+- New on every `journeyStops[]`: `cancelled` (boolean), the call is in a
+  cancelled part of the run. A skipped call is not counted.
+- Changed: `journeyStops[].status` is `Cancelled` only for those calls. A
+  train cancelled en route used to mark every stop it had not reached; a
+  terminated-short train's stops up to where it ends no longer read
+  `Cancelled`, and a section cancelled between two stations now does, even
+  before a later reported stop (it used to read `NoReport`).
+- `cancelled`, `cancelReasonCode` and `cancelReason` keep their meaning
+  (`status == "cancelled"`). A train started short by a change of origin
+  has `cancelled: false` but a partial `cancellation`.
+- New on the compact `live` object of the line summary and schedule lists:
+  `cancelReason`, the TRUST glossary text while `cancelled`.
+- Ingest: TRUST `0005` Reinstatements, and `0002`/`0006` messages without a
+  reason code, are now kept (`train_reasons`), so reinstatement and
+  location are known for them. Only messages processed after the deploy.
+
+## 2026-10-26: `platformBasis: "confirmed"` and `platformSuppressed` from the Darwin Push Port (DS-152)
+
+Additive. DS-MCP needs no change; it may show "confirmed". Pre-departure
+prediction phase 3 (docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md,
+section 6.2 item 4), off by default (`darwinRelay.enabled`).
+
+- On `JourneyStop` (tracked trains' journey legs, `GET /Train/{id}` and the
+  by-uid endpoint), `platform` can now come from the Darwin Push Port for
+  any stop of the train, terminating and set-down stops included, not
+  only from a station's departure board. A board row polled after
+  Darwin's last change that shows another platform still wins.
+- The operator's confirmation of that platform is one more source of
+  `platformBasis: "confirmed"`, beside the TRUST evidence (DS-180): the
+  same value, the same rule. `"board"` stays the value for a live,
+  unconfirmed one.
+- `platformChanged` compares that platform with `bookedPlatform` as before;
+  without a booked platform, with Darwin's planned one (`plannedPlatform`
+  falls back to it).
+- `platformStatus` is `"cancelled"` when Darwin cancelled the train's call
+  there.
+- New `platformSuppressed: boolean`: Darwin has a platform for this stop
+  but suppresses it from public display (as station screens do). That
+  platform is not served: `platform` stays as any board shows it and
+  `displayPlatform` falls back to the booked one. So a hidden platform and
+  one not yet allocated are told apart. `false` without Push Port data.
+
+## 2026-10-26: `predictedStart` prefers Darwin's next-working links; joins and divides cap it (DS-152)
+
+Additive; no new field. DS-MCP needs no change. Pre-departure prediction
+phases 2 and 3 (docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md,
+sections 3a and 4).
+
+- `predictedStart.previousWorking.link` (train level: `GET /Train/{id}`,
+  the by-uid endpoint and journey legs) may now be `"association"`: the
+  incoming train is Darwin's live next-working link for this train
+  (Darwin Push Port, off by default), which is preferred over the
+  timetable inference (`"inferred"`) whenever it exists. Clients that
+  ignore `link` keep working. An association link is never capped by
+  operator, so Thameslink and Chiltern trains can reach `high` on it.
+- An `"inferred"` link where either train joins or divides that day (a
+  timetable `JJ`/`VV` association) is capped at `confidence: "medium"`:
+  it is still shown with its minutes, but never `high`, so it never
+  pushes.
+
+## 2026-10-26: arrival boards give alighting stops a live platform (DS-152)
+
+Additive; no new field. DS-MCP needs no change. Pre-departure prediction
+phase 3 (docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md,
+section 6.2 item 3), off by default (`pollers.ldbws.trackedStopArrivals`).
+
+- On `JourneyStop` (tracked trains' journey legs, `GET /Train/{id}` and the
+  by-uid endpoint), a stop with a booked arrival where the train terminates
+  or only sets down (usually the user's destination) can now have a live
+  `platform`, `platformStatus` and `displayPlatform`, with `platformBasis:
+  "board"`: the platform from that station's LDBWS arrival board, polled
+  for the tracked train. Before, such a stop only ever had its booked
+  platform (`platformBasis: "booked"`), because departure boards never list
+  it.
+- Only a unique, fresh (at most 10 minutes old) match counts, by RSID and
+  booked arrival time (else operator, origin and time), as for departure
+  boards. A cancelled arrival keeps its platform with `platformStatus:
+  "cancelled"`. `platformChanged` compares it with `bookedPlatform`.
+  `board` (the departure board's row) is unchanged and stays `null` there.
+
+## 2026-10-26: journey lists in one travel order, shared journeys merged in
+
+Additive parameter and fields; two lists change order. DS-MCP needs no
+change: a delegated caller's `GET /Journeys/mine` is unchanged.
+
+- `GET /Journeys/mine?include=` now takes a comma-separated list:
+  `followed` (as before), `shared`, or `followed,shared`. `shared` adds the
+  journeys other members shared into the caller's groups (exactly the ones
+  `GET /public/groups/shared-journeys` lists) to the SAME list as the
+  caller's own: one travel order, one cap (100), so own and shared rows
+  interleave by when they travel. Each such row has `sharedVia`: one
+  `{groupId, groupName, addedByName, addedByTag, addedAt}` per group, newest
+  share first, and like a followed row no `createdVia` and a `null`
+  `trainSubscriptionId`. A followed journey that is also shared carries both
+  `followedFrom` and `sharedVia`, once. Anything else in `include` is still
+  `400`. A delegated caller gets its own journeys only, whatever it asks.
+- New on every `GET /Journeys/mine` row: `departsAt`, the list's sort key,
+  the first leg's departure (an untracked leg's planned departure; a train
+  leg's timetabled departure from its origin, else its pinned departure,
+  else its train's scheduled departure, else the London start of its date).
+  New on every `GET /Train/mine` row: `departsAt`, likewise (the pinned
+  departure, else the train's, else the start of its date).
+- The order every journey list now uses (it was already `GET
+  /Journeys/mine`'s): still to come or under way, soonest `departsAt`
+  first; then travelled, newest first; newest journey id on a tie.
+  `GET /public/groups/{id}/journeys` (was oldest share first) and `GET
+  /public/groups/shared-journeys` (was newest share first; still one row per
+  group and journey, a journey's rows together, newest share first) now come
+  in it, and their caps count journeys in that order.
+
+## 2026-10-26: `results=fastest` takes the fewest changes on a tie
+
+Changed plans, no new fields. DS-MCP needs no change.
+
+- `departAfter`: of the itineraries arriving earliest, `/Trips/plan` now
+  returns the one with the fewest changes, then the one leaving latest,
+  then the one walking least. It used to return whichever it found first,
+  often with more changes than needed (6 where 4 arrive as early). The
+  arrival time is never later than before; `changes` can be lower, the
+  legs and departure can differ, and `exceedsRecommendedChanges` is set
+  less often.
+- `arriveBy`: of the itineraries leaving latest, the one with the fewest
+  changes, then the earliest-arriving. It used to be the earliest-arriving
+  one, so an answer can now arrive later (never after `arriveBy`) when
+  that saves a change. The departure is unchanged.
+- `results=options`, and `results=fastest` with `waypoints` or `via`, are
+  unchanged.
+
+## 2026-10-26: platforms confirmed from tracking data
+
+Changed values, no new fields. DS-MCP needs no change, though it may now
+see `platformBasis: "confirmed"` (until now reserved). DS-180.
+
+- `journeyStops[].platformBasis` is `confirmed` when tracking data ties
+  this train to the platform: its own automatic (train describer)
+  arrival or departure report at that stop named it, or, at the origin
+  before departure, the train that forms it has arrived at that platform
+  and not moved since. A timetable-inferred previous working only
+  confirms the booked platform; it never moves it.
+- On a confirmed stop `platform` and `displayPlatform` are the confirmed
+  platform (even when a live board shows another), `platformStatus` is
+  `active`, `plannedPlatform` is the booked platform when the timetable
+  has one (else the board's first-seen platform, as before), and
+  `platformChanged` compares the confirmed platform with it. So a train
+  booked into platform 3 that arrived at platform 5 now reads `platform:
+  "5"`, `plannedPlatform: "3"`, `bookedPlatform: "3"`, `platformChanged:
+  true`, `platformBasis: "confirmed"`.
+- A stop the train has called at used to lose its platform once it left
+  the board (`platform: null`, `platformBasis: "booked"`). It now keeps
+  the reported one. Reports from before this release carry no platform,
+  so older trains are unchanged.
+
 ## 2026-10-24: a TfL stop with its own station gets rides too
 
 Changed candidates and plans, no new fields. DS-MCP needs no change. See
@@ -20,6 +312,66 @@ docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md §2.
   ride's own minutes (no walk out at the station end). So `EUS` to
   `940GZZLUODS` is one Northern line transfer leg (`access.end:
   "destination"`), not a train via Moorgate and a walk.
+
+## 2026-10-24: `/Trips/plan` plans with trams (`transit=true`)
+
+Additive and opt-in. Without `transit=true` (and without a tram stop as
+an end) every response is byte-identical to before, also once the switch
+is on; while `api.tripPlanTransitNetworks` is empty (the default) the
+parameter is ignored. **For DS-MCP:** nothing changes until it sends
+`transit=true`; before it does, it must handle the new leg `kind`. See
+docs/superpowers/specs/2026-10-24-transit-trip-planning-design.md.
+
+- New query parameter `transit=true|false` (default `false`; anything else
+  is a `400` while the switch is on). With it, the plan may ride the trams
+  of the networks the switch lists (Manchester Metrolink first) anywhere
+  in a journey: rail into Piccadilly, the tram to Victoria, rail on.
+- `origin` and `destination` may be a tram stop of such a network: its
+  station code (`9400ZZMAPIC`), the stop-area spelling (`940GZZMAPIC`) or a
+  platform (`9400ZZMAPIC1`, folded to its station), any case. Naming one
+  opts in as `transit=true` does, and the segment echoes the station code.
+  A `9400…` code no listed network knows is a `400` ("'9400ZZXXXX' is not
+  a stop the planner knows") when the request opted in; the same station
+  at both ends is a `400`; a tram stop end on a date the network has no
+  timetable for is a `400`. Waypoints, vias and the avoid lists still take
+  stations only (a tram stop there is a `400`).
+- A new leg, `kind: "transit"`, for a tram or a replacement bus run from
+  the tram timetable:
+  `{kind, network, serviceMode: "tram" | "replacementBus", liveTracking:
+  false, realtime: false, serviceDate, scheduledDeparture,
+  scheduledArrival, departureDayOffset, arrivalDayOffset, line: {id, name,
+  colour} | null, headsign, originCrs: null, destinationCrs: null,
+  originStop: {id, name, platform}, destinationStop, headwayMinutes?,
+  notices: [{kind: "disruption", lineId, severity, description, message,
+  reason}]}`.
+  - **Scheduled, never live:** `realtime` and `liveTracking` are always
+    `false`; it never has `live`, `expected`, `delay`, `cancelled`,
+    `status`, `public*`, `working*`, `trainUid`, `operator` or `headcode`.
+    The live overlay never changes it. Show "Scheduled times, not live".
+  - `headwayMinutes`: the median gap between trams of the same line and
+    direction from the boarding platform in the hour around the leg
+    ("about every 6 min"); absent with fewer than three.
+  - It counts as a change like a train (rail, tram, rail is 2 changes).
+  - Saving it: as an untracked leg (`transitMode: "tram"`, or `"bus"` for
+    a replacement bus), with its own scheduled times and its stop ids.
+- The walk between a rail station and a tram stop is a `kind: "transfer"`,
+  `mode: "WALK"` leg whose tram end's `originCrs`/`destinationCrs` is
+  `null`, with new `transitWalk: {network, stop: {id, name}, towardsStop,
+  walkMinutes, estimated: true}`. `walkMinutes` is the estimated walk;
+  `minutes` also holds the tram-side change time (2 minutes by default).
+- Only on a request planned with transit: each itinerary's new
+  `scheduledOnly` (`true` when a leg is `kind: "transit"`), and the
+  top-level `transitNotices: [{network, reason: "noTimetable", message}]`
+  for each network whose timetable does not cover the date (past its
+  60-day horizon, or a gap): the plan was made without it. It never means
+  "no trams".
+- `GET /public/transit/networks`: while the planner switch lists any
+  network, each network gains `tripPlanning` (`true` when `/Trips/plan`
+  can plan with it); absent otherwise.
+- An untracked journey leg's `originStopId`/`destinationStopId` may be a
+  tram station of a planner network (`9400ZZMAPIC`) as well as a TfL stop
+  id.
+
 
 ## 2026-10-24: a second transit network, `net` (dark)
 
@@ -43,6 +395,47 @@ bodies are Metrolink's, with these differences a client may see:
 
 **For ds-mcp:** nothing to change; a transit tool that lists
 `/transit/networks` will see `net` once it is on.
+
+## 2026-10-24: `/Trips/plan` `maxChanges` cap raised to 12, default 4
+
+No new fields. Every request that was valid before is still valid. See
+docs/superpowers/specs/2026-10-24-trips-plan-max-changes-12-design.md.
+
+- **Cap raised:** `maxChanges` accepts 0 to 12 (was 0 to 6). Out of range
+  is a 400: `maxChanges must be a whole number from 0 to 12 (default 4),
+  not '13'`.
+- **Default raised:** an omitted or empty `maxChanges` is now 4 (was 2).
+  With `results=options`, a journey that needs 3 or 4 changes is now
+  returned instead of an empty segment with `cappedByMaxChanges: true`.
+  With `results=fastest`, `exceedsRecommendedChanges` is now `true` only
+  above 4 changes. A caller that wants the old behaviour sends
+  `maxChanges=2`.
+- **Default and the search-size guard:** with `results=options`, an
+  omitted `maxChanges` is 4 only where `(waypoints + 1) * (2 * vias + 1) *
+  (maxChanges + 2)` fits the guard (252 by default). Where it doesn't, the
+  default is the highest value that fits, down to 2, so a request that
+  fitted at the old default still fits. The top-level `maxChanges` echoes
+  the value used.
+- **Guard limits at the new caps** (default bound 252): without vias, all
+  20 waypoints up to `maxChanges=10`, 18 at 11 and 17 at 12; with 1 via, 7,
+  6 and 5 waypoints at 8, 10 and 12; with 3 vias, 2, 2 and 1. The chart's
+  `api.tripPlanMaxOptionsSearchSize` now accepts 14-504 (was 8-504).
+
+DS-MCP: its own default of 4 now matches DS. Its schema's ceiling of 24
+is above DS's 12; values 13 to 24 are a 400 from DS.
+
+## 2026-10-26: station code and TfL stop id lists
+
+Additive: two new public, unauthenticated routes for the web app's
+`/sitemap.xml`. Nothing existing changes. DS-MCP needs no change.
+
+- **New: `GET /public/stations/codes`**: `{"codes": ["AAP", ...]}`, every
+  station's CRS code, sorted. Just the codes; names come from
+  `GET /public/stations?q=`.
+- **New: `GET /public/tfl/stops/ids`**: `{"ids": ["940GZZLUEUS", ...]}`,
+  every TfL Tube, DLR and tram stop id, sorted (empty until the TfL stops
+  job has run).
+- Both send `Cache-Control: public, max-age=3600` and are not rate limited.
 ## 2026-10-24: Tube access legs charge a change between branches
 
 Additive fields, changed estimates. DS-MCP needs no change. See

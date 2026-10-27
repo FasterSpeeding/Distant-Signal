@@ -1,5 +1,6 @@
 import { connectionGapMinutes } from './journeyLegChaining';
 import { isUntrackedLeg } from './untrackedLeg';
+import { trainCancellation } from './cancellation';
 import type { JourneyLegDetail, JourneyListItem, TrackingPhaseFields } from './types';
 
 /** A journey leg's own status classification, independent of
@@ -259,6 +260,13 @@ export interface JourneySummaryInput {
   legCount: number;
   trainLegCount: number;
   cancelledLegCount: number;
+  /** Of the train legs, those whose train is only part cancelled (DS-181:
+   * terminated short, started short or cancelled between two stations),
+   * whatever its status. Absent (0) where the caller can't tell, as on a
+   * `GET /Journeys/mine` row. */
+  partCancelledLegCount?: number;
+  /** Train legs cancelled outright; defaults to `cancelledLegCount`. */
+  fullyCancelledLegCount?: number;
   unmatchedLegCount: number;
   finishedLegCount: number;
   startedLegCount: number;
@@ -295,8 +303,9 @@ export function summariseJourney(input: JourneySummaryInput): JourneySummary {
   if (input.finalArrivalDelayMinutes !== null && input.finalArrivalDelayMinutes > 0) candidates.push('delayed');
   if (input.connection === 'missed') candidates.push('connectionMissed');
   if (input.connection === 'atRisk') candidates.push('connectionAtRisk');
-  if (input.cancelledLegCount > 0) {
-    candidates.push(input.cancelledLegCount >= input.trainLegCount ? 'severe' : 'partCancelled');
+  const fullyCancelled = input.fullyCancelledLegCount ?? input.cancelledLegCount;
+  if (fullyCancelled > 0 || (input.partCancelledLegCount ?? 0) > 0) {
+    candidates.push(fullyCancelled >= input.trainLegCount ? 'severe' : 'partCancelled');
   }
   const group = candidates.reduce((worst, next) => (SUMMARY_RANK[next] > SUMMARY_RANK[worst] ? next : worst));
 
@@ -317,6 +326,13 @@ export function summariseJourney(input: JourneySummaryInput): JourneySummary {
     finalArrivalDelayMinutes: input.finalArrivalDelayMinutes,
     finalArrivalDelayProvisional: input.finalArrivalDelayProvisional,
   };
+}
+
+/** Whether a train leg's train is cancelled outright, only in part
+ * (`lib/cancellation.ts`), or not at all. */
+function legCancellationKind(leg: JourneyLegDetail): 'full' | 'partial' | null {
+  const state = isUntrackedLeg(leg) ? null : (leg.trackedTrainState ?? null);
+  return state ? (trainCancellation(state)?.kind ?? null) : null;
 }
 
 function trainStatus(leg: JourneyLegDetail): string | null {
@@ -385,6 +401,8 @@ export function journeyDetailSummary(legs: readonly JourneyLegDetail[]): Journey
     legCount: legs.length,
     trainLegCount: trainLegs.length,
     cancelledLegCount: trainLegs.filter((leg) => trainStatus(leg) === 'cancelled').length,
+    partCancelledLegCount: trainLegs.filter((leg) => legCancellationKind(leg) === 'partial').length,
+    fullyCancelledLegCount: trainLegs.filter((leg) => legCancellationKind(leg) === 'full').length,
     unmatchedLegCount: trainLegs.filter((leg) => leg.trackedTrainState === null).length,
     finishedLegCount: legs.filter(legFinished).length,
     startedLegCount: legs.filter(legStarted).length,
@@ -405,6 +423,12 @@ export function journeyListItemSummary(item: JourneyListItem): JourneySummary {
   const currentFinished = item.status === 'completed' || current === 'untrackedDone';
   const currentStarted = currentFinished || item.status === 'en_route' || current === 'untrackedInProgress';
   const hasFinalDelay = item.finalArrivalDelayMinutes !== undefined;
+  // The current leg's train cancelled only in part (DS-181): a train
+  // TRUST marked cancelled en route is counted in `cancelledLegCount`, but
+  // isn't wholly cancelled; one that starts short may not be marked at all.
+  const currentPartial = item.cancellation?.kind === 'partial';
+  const cancelledLegCount = item.cancelledLegCount ?? (current === 'severe' ? 1 : 0);
+  const partialCountedCancelled = currentPartial && item.status === 'cancelled' ? 1 : 0;
   return summariseJourney({
     currentLegGroup: current,
     otherLegGroups: [],
@@ -413,7 +437,9 @@ export function journeyListItemSummary(item: JourneyListItem): JourneySummary {
     // can't be told from a wholly cancelled journey; it reads "Part
     // cancelled", which is true either way that some of it is.
     trainLegCount: item.trainLegCount ?? (current === 'severe' && legCount > 1 ? legCount : 1),
-    cancelledLegCount: item.cancelledLegCount ?? (current === 'severe' ? 1 : 0),
+    cancelledLegCount,
+    partCancelledLegCount: currentPartial ? 1 : 0,
+    fullyCancelledLegCount: Math.max(0, cancelledLegCount - partialCountedCancelled),
     unmatchedLegCount: item.unmatchedLegCount ?? (current === 'unmatched' ? 1 : 0),
     finishedLegCount: item.finishedLegCount ?? (currentFinished ? 1 : 0),
     startedLegCount: item.startedLegCount ?? (currentStarted ? 1 : 0),

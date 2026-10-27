@@ -9,6 +9,18 @@
 //!
 //! with the row's id, newest first, breaking a tie.
 //!
+//! Every journey history in the app uses this order (DS-178): the
+//! travelled half is the history, newest first. "Newest" is the departure
+//! (`departs_at`, served as `departsAt`): when the travel happens, not when
+//! the journey was saved (`created_at`) or shared (`added_at`), which a
+//! plan made weeks ahead or a share made after the trip would get wrong. A
+//! journey's is its first leg's departure, never missing (a journey with
+//! no leg is never listed, and every leg has a date). The lists that use
+//! it: `GET /Journeys/mine` (own, followed and group-shared journeys in one
+//! list under one cap), `GET /groups/{id}/journeys` and `GET
+//! /groups/shared-journeys` (`journeys::travel_ranked_journeys_ctes`), and
+//! `GET /Train/mine`.
+//!
 //! "Travelled" is: the last leg has actually arrived (see
 //! [`train_arrived_sql`]; an untracked leg's planned arrival has passed),
 //! or every leg is finished (a train leg's `train_current_state.status` is

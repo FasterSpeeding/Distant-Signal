@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TrendsResults, toChartPoints } from './TrendsResults';
@@ -66,6 +66,12 @@ function sixHourlyRow(overrides: Partial<LineSixHourlyStats> = {}): LineSixHourl
   return { ...dailyRow(), bucketStart: '2026-08-31T12:00:00Z', ...overrides };
 }
 
+// TrendsCharts loads its Recharts half on demand (next/dynamic); load it once
+// up front so the first chart assertion isn't timed against a cold import.
+beforeAll(async () => {
+  await import('@/app/lines/[id]/history/TrendsChartParts');
+});
+
 describe('toChartPoints (generic)', () => {
   it('preserves a bucket at or above the given floor', () => {
     const stats = [dailyRow({ sampleCycles: 20 })];
@@ -123,7 +129,7 @@ describe('TrendsResults', () => {
     ]);
     renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
 
-    const charts = screen.getAllByTestId('line-chart');
+    const charts = await screen.findAllByTestId('line-chart');
     const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
     const points = JSON.parse(rateChart!.dataset.points as string);
     const sparseDay = points.find((point: { bucketKey: string }) => point.bucketKey === '2026-08-01');
@@ -153,7 +159,7 @@ describe('TrendsResults', () => {
       expect(mockFn).toHaveBeenCalledWith('wcml', '2026-08-31T00:00:00Z', '2026-09-01T00:00:00Z');
       expect(screen.getByText(new RegExp(`Each train counts once ${copyFragment}`))).toBeInTheDocument();
 
-      const charts = screen.getAllByTestId('line-chart');
+      const charts = await screen.findAllByTestId('line-chart');
       const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
       const points = JSON.parse(rateChart!.dataset.points as string);
       expect(points[0].delayRate).not.toBeNull(); // exactly at the floor -- not sparse
@@ -170,7 +176,7 @@ describe('TrendsResults', () => {
     renderWithMantine(
       await TrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z', granularity }),
     );
-    const charts = screen.getAllByTestId('line-chart');
+    const charts = await screen.findAllByTestId('line-chart');
     const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
     const points = JSON.parse(rateChart!.dataset.points as string);
     expect(points[0].delayRate).toBeNull();
@@ -219,12 +225,12 @@ describe('TrendsResults', () => {
     ]);
     renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
 
-    const barChart = screen.getByTestId('bar-chart');
+    const barChart = await screen.findByTestId('bar-chart');
     const points = JSON.parse(barChart.dataset.points as string);
     const sparseDay = points.find((point: { bucketKey: string }) => point.bucketKey === '2026-08-01');
     expect(sparseDay.total).toBe(3); // real value, never hidden or zeroed
 
-    const charts = screen.getAllByTestId('line-chart');
+    const charts = await screen.findAllByTestId('line-chart');
     const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
     const ratePoints = JSON.parse(rateChart!.dataset.points as string);
     const sparseRatePoint = ratePoints.find((point: { bucketKey: string }) => point.bucketKey === '2026-08-01');
@@ -241,7 +247,7 @@ describe('TrendsResults', () => {
     renderWithMantine(
       await TrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z', granularity }),
     );
-    const barChart = screen.getByTestId('bar-chart');
+    const barChart = await screen.findByTestId('bar-chart');
     const points = JSON.parse(barChart.dataset.points as string);
     expect(points[0].total).toBe(7);
   });

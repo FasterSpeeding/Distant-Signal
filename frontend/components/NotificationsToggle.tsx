@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { Button, Text } from '@mantine/core';
-import { failureFromResponse } from '@/lib/failure';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import {
@@ -51,7 +51,13 @@ interface Failure {
  * Tier-2 shape exactly -- same anonymous-user-UX pattern, just triggered
  * from a click that first does browser-side `PushManager.subscribe()` work
  * instead of a straight fetch. */
-export function NotificationsToggle() {
+export function NotificationsToggle({
+  onChange,
+}: {
+  /** Called after this device's push is turned on or off, e.g. so a device
+   * list can reload. */
+  onChange?: (enabled: boolean) => void;
+} = {}) {
   // `checked` and `supported` are deliberately separate: `supported`
   // starts `false` (the same value it would settle on in an unsupported
   // browser), so collapsing them into one flag would make the pre-check
@@ -165,6 +171,7 @@ export function NotificationsToggle() {
         return;
       }
       setEnabled(true);
+      onChange?.(true);
     } catch (error) {
       logEnableFailure(error);
       setFailure(describeEnableFailure(error));
@@ -182,18 +189,57 @@ export function NotificationsToggle() {
     void finishEnable(permissionRequest).finally(() => setBusy(false));
   }
 
+  /** "Turn off on this device": the server forgets this device first (a 404
+   * means it already had), then the browser drops its subscription, so a
+   * failed request leaves both as they were. */
+  async function disable() {
+    setFailure(null);
+    needsLoginState.reset();
+    setBusy(true);
+    try {
+      const serviceWorker: Partial<Pick<ServiceWorkerContainer, 'getRegistration'>> = navigator.serviceWorker;
+      const registration = await serviceWorker.getRegistration?.();
+      const subscription = await registration?.pushManager.getSubscription();
+      if (subscription) {
+        const response = await fetch('/api/notifications/subscribe', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint: subscription.endpoint }),
+        });
+        if (response.status === 401) {
+          needsLoginState.markNeedsLogin();
+          return;
+        }
+        if (!response.ok && response.status !== 404) {
+          setFailure({ message: await failureFromResponse('turn off', 'notifications', response) });
+          return;
+        }
+        await subscription.unsubscribe();
+      }
+      setEnabled(false);
+      onChange?.(false);
+    } catch {
+      setFailure({ message: describeFailure('turn off', 'notifications') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // No `if (!supported) return null` branch: that's the reserved slot
   // above. An unsupported browser keeps a permanently `disabled` button,
-  // with a line under it saying why.
+  // with a line under it saying why. Once on, the button turns them off
+  // for this device only; other devices keep theirs.
   return (
     <>
-      <Button
-        onClick={enable}
-        disabled={!checked || !supported || busy || enabled}
-        variant={enabled ? 'light' : 'filled'}
-      >
-        {enabled ? 'Notifications enabled' : 'Enable notifications'}
-      </Button>
+      {enabled ? (
+        <Button onClick={() => void disable()} disabled={busy} variant="light">
+          Turn off on this device
+        </Button>
+      ) : (
+        <Button onClick={enable} disabled={!checked || !supported || busy} variant="filled">
+          Enable notifications
+        </Button>
+      )}
       {unsupportedNote && (
         <Text size="sm" c="dimmed">
           {unsupportedNote}

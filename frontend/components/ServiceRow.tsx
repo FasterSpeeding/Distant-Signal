@@ -8,6 +8,7 @@ import type { LineCatalogueStation, LineTrainSummary } from '@/lib/types';
 import { NO_TIME } from '@/lib/dateFormat';
 import { formatClock, lineTimeMinute, stopStrip } from '@/lib/lineTrains';
 import { dayOffsetMarker, liveStatusLabel, type LiveTone } from '@/lib/serviceStatus';
+import { cancellationReasonPhrase } from '@/lib/cancellation';
 import classes from './ServiceRow.module.css';
 
 const TONE_CLASS: Record<LiveTone, string | undefined> = {
@@ -113,6 +114,13 @@ export function ServiceRow({
   const destination =
     train.destination?.name ?? train.destination?.crs ?? `${serviceNoun(train.serviceMode)} ${train.uid}`;
   const status = liveStatusLabel(train.live, train.serviceMode);
+  // Why it is cancelled (DS-181), in words after the status.
+  const cancelReason =
+    status.tone === 'cancelled'
+      ? cancellationReasonPhrase(
+          train.live?.cancelReason ? { code: null, text: train.live.cancelReason, source: 'trust' } : null,
+        )
+      : null;
   const timetableOnly = isTimetableOnly(train);
   const strip = stations && showStrip ? stopStrip(train, stations) : null;
   const href = `/train/${encodeURIComponent(train.uid)}/${date}`;
@@ -154,6 +162,14 @@ export function ServiceRow({
   const rest = (
     <>
       <span className={`${classes.status} ${TONE_CLASS[status.tone] ?? ''}`}>{status.text}</span>{' '}
+      {cancelReason && (
+        <>
+          <VisuallyHidden>. </VisuallyHidden>
+          <span className={classes.details} data-cancel-reason>
+            Reason: {cancelReason}.
+          </span>{' '}
+        </>
+      )}
       {details && (
         <>
           <VisuallyHidden>. </VisuallyHidden>

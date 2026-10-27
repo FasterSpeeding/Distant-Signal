@@ -488,6 +488,8 @@ describe('generateMetadata', () => {
     );
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
     expect(metadata.title).toBe('19:32 London Waterloo to Woking');
+    // One train on one day: crawlable, never indexed.
+    expect(metadata.robots).toEqual({ index: false, follow: true });
     expect(metadata.openGraph?.title).toBe('19:32 London Waterloo to Woking · Distant Signal');
     expect(metadata.twitter).toMatchObject({
       card: 'summary_large_image',
@@ -516,6 +518,28 @@ describe('generateMetadata', () => {
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState({ status: 'cancelled' }));
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
     expect(metadata.description).toBe('This train was cancelled.');
+  });
+
+  it('describes a train cut short, with its reason (DS-181)', async () => {
+    const raynes = { crs: 'RAY', name: 'Raynes Park', stopIndex: 5 };
+    const waterloo = { crs: 'WAT', name: 'London Waterloo', stopIndex: 11 };
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
+      publicTrainState({
+        status: 'cancelled',
+        cancellation: {
+          kind: 'partial',
+          startsFrom: null,
+          terminatesAt: raynes,
+          from: raynes,
+          to: waterloo,
+          sections: [{ from: raynes, to: waterloo }],
+          reason: { code: 'TG', text: 'Driver', source: 'trust' },
+          at: '2026-08-31T08:00:00Z',
+        },
+      }),
+    );
+    const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
+    expect(metadata.description).toBe('Terminates at Raynes Park: driver.');
   });
 
   it('calls notFound() on ApiNotFoundError, matching the page component', async () => {

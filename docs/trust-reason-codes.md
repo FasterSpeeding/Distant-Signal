@@ -117,10 +117,46 @@ Rules (`data::train_reasons`):
 | Wording | For passengers | Industry attribution text ("Driver", "Late arrival of booked inward stock …", "Exclusion commercially agreed …") |
 | Delay reason | Yes | No. Darwin's own text is served per stop as `journeyStops[].board.delayReason` (see above). |
 | Stability | Updated by the TOC as the cause is understood | The code as first entered. TRUST DA can re-attribute it later, and that change never reaches the feed. |
-| Per stop | The reason is per service | The reason is per train. For `EN ROUTE`, the location it was cancelled from is stored (`train_reasons.loc_stanox`) but not served. |
+| Per stop | The reason is per service | The reason is per train. The location of each `0002`, `0005` and `0006` places the cancellation on the route (`cancellation`, below). |
 
 The two vocabularies do not map onto each other, so DS makes no attempt to
 translate one into the other.
+
+## The `cancellation` model (DS-181)
+
+`cancellation` (and `journeyStops[].cancelled`) says what part of the run
+is cancelled: `full` or `partial`, the cancelled `sections`,
+`terminatesAt`/`startsFrom`, and one `reason` with its `source`. The rules
+are in `crates/ds-store/src/trains/cancellation.rs` (shared by the api and the
+notifier since DS-184); the wire shape is in
+docs/api-changelog.md (2026-10-26). In short:
+
+- The latest `0002`, `0005` and `0006` (`train_reasons`, each with its
+  STANOX resolved through `stanox_crs`) apply in the order they were made.
+  An `EN ROUTE`/`OUT OF PLAN` `0002` at a call cancels every later call
+  (terminated short); any other type cancels the whole train. A `0005`
+  restores its call and every later one; a `0006` cancels the calls before
+  the new origin that the train has not made.
+- A call TRUST reported is never cancelled. A cancellation no later
+  `0005`/`0006` explains is dropped as stale when the train ran through a
+  call it took away, or when the status is no longer `cancelled` and
+  nothing was reported (a missed `0005`).
+- Reason precedence: Darwin Push Port (`darwin`, DS-152, not yet served),
+  then Darwin's text on a live LDBWS board (`ldbws`), then the TRUST code
+  (`trust`). TRUST's glossary text is industry attribution wording; Darwin
+  will supply the operator's passenger sentence, with its own
+  `CancellationReasons` reference table, once DS-152 lands.
+
+Since DS-181, `trust-backlog-consumer` also stores `0005` Reinstatements
+and uncoded `0002`/`0006` messages (`reason_code` `''`), for their location
+and time.
+
+Since DS-184 the list rows (`GET /Journeys/mine`, `GET /Train/mine`) carry
+a compact `cancellation`, and the notifier words cancellation pushes from
+the same rules, without the LDBWS board overlay (so a push's reason is
+always the TRUST one). A push decided before TRUST's reason is stored gets
+one follow-up, replacing it on the device, if the reason arrives within 15
+minutes (`crates/notifier/src/cancel_reason.rs`).
 
 ## Per-stop status
 

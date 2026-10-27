@@ -1281,6 +1281,7 @@ mod db_tests {
                 "delayMinutes": 3,
                 "delayProvisional": false,
                 "cancelled": false,
+                "cancelReason": null,
                 "lastReportedLocation": "Crewe",
             }),
         );

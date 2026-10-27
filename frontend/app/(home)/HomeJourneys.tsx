@@ -36,6 +36,7 @@ import {
 } from '@/lib/journeyName';
 import { legStatusGroup, type JourneySummaryGroup } from '@/lib/journeyStatus';
 import { routeLabel, stationLabel } from '@/lib/stationLabel';
+import { journeyListItemCancellation } from '@/lib/trackedRowStatus';
 import { trackedTrainDisplayName, trackedTrainHref, trackedTrainRouteLabel } from '@/lib/trackingName';
 import { isUntrackedLeg, untrackedLegPlaces, untrackedLegTimes, untrackedLegTitle } from '@/lib/untrackedLeg';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
@@ -138,7 +139,9 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
                 <CardTitleLink href={`/journeys/${detail.id}`}>{journeyDisplayName(name)}</CardTitleLink>
               </Text>
             }
-            trailing={<JourneyStatusGroupBadge group={headline} />}
+            trailing={
+              <JourneyStatusGroupBadge group={headline} cancellation={journeyListItemCancellation(journey.item)} />
+            }
           />
           {preview && (
             <Text size="sm" c="dimmed">
@@ -208,7 +211,12 @@ export function HomeJourneyRow({ journey }: { journey: HomeJourney }) {
             </Text>
           )
         }
-        trailing={<JourneyStatusGroupBadge group={homeJourneyStatusGroup(journey)} />}
+        trailing={
+          <JourneyStatusGroupBadge
+            group={homeJourneyStatusGroup(journey)}
+            cancellation={journeyListItemCancellation(journey.item)}
+          />
+        }
       />
     </ClickableCard>
   );
