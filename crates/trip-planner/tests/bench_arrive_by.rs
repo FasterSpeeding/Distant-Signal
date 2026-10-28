@@ -247,12 +247,13 @@ fn bench_arrive_by_and_restrictions() {
     reason = "one benchmark table, read top to bottom"
 )]
 fn bench_waypoints() {
-    if !bench_requested() {
-        return;
-    }
     use trip_planner::{
         StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
     };
+
+    if !bench_requested() {
+        return;
+    }
     let (connections, interchange) = network();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     let mut rng = Rng(11);
@@ -388,12 +389,13 @@ fn bench_vias(connections: &[Connection], count: usize) -> trip_planner::Vias {
 #[test]
 #[ignore = "benchmark; see the module doc"]
 fn bench_max_changes_and_vias() {
-    if !bench_requested() {
-        return;
-    }
     use trip_planner::{
         StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
     };
+
+    if !bench_requested() {
+        return;
+    }
     let (connections, interchange) = network();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     println!(
@@ -554,12 +556,13 @@ fn bench_group_vias(connections: &[Connection], count: usize, members: u64) -> t
 #[test]
 #[ignore = "benchmark; see the module doc"]
 fn bench_group_vias_against_single() {
-    if !bench_requested() {
-        return;
-    }
     use trip_planner::{
         StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
     };
+
+    if !bench_requested() {
+        return;
+    }
     let (connections, interchange) = network();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     println!(
@@ -663,12 +666,13 @@ fn bench_group_waypoints(count: usize, members: u64) -> Vec<Vec<String>> {
 #[test]
 #[ignore = "benchmark; see the module doc"]
 fn bench_group_waypoints_against_single() {
-    if !bench_requested() {
-        return;
-    }
     use trip_planner::{
         StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
     };
+
+    if !bench_requested() {
+        return;
+    }
     let (connections, interchange) = network();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     println!(
@@ -980,11 +984,11 @@ fn bench_fixed_links_both_ways() {
 #[test]
 #[ignore = "benchmark; see the module doc"]
 fn bench_staged_fixed_links_both_ways() {
+    use trip_planner::{StagedOptions, raptor_staged, scan_staged, staged_arrive_by};
+
     if !bench_requested() {
         return;
     }
-    use trip_planner::{StagedOptions, raptor_staged, scan_staged, staged_arrive_by};
-
     let (connections, one_way, both_ways) = link_indexes();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     let vias = bench_vias(&connections, 1);
@@ -1165,11 +1169,11 @@ fn bench_max_changes_cap() {
     reason = "one benchmark table, read top to bottom"
 )]
 fn bench_live_overlay() {
+    use trip_planner::ConnectionOverlay;
+
     if !bench_requested() {
         return;
     }
-    use trip_planner::ConnectionOverlay;
-
     let (connections, interchange) = network();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     let mut uids: Vec<&str> = connections.iter().map(|c| c.uid.as_str()).collect();

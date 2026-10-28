@@ -96,6 +96,8 @@ class GateTests(unittest.TestCase):
             ),
             'let Some(v) = std::env::var_os("X") else { return; };\nwork(v);',
             '// a comment first\nif std::env::var("X").is_err() { return; }\nwork();',
+            # `use` items before the gate run nothing.
+            'use a::{b, c};\nuse d::e;\n\nif std::env::var("X").is_err() { return; }',
         ):
             with self.subTest(body=body):
                 self.assertEqual(self.bench(body), [])

@@ -19,7 +19,8 @@ return early unless an environment variable is set. Accepted gates, any variable
 
 where `helper` is a function in the same file whose body reads
 `std::env::var` or `std::env::var_os`. `env::var(...)` with the `std::`
-path imported works too.
+path imported works too. `use` declarations may come before the gate:
+they are items, not statements, and run nothing.
 
 PATH defaults to crates/. Findings are GitHub Actions `::error file=...::`
 lines on stdout; exit 1 if any. Stdlib only.
@@ -59,6 +60,8 @@ GATES = (
         + RETURN_BLOCK
     ),
 )
+# `use` declarations before the first statement (they run nothing).
+LEADING_USES = re.compile(r"\A(?:\s*use\s[^;]*;)+")
 HELPER_GATE = re.compile(
     r"if\s+!\s*(?P<helper>[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*" + RETURN_BLOCK
 )
@@ -155,7 +158,7 @@ def function_bodies(source: str) -> dict[str, str]:
 
 def is_gated(body: str, bodies: dict[str, str]) -> bool:
     """Whether `body` starts with an env-var gate that returns early."""
-    head = body.lstrip()
+    head = LEADING_USES.sub("", body).lstrip()
     if any(gate.match(head) for gate in GATES):
         return True
     helper = HELPER_GATE.match(head)
