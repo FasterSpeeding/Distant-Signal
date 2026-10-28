@@ -1,11 +1,13 @@
 //! Latency of the arrive-by and restricted searches against the existing
 //! depart-after ones, on a synthetic whole-day network somewhat above
 //! production scale (~28k trains, ~400k connections, 2,000 stations;
-//! production is ~25k schedules and ~290k connections). Ignored by default;
-//! run in release mode:
+//! production is ~25k schedules and ~290k connections). Ignored by default,
+//! and a no-op unless `DS_RUN_ARRIVE_BY_BENCH` is set (CI runs every
+//! `--ignored` test, in debug; scripts/check-bench-gates.py checks the
+//! gate). Run it in release mode:
 //!
 //! ```text
-//! cargo test --release -p trip-planner --test bench_arrive_by -- --ignored --nocapture
+//! DS_RUN_ARRIVE_BY_BENCH=1 cargo test --release -p trip-planner --test bench_arrive_by -- --ignored --nocapture
 //! ```
 //!
 //! Synthetic because the searches' cost depends on the connection count
@@ -124,9 +126,17 @@ fn median(mut f: impl FnMut() -> usize) -> (Duration, usize) {
     (samples[2], found)
 }
 
+/// The benchmarks only run when asked for (see the module doc).
+fn bench_requested() -> bool {
+    std::env::var_os("DS_RUN_ARRIVE_BY_BENCH").is_some()
+}
+
 #[test]
 #[ignore = "benchmark; see the module doc"]
 fn bench_arrive_by_and_restrictions() {
+    if !bench_requested() {
+        return;
+    }
     let (connections, interchange) = network();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     let mut rng = Rng(7);
@@ -240,6 +250,10 @@ fn bench_waypoints() {
     use trip_planner::{
         StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
     };
+
+    if !bench_requested() {
+        return;
+    }
     let (connections, interchange) = network();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     let mut rng = Rng(11);
@@ -378,6 +392,10 @@ fn bench_max_changes_and_vias() {
     use trip_planner::{
         StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
     };
+
+    if !bench_requested() {
+        return;
+    }
     let (connections, interchange) = network();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     println!(
@@ -541,6 +559,10 @@ fn bench_group_vias_against_single() {
     use trip_planner::{
         StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
     };
+
+    if !bench_requested() {
+        return;
+    }
     let (connections, interchange) = network();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     println!(
@@ -647,6 +669,10 @@ fn bench_group_waypoints_against_single() {
     use trip_planner::{
         StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
     };
+
+    if !bench_requested() {
+        return;
+    }
     let (connections, interchange) = network();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     println!(
@@ -862,6 +888,9 @@ fn link_indexes() -> (Vec<Connection>, InterchangeData, InterchangeData) {
 #[test]
 #[ignore = "benchmark; see the module doc"]
 fn bench_fixed_links_both_ways() {
+    if !bench_requested() {
+        return;
+    }
     let (connections, one_way, both_ways) = link_indexes();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     let mut rng = Rng(0x0a1f);
@@ -957,6 +986,9 @@ fn bench_fixed_links_both_ways() {
 fn bench_staged_fixed_links_both_ways() {
     use trip_planner::{StagedOptions, raptor_staged, scan_staged, staged_arrive_by};
 
+    if !bench_requested() {
+        return;
+    }
     let (connections, one_way, both_ways) = link_indexes();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     let vias = bench_vias(&connections, 1);
@@ -1047,6 +1079,9 @@ fn bench_staged_fixed_links_both_ways() {
 #[test]
 #[ignore = "benchmark; see the module doc"]
 fn bench_max_changes_cap() {
+    if !bench_requested() {
+        return;
+    }
     let (connections, _, interchange) = link_indexes();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     let mut rng = Rng(0x0d85);
@@ -1136,6 +1171,9 @@ fn bench_max_changes_cap() {
 fn bench_live_overlay() {
     use trip_planner::ConnectionOverlay;
 
+    if !bench_requested() {
+        return;
+    }
     let (connections, interchange) = network();
     let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
     let mut uids: Vec<&str> = connections.iter().map(|c| c.uid.as_str()).collect();
@@ -1282,6 +1320,9 @@ fn thread_cpu() -> Duration {
 #[test]
 #[ignore = "benchmark; see the module doc"]
 fn bench_fastest_cpu() {
+    if !bench_requested() {
+        return;
+    }
     let reps: usize = std::env::var("DS_BENCH_REPS")
         .ok()
         .and_then(|value| value.parse().ok())
