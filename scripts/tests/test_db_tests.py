@@ -237,6 +237,21 @@ class RunTests(unittest.TestCase):
             self.assertEqual(argv[:2], ["nextest", "run"])
             self.assertNotIn("--archive-file", argv)
 
+    def test_extracts_where_asked(self) -> None:
+        """--extract-to: the binaries land where build-time paths point."""
+        where = Path(self.tmp.name) / "checkout"
+        out = io.StringIO()
+        with redirect_stdout(out):
+            status = db.run_pass(
+                "new", Path("a.tar.zst"), extract_to=where, base_env=self.env
+            )
+        self.assertEqual(status, 0, out.getvalue())
+        extract, run = (call["argv"] for call in self.calls())
+        self.assertEqual(extract[extract.index("--extract-to") + 1], str(where))
+        self.assertEqual(
+            run[run.index("--target-dir-remap") + 1], str(where / "target")
+        )
+
     def test_steps_without_a_role_keep_database_url(self) -> None:
         """The app-role passes keep the DATABASE_URL test-postgres-roles set."""
         status, _ = self.run_pass("new", self.env)

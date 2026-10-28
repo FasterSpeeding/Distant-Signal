@@ -395,7 +395,10 @@ jobs:
   # The superuser pass on the `postgres` database the migrations ran on,
   # plus the Redis-only and fake-gcs-server suites. Its steps (the
   # #[sqlx::test] modules run only here) are scripts/db-tests.py's
-  # `superuser` pass.
+  # `superuser` pass. Every pass extracts the archive into the checkout
+  # (--extract-to), where rust-db-build's target/ was: build-time paths
+  # such as `env!("CARGO_BIN_EXE_api")` (the ticket-parse child's tests)
+  # then still point at the binaries.
   rust-db-test-superuser:
     name: DB tests as the superuser (+ Redis, fake-gcs-server)
     needs: rust-db-build
@@ -516,7 +519,7 @@ jobs:
       - name: DB/Redis-backed tests as the superuser (scripts/db-tests.py run superuser)
         env:
           FAKE_GCS_URL: http://127.0.0.1:4443
-        run: uv run --no-sync scripts/db-tests.py run superuser --archive-file "${RUNNER_TEMP}/db-tests/db-tests.tar.zst"
+        run: uv run --no-sync scripts/db-tests.py run superuser --archive-file "${RUNNER_TEMP}/db-tests/db-tests.tar.zst" --extract-to "${GITHUB_WORKSPACE}"
 
   # The Postgres role split (docs/postgres-app-role.md): proves no runtime
   # path needs a superuser. scripts/test-postgres-roles.py makes a fresh
@@ -607,12 +610,12 @@ jobs:
       - name: DB-backed tests as the non-superuser app role (existing cluster)
         run: >-
           uv run --no-sync scripts/test-postgres-roles.py --mode existing --check-setup-job --
-          uv run --no-sync scripts/db-tests.py run existing --archive-file "${RUNNER_TEMP}/db-tests/db-tests.tar.zst"
+          uv run --no-sync scripts/db-tests.py run existing --archive-file "${RUNNER_TEMP}/db-tests/db-tests.tar.zst" --extract-to "${GITHUB_WORKSPACE}"
 
       - name: DB-backed tests as the non-superuser app role (new cluster)
         run: >-
           uv run --no-sync scripts/test-postgres-roles.py --mode new --
-          uv run --no-sync scripts/db-tests.py run new --archive-file "${RUNNER_TEMP}/db-tests/db-tests.tar.zst"
+          uv run --no-sync scripts/db-tests.py run new --archive-file "${RUNNER_TEMP}/db-tests/db-tests.tar.zst" --extract-to "${GITHUB_WORKSPACE}"
 
   # Stage 0b (postgresql.roles.perService): the same suites, each as its
   # own service's role from files/postgres-grants.sql. The roles are
@@ -733,12 +736,12 @@ jobs:
       - name: DB-backed tests as each service's own role (Stage 0b)
         run: >-
           uv run --no-sync scripts/test-postgres-roles.py --mode per-service --check-setup-job --
-          uv run --no-sync scripts/db-tests.py run per-service --archive-file "${RUNNER_TEMP}/db-tests/db-tests.tar.zst"
+          uv run --no-sync scripts/db-tests.py run per-service --archive-file "${RUNNER_TEMP}/db-tests/db-tests.tar.zst" --extract-to "${GITHUB_WORKSPACE}"
 
       - name: Release D's narrowed roles (api, aggregator, enricher, notifier)
         run: >-
           uv run --no-sync scripts/test-postgres-roles.py --mode per-service --narrow api,aggregator,enricher,notifier --
-          uv run --no-sync scripts/db-tests.py run narrow --archive-file "${RUNNER_TEMP}/db-tests/db-tests.tar.zst"
+          uv run --no-sync scripts/db-tests.py run narrow --archive-file "${RUNNER_TEMP}/db-tests/db-tests.tar.zst" --extract-to "${GITHUB_WORKSPACE}"
 
   # The old single job's check name, for anything that waits on it: green
   # only when the archive built and every pass passed.

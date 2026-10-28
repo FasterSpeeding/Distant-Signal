@@ -364,15 +364,20 @@ def run_pass(
     name: str,
     archive: Path | None,
     *,
+    extract_to: Path | None = None,
     dry_run: bool = False,
     base_env: Mapping[str, str] | None = None,
 ) -> int:
-    """Run every step of a pass in order; return the first failing status."""
+    """Run every step of a pass in order; return the first failing status.
+
+    The archive is extracted once, into `extract_to` (its `target/` lands
+    there) or a temporary directory.
+    """
     env_base = dict(os.environ if base_env is None else base_env)
     with tempfile.TemporaryDirectory(prefix="db-tests-") as scratch:
         extracted = None
         if archive is not None:
-            extracted = Path(scratch)
+            extracted = Path(scratch) if extract_to is None else extract_to
             argv = extract_argv(archive, extracted)
             print(f"== {shlex.join(argv)}", flush=True)
             if not dry_run:
@@ -410,6 +415,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     run = sub.add_parser("run", help="run one pass's steps")
     run.add_argument("pass_name", metavar="PASS", choices=sorted(PASSES))
     run.add_argument("--archive-file", type=Path)
+    run.add_argument(
+        "--extract-to",
+        type=Path,
+        help=(
+            "extract the archive here (its target/ lands in DIR/target; default: "
+            "a temporary directory). CI passes the checkout, where the build job's "
+            'target/ was: `env!("CARGO_BIN_EXE_api")` and other build-time paths '
+            "are compiled in"
+        ),
+    )
     run.add_argument("--dry-run", action="store_true", help="print the commands only")
     sub.add_parser("list-passes", help="print each pass's steps as cargo test commands")
     args = parser.parse_args(argv)
@@ -422,7 +437,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return subprocess.run(command, check=False).returncode  # noqa: S603  # argv built above
     if args.command == "run":
         archive = None if args.archive_file is None else args.archive_file.resolve()
-        return run_pass(args.pass_name, archive, dry_run=args.dry_run)
+        return run_pass(
+            args.pass_name,
+            archive,
+            extract_to=None if args.extract_to is None else args.extract_to.resolve(),
+            dry_run=args.dry_run,
+        )
     for name, steps in PASSES.items():
         print(f"{name}:")
         for step in steps:
