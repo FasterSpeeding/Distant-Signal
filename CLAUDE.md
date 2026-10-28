@@ -41,15 +41,23 @@ uv sync --locked --group lint
 uv run --no-sync scripts/gen-db-grants.py check --database-url "${DATABASE_URL}"
 ```
 
-CI also runs each DB suite as its service's own Postgres role (full chain in
-ci.yml's "DB-backed tests as each service's own role" step); its shape:
+CI builds those test binaries once (`rust-db-build`, a cargo-nextest
+archive) and runs its passes from it in three parallel jobs: as the
+superuser, as the app role (existing and new cluster), and as each
+service's own Postgres role. `scripts/db-tests.py` holds every pass's steps
+(each a former `cargo test` line; `list-passes` prints them); with
+cargo-nextest installed it runs a pass locally, building from source:
 
 ```sh
-uv run --no-sync scripts/test-postgres-roles.py --mode per-service --check-setup-job -- sh -c '
-  skip="--skip corpus::db_tests --skip crosswalk::db_tests --skip freshness::db_tests --skip line_timetable::db_tests --skip reads::db_tests"
-  DATABASE_URL="$DATABASE_URL_API" cargo test -p api -- --ignored --test-threads=1 $skip &&
-  DATABASE_URL="$DATABASE_URL_NOTIFIER" cargo test -p notifier -- --ignored --test-threads=1 $skip'
+uv run scripts/db-tests.py list-passes
+uv run scripts/db-tests.py run superuser                 # DATABASE_URL, REDIS_URL, FAKE_GCS_URL
+uv run --no-sync scripts/test-postgres-roles.py --mode per-service --check-setup-job -- \
+  uv run --no-sync scripts/db-tests.py run per-service   # DATABASE_URL_<ROLE> per step
 ```
+
+An `#[ignore]`d benchmark must return early unless its env var is set
+(`scripts/check-bench-gates.py`, in scripts-lint): the DB jobs run every
+ignored test, in debug.
 
 Frontend (run in `frontend/`, Node 22; `check-copy.py` runs from the repo root):
 
