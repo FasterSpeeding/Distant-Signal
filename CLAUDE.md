@@ -51,7 +51,8 @@ cargo-nextest installed it runs a pass locally, building from source:
 ```sh
 uv run scripts/db-tests.py list-passes
 uv run scripts/db-tests.py run superuser                 # DATABASE_URL, REDIS_URL, FAKE_GCS_URL
-uv run --no-sync scripts/test-postgres-roles.py --mode per-service --check-setup-job -- \
+uv run --no-sync scripts/test-postgres-roles.py --mode per-service --check-setup-job \
+  --observe api,aggregator,enricher,notifier -- \
   uv run --no-sync scripts/db-tests.py run per-service   # DATABASE_URL_<ROLE> per step
 ```
 
