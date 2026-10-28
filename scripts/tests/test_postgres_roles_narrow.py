@@ -1,9 +1,10 @@
 """Tests for scripts/test-postgres-roles.py --narrow (DS-118).
 
 `render_narrowed` renders postgres-grants.sql as if the named roles were
-`status: narrow` in db-grants.yaml, so CI can run release D's narrowing
-before db-grants.yaml makes it. CI's "Release D's narrowed roles" step runs
-it against Postgres.
+`status: narrow` in db-grants.yaml, so CI ran release D's narrowing before
+db-grants.yaml made it (2026-10-28). CI's "Release D's narrowed roles" step
+runs it against Postgres; its per-service step runs the four roles'
+suites `--observe`d until their fixtures move to the owner.
 """
 
 import importlib.util
@@ -40,13 +41,19 @@ class RenderNarrowedTest(unittest.TestCase):
     def test_the_named_roles_render_narrow_and_get_their_own_grants(self) -> None:
         """A narrowed role leaves app and gets its db-grants.yaml rows."""
         committed = self.script.GRANTS_SQL.read_text(encoding="utf-8")
-        self.assertIn("('api', 'observed')", committed)
-        narrowed = self.script.render_narrowed(["api", "aggregator"])
+        # Release D (2026-10-28): the committed SQL narrows all four.
+        for kind in ("api", "aggregator", "enricher", "notifier"):
+            self.assertIn(f"('{kind}', 'narrow')", committed)
+            self.assertNotIn(f"('{kind}', 'observed')", committed)
+        narrowed = self.script.render_with_statuses(
+            {"api": "narrow", "aggregator": "narrow", "notifier": "observed"}
+        )
         self.assertIn("('api', 'narrow')", narrowed)
         self.assertIn("('aggregator', 'narrow')", narrowed)
         self.assertNotIn("('api', 'observed')", narrowed)
-        # Untouched roles keep their status.
         self.assertIn("('notifier', 'observed')", narrowed)
+        # Unnamed roles keep their db-grants.yaml status.
+        self.assertIn("('enricher', 'narrow')", narrowed)
         # The grants DS-118 adds: the api's outbox insert, the aggregator's
         # UPDATE on trains.id for its archive's row lock.
         self.assertIn(
@@ -62,6 +69,13 @@ class RenderNarrowedTest(unittest.TestCase):
         rendered = self.script.render_with_statuses({"writer": "observed"})
         self.assertIn("('writer', 'observed')", rendered)
         self.assertNotIn("('trains', 'writer', 'INSERT'", rendered)
+        # CI's per-service step: release D's four, observed again.
+        rendered = self.script.render_with_statuses(
+            dict.fromkeys(("api", "aggregator", "enricher", "notifier"), "observed")
+        )
+        self.assertIn("('api', 'observed')", rendered)
+        self.assertNotIn("('train_event_outbox', 'api', 'INSERT'", rendered)
+        self.assertNotIn("('trains', 'aggregator', 'UPDATE'", rendered)
 
     def test_an_unknown_role_is_refused(self) -> None:
         """A typo must not silently narrow nothing."""

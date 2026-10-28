@@ -45,7 +45,8 @@ CI also runs each DB suite as its service's own Postgres role (full chain in
 ci.yml's "DB-backed tests as each service's own role" step); its shape:
 
 ```sh
-uv run --no-sync scripts/test-postgres-roles.py --mode per-service --check-setup-job -- sh -c '
+uv run --no-sync scripts/test-postgres-roles.py --mode per-service --check-setup-job \
+  --observe api,aggregator,enricher,notifier -- sh -c '
   skip="--skip corpus::db_tests --skip crosswalk::db_tests --skip freshness::db_tests --skip line_timetable::db_tests --skip reads::db_tests"
   DATABASE_URL="$DATABASE_URL_API" cargo test -p api -- --ignored --test-threads=1 $skip &&
   DATABASE_URL="$DATABASE_URL_NOTIFIER" cargo test -p notifier -- --ignored --test-threads=1 $skip'
