@@ -9,13 +9,53 @@ suites `--observe`d until their fixtures move to the owner.
 
 import importlib.util
 import pathlib
+import shlex
 import sys
 import types
 import unittest
-from typing import override
+from typing import Any, cast, override
+
+import yaml
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "test-postgres-roles.py"
+CI = REPO / ".github" / "workflows" / "ci.yml"
+GRANTS_YAML = REPO / "charts" / "distant-signal" / "files" / "db-grants.yaml"
+
+
+def per_service_runs() -> dict[str, list[str]]:
+    """Return {db-tests.py pass: test-postgres-roles.py args} from ci.yml.
+
+    Each step that runs `test-postgres-roles.py --mode per-service -- ...
+    db-tests.py run PASS`, keyed by PASS.
+    """
+    workflow = cast("dict[str, Any]", yaml.safe_load(CI.read_text(encoding="utf-8")))
+    runs: dict[str, list[str]] = {}
+    for job in cast("dict[str, dict[str, Any]]", workflow["jobs"]).values():
+        for step in cast("list[dict[str, Any]]", job.get("steps") or []):
+            text = str(step.get("run") or "")
+            if "scripts/test-postgres-roles.py" not in text:
+                continue
+            argv = shlex.split(text)
+            if "--" not in argv:
+                continue
+            split = argv.index("--")
+            roles_args, command = argv[:split], argv[split + 1 :]
+            if "--mode" not in roles_args:
+                continue
+            if roles_args[roles_args.index("--mode") + 1] != "per-service":
+                continue
+            script = command.index("scripts/db-tests.py")
+            if command[script + 1] == "run":
+                runs[command[script + 2]] = roles_args
+    return runs
+
+
+def flag(args: list[str], name: str) -> set[str]:
+    """Return the comma-separated roles of --name in args (empty if absent)."""
+    if name not in args:
+        return set()
+    return set(args[args.index(name) + 1].split(","))
 
 
 def load_script() -> types.ModuleType:
@@ -81,6 +121,35 @@ class RenderNarrowedTest(unittest.TestCase):
         """A typo must not silently narrow nothing."""
         with self.assertRaises(RuntimeError):
             self.script.render_narrowed(["apii"])
+
+
+class CiInvocationTest(unittest.TestCase):
+    """ci.yml's per-service passes against db-grants.yaml (release D)."""
+
+    def test_the_stage_0b_pass_observes_exactly_the_release_d_roles(self) -> None:
+        """Release D's roles: observed for the full suites, narrowed for the rest.
+
+        The narrowed pass narrows the same roles, and that set is
+        db-grants.yaml's phase 5 narrow roles: a role narrowed in
+        production without both passes, or a list left behind, fails here.
+        """
+        raw = cast(
+            "dict[str, Any]", yaml.safe_load(GRANTS_YAML.read_text(encoding="utf-8"))
+        )
+        release_d = {
+            key
+            for key, role in cast("dict[str, dict[str, Any]]", raw["roles"]).items()
+            if role.get("status") == "narrow" and str(role.get("phase")) == "5"
+        }
+        self.assertEqual(release_d, {"api", "aggregator", "enricher", "notifier"})
+        runs = per_service_runs()
+        self.assertEqual(set(runs), {"per-service", "narrow"})
+        stage_0b = runs["per-service"]
+        self.assertIn("--check-setup-job", stage_0b)
+        self.assertEqual(flag(stage_0b, "--observe"), release_d)
+        self.assertEqual(flag(stage_0b, "--narrow"), set())
+        self.assertEqual(flag(runs["narrow"], "--narrow"), release_d)
+        self.assertEqual(flag(runs["narrow"], "--observe"), set())
 
 
 if __name__ == "__main__":

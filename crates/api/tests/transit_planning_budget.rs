@@ -12,10 +12,12 @@
 //!   weekday), built by `api::data::transit_planning` exactly as the api
 //!   does.
 //!
-//! Ignored by default; run in release mode:
+//! Ignored by default, and a no-op unless `DS_RUN_BUDGET_BENCH` is set, so
+//! CI's DB job (which runs every `--ignored` test, in debug) skips it. Run
+//! it in release mode:
 //!
 //! ```text
-//! cargo test --release -p api --test transit_planning_budget -- --ignored --nocapture --test-threads=1
+//! DS_RUN_BUDGET_BENCH=1 cargo test --release -p api --test transit_planning_budget -- --ignored --nocapture --test-threads=1
 //! ```
 //!
 //! Memory is this process's resident set (`common::heap`), read after
@@ -323,9 +325,19 @@ fn held(with_trams: bool) -> (usize, Graph) {
     (settled_rss().saturating_sub(before), graph)
 }
 
+/// The benchmarks only run when asked for (see the module doc): in a debug
+/// build on a shared CI runner they take minutes and their timing ratio is
+/// noise.
+fn bench_requested() -> bool {
+    std::env::var_os("DS_RUN_BUDGET_BENCH").is_some()
+}
+
 #[test]
 #[ignore = "benchmark; see the module doc"]
 fn memory_budget() {
+    if !bench_requested() {
+        return;
+    }
     common::heap::pin_mmap_threshold();
     // Both held at once, as the cache holds its dates.
     let (rail, rail_graph) = held(false);
@@ -379,6 +391,9 @@ fn median(samples: &mut [Duration]) -> Duration {
 #[test]
 #[ignore = "benchmark; see the module doc"]
 fn latency_budget() {
+    if !bench_requested() {
+        return;
+    }
     // RAPTOR relaxes fixed links recursively, and a synthetic link network
     // can chain further than the ALF does: a large stack keeps this a
     // benchmark of time, not of stack depth.
