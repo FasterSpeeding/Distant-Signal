@@ -535,7 +535,7 @@ const OLD_STREET_REAL_IDS: &[&str] = &["940GZZLUEUS", OLD_STREET];
 /// `(stop id, name, (latitude, longitude), hub CRS)`.
 type OldStreetStop<'a> = (&'a str, &'a str, (f64, f64), Option<&'a str>);
 
-const OLD_STREET_STOPS: [OldStreetStop<'static>; 5] = [
+const OLD_STREET_STOPS: [OldStreetStop<'static>; 17] = [
     ("940GZZLUEUS", "Test Euston", (55.5282, 2.3663), None),
     ("940GZZTSKSX", "Test King's Cross", (55.5308, 2.3762), None),
     ("940GZZTSAGL", "Test Angel", (55.5322, 2.3942), None),
@@ -551,6 +551,58 @@ const OLD_STREET_STOPS: [OldStreetStop<'static>; 5] = [
         (55.5186, 2.4114),
         Some("ZTG"),
     ),
+    // The rest of the loop (DS-187): on by Bank to Kennington, and back up
+    // by Charing Cross to Euston, so a spanning tree breaks it.
+    ("940GZZTSBNK", "Test Bank", (55.5133, 2.4114), None),
+    ("940GZZTSLNB", "Test London Bridge", (55.5052, 2.4136), None),
+    ("940GZZTSBOR", "Test Borough", (55.5011, 2.4057), None),
+    ("940GZZTSEAC", "Test Elephant", (55.4943, 2.3999), None),
+    ("940GZZTSKNG", "Test Kennington", (55.4884, 2.3947), None),
+    ("940GZZTSWLO", "Test Waterloo", (55.5036, 2.3857), None),
+    ("940GZZTSEMB", "Test Embankment", (55.5074, 2.3777), None),
+    ("940GZZTSCHX", "Test Charing Cross", (55.5080, 2.3753), None),
+    (
+        "940GZZTSLSQ",
+        "Test Leicester Square",
+        (55.5113, 2.3719),
+        None,
+    ),
+    (
+        "940GZZTSTCR",
+        "Test Tottenham Court Road",
+        (55.5165, 2.3690),
+        None,
+    ),
+    ("940GZZTSGDG", "Test Goodge Street", (55.5205, 2.3654), None),
+    ("940GZZTSWRR", "Test Warren Street", (55.5247, 2.3616), None),
+];
+
+/// The loop's two routes, as stop ids from Euston: by Bank, and by
+/// Charing Cross, each to Kennington.
+const OLD_STREET_ROUTES: [&[&str]; 2] = [
+    &[
+        "940GZZLUEUS",
+        "940GZZTSKSX",
+        "940GZZTSAGL",
+        OLD_STREET,
+        "940GZZTSMGT",
+        "940GZZTSBNK",
+        "940GZZTSLNB",
+        "940GZZTSBOR",
+        "940GZZTSEAC",
+        "940GZZTSKNG",
+    ],
+    &[
+        "940GZZLUEUS",
+        "940GZZTSWRR",
+        "940GZZTSGDG",
+        "940GZZTSTCR",
+        "940GZZTSLSQ",
+        "940GZZTSCHX",
+        "940GZZTSEMB",
+        "940GZZTSWLO",
+        "940GZZTSKNG",
+    ],
 ];
 
 /// `(crs, tiploc, (latitude, longitude))`.
@@ -560,7 +612,9 @@ const OLD_STREET_STATIONS: [(&str, &str, (f64, f64)); 3] = [
     ("ZTG", "TTMRGT", (55.5186, 2.4114)),
 ];
 
-async fn seed_old_street(pool: &PgPool) {
+/// The Old Street fixture, with its routes or (as before poller-tfl's
+/// routes job first ran) none.
+async fn seed_old_street(pool: &PgPool, routes: bool) {
     let line = serde_json::json!([{ "id": OLD_STREET_LINE, "name": "Northern" }]);
     for (id, name, (lat, lon), hub) in OLD_STREET_STOPS {
         sqlx::query(
@@ -584,20 +638,26 @@ async fn seed_old_street(pool: &PgPool) {
                 .expect("seed tfl_stop_crs");
         }
     }
-    let ids: Vec<&str> = OLD_STREET_STOPS.iter().map(|(id, _, _, _)| *id).collect();
-    let back: Vec<&str> = ids.iter().rev().copied().collect();
-    for (index, (direction, stops)) in (0_i16..).zip([("outbound", ids), ("inbound", back)]) {
-        sqlx::query(
-            "INSERT INTO tfl_line_routes (line_id, direction, route_index, name, stop_ids, fetched_at) \
-             VALUES ($1, $2, $3, 'Test', $4, now())",
-        )
-        .bind(OLD_STREET_LINE)
-        .bind(direction)
-        .bind(index)
-        .bind(stops)
-        .execute(pool)
-        .await
-        .expect("seed a route");
+    let routes = if routes {
+        OLD_STREET_ROUTES.as_slice()
+    } else {
+        &[]
+    };
+    for (index, ids) in (0_i16..).zip(routes) {
+        let back: Vec<&str> = ids.iter().rev().copied().collect();
+        for (direction, stops) in [("outbound", ids.to_vec()), ("inbound", back)] {
+            sqlx::query(
+                "INSERT INTO tfl_line_routes (line_id, direction, route_index, name, stop_ids, fetched_at) \
+                 VALUES ($1, $2, $3, 'Test', $4, now())",
+            )
+            .bind(OLD_STREET_LINE)
+            .bind(direction)
+            .bind(index)
+            .bind(stops)
+            .execute(pool)
+            .await
+            .expect("seed a route");
+        }
     }
     for (crs, tiploc, (lat, lon)) in OLD_STREET_STATIONS {
         sqlx::query(
@@ -657,10 +717,52 @@ async fn seed_old_street(pool: &PgPool) {
 #[ignore = "requires a live database; run with `cargo test -p api \
             routes::trips -- --ignored --test-threads=1`"]
 async fn euston_to_old_street_is_one_northern_line_ride() {
+    euston_to_old_street(true).await;
+}
+
+/// DS-187: with no routes loaded (as before poller-tfl's routes job first
+/// ran) it is the same short ride by King's Cross and Angel, not round the
+/// loop by Charing Cross and Bank: the fallback closes the loop.
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api \
+            routes::trips -- --ignored --test-threads=1`"]
+async fn without_routes_euston_to_old_street_is_still_the_short_ride() {
+    euston_to_old_street(false).await;
+}
+
+async fn euston_to_old_street(with_routes: bool) {
     let pool = connect().await;
     seed(&pool).await;
-    seed_old_street(&pool).await;
+    seed_old_street(&pool, with_routes).await;
     let router = test_router(test_app(pool.clone()));
+    // Euston's candidate into Old Street (the station ride), each way.
+    let euston = |body: &Value, end: &str| -> Value {
+        body["access"][end]["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .find(|c| c["crs"] == "EUS")
+            .cloned()
+            .expect("an EUS candidate")
+    };
+    let check_euston = |candidate: &Value| {
+        assert_eq!(candidate["line"], "Northern", "{candidate:?}");
+        assert!(candidate.get("changeAt").is_none(), "{candidate:?}");
+        assert!(
+            candidate["distanceMetres"].as_u64().expect("distance") < 4_000,
+            "{candidate:?}"
+        );
+        if with_routes {
+            assert_eq!(candidate["minutes"], 12, "{candidate:?}");
+            assert_eq!(candidate["stopCount"], 3, "{candidate:?}");
+        } else {
+            assert!(
+                candidate["minutes"].as_i64().expect("minutes") <= 13,
+                "{candidate:?}"
+            );
+            assert!(candidate.get("stopCount").is_none(), "{candidate:?}");
+        }
+    };
 
     let (status, body) = get(
         router.clone(),
@@ -679,9 +781,13 @@ async fn euston_to_old_street_is_one_northern_line_ride() {
     assert_eq!(leg["access"]["basis"], "line");
     assert_eq!(leg["originStop"]["id"], "940GZZLUEUS");
     assert_eq!(leg["destinationStop"]["id"], OLD_STREET);
-    // About 3 km: 5 in and 7 riding, no walk out at Euston.
-    assert_eq!(leg["minutes"], 12, "{leg:?}");
-    assert_eq!(body["journeys"][0]["arrival"]["time"], "08:12:00");
+    check_euston(&euston(&body, "destination"));
+    assert_eq!(leg["minutes"], euston(&body, "destination")["minutes"]);
+    if with_routes {
+        // About 3 km: 5 in and 7 riding, no walk out at Euston.
+        assert_eq!(leg["minutes"], 12, "{leg:?}");
+        assert_eq!(body["journeys"][0]["arrival"]["time"], "08:12:00");
+    }
     // Old Street's own candidates: the hub walk first, then rides.
     let candidates = body["access"]["destination"]["candidates"]
         .as_array()
@@ -720,5 +826,6 @@ async fn euston_to_old_street_is_one_northern_line_ride() {
         [format!("TUBE {OLD_STREET}-EUS origin")]
     );
     assert_eq!(itinerary["legs"][0]["line"], "Northern");
+    check_euston(&euston(&body, "origin"));
     cleanup(&pool).await;
 }

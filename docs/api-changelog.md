@@ -3,6 +3,22 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-29: Tube rides without route data no longer go round loops
+
+No shape change. DS-MCP needs nothing new; the numbers are better (DS-187;
+`crates/api/src/data/tfl_access.rs`).
+
+- `GET /Trips/plan` with a TfL stop end, on a line with no routes in
+  `tfl_line_routes` (production until poller-tfl's routes job first runs):
+  a ride's `minutes` and `distanceMetres` (candidates, `access` legs and
+  the direct ride) were measured along a spanning tree of the line's
+  stops, which cut each loop. Euston to Old Street came out as 8.7 km and
+  23 minutes round by Charing Cross and Bank. The fallback now closes the
+  loops the tree cut, and the same ride is about 3.4 km and 12 or 13
+  minutes. As before, such a ride has no `stopCount` or `changeAt`.
+- With routes, nothing changes: Euston to Old Street is 12 minutes,
+  `stopCount` 3, no `changeAt`, either way.
+
 ## 2026-10-27: `cancellation` on list rows, and reasons in pushes
 
 Additive. DS-MCP can keep reading `status`; it should read `cancellation`

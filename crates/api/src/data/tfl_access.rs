@@ -54,15 +54,24 @@
 //!   ride needing two changes on one line is not offered. A line with no
 //!   routes, or a stop no route of its line has, falls back to a minimum
 //!   spanning tree of the line's stops by straight-line distance
-//!   ([`line_tree`]), as before DS-151: close to the track, but blind to
-//!   changes between branches. Rides stay on one line; no change between
-//!   lines is modelled.
+//!   ([`line_tree`]), as before DS-151, with the loops the tree broke
+//!   closed again ([`line_graph`]: the Northern's Angel to Old Street, so
+//!   Euston to Old Street is not measured round by Charing Cross and Bank),
+//!   measured by the shortest way through it: close to the track, but blind
+//!   to changes between branches, and short where the tree itself links
+//!   two branches no train joins (Nine Elms to Stockwell). Such a ride is
+//!   counted in [`ROUTES_MISSING_METRIC`], with a warning (throttled) when
+//!   a line has no routes at all: `tfl_line_routes` is empty until
+//!   poller-tfl's routes job runs. Rides stay on one line; no change
+//!   between lines is modelled.
 //! - A walk is the straight-line distance times [`WALK_DETOUR`], at
 //!   4.5 km/h ([`WALK_METRES_PER_MINUTE`]).
 //! - Rides run in [`SERVICE_WINDOWS`] only (about 05:30 to 00:30; the Night
 //!   Tube is not modelled); walks at any time.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use common::tfl_stops::TflStopLine;
@@ -107,6 +116,13 @@ pub const BRANCH_CHANGE_MINUTES: i32 = 5;
 /// far more often), so the second train is waited for again. Half a
 /// branch's typical 10-minute headway.
 pub const BRANCH_CHANGE_WAIT_MINUTES: i32 = 5;
+/// The no-routes fallback ([`line_graph`]) links two ends of its spanning
+/// tree when they are at most this far apart in a straight line (Angel
+/// to Old Street is 1.45 km, King's Cross to Farringdon 1.73) ...
+pub const LOOP_LINK_MAX_METRES: f64 = 1_800.0;
+/// ... and the way between them through the tree is more than this many
+/// times as far.
+pub const LOOP_LINK_DETOUR: f64 = 2.0;
 /// When a ride can be started (`HHMM`, inclusive), every day.
 pub const SERVICE_WINDOWS: [(&str, &str); 2] = [("0530", "2359"), ("0000", "0030")];
 
@@ -306,8 +322,120 @@ fn line_tree(stops: &[StopRecord], members: &[usize]) -> Vec<(usize, usize, f64)
     edges
 }
 
-/// Every stop reachable from `stops[from]` along `line`'s tree, with its
-/// distance along it.
+/// A line's stops as a graph: each stop's neighbours, with the straight
+/// line to each.
+type LineGraph = BTreeMap<usize, Vec<(usize, f64)>>;
+
+/// An entry of [`shortest`]'s queue: nearest first, then the lower index.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Queued {
+    metres: f64,
+    stop: usize,
+}
+
+impl Eq for Queued {}
+
+impl Ord for Queued {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Reversed: `BinaryHeap` pops the greatest.
+        other
+            .metres
+            .total_cmp(&self.metres)
+            .then(other.stop.cmp(&self.stop))
+    }
+}
+
+impl PartialOrd for Queued {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Dijkstra from `from` over `graph`: each stop reached, by index, with
+/// its distance. Stops early once `until` is settled.
+fn shortest(graph: &LineGraph, from: usize, until: Option<usize>) -> BTreeMap<usize, f64> {
+    let mut settled: BTreeMap<usize, f64> = BTreeMap::new();
+    let mut queue = std::collections::BinaryHeap::from([Queued {
+        metres: 0.0,
+        stop: from,
+    }]);
+    while let Some(Queued { metres, stop }) = queue.pop() {
+        if settled.contains_key(&stop) {
+            continue;
+        }
+        settled.insert(stop, metres);
+        if until == Some(stop) {
+            break;
+        }
+        for &(next, d) in graph.get(&stop).map(Vec::as_slice).unwrap_or_default() {
+            if !settled.contains_key(&next) {
+                queue.push(Queued {
+                    metres: metres + d,
+                    stop: next,
+                });
+            }
+        }
+    }
+    settled
+}
+
+/// The fallback's graph of a line with no routes (see the module doc):
+/// [`line_tree`], plus the links that close the loops the tree broke. A
+/// tree has no loops, so it cuts each of the line's loops at a link, and
+/// leaves the stops either side of the cut as two ends (stops with one
+/// neighbour): the Northern's Angel and Old Street, with Euston to Old
+/// Street the long way round by Charing Cross and Bank. So, shortest first,
+/// two ends at most [`LOOP_LINK_MAX_METRES`] apart in a straight line,
+/// whose way through the graph so far is over [`LOOP_LINK_DETOUR`] times
+/// that, are linked straight. Only ends: two stops along the tree are
+/// close in a straight line where a line bends back on itself or two
+/// branches fork (Farringdon and Blackfriars on the Circle, Chalk Farm and
+/// Kentish Town either side of Camden Town), and a link there would be a
+/// ride no train makes. A linked end is no longer one, so each loop closes
+/// once. A line's own ends (Morden, Edgware) are far apart, or near by
+/// way of the tree.
+fn line_graph(stops: &[StopRecord], members: &[usize]) -> LineGraph {
+    let mut graph: LineGraph = members.iter().map(|&m| (m, Vec::new())).collect();
+    let link = |graph: &mut LineGraph, a: usize, b: usize, d: f64| {
+        graph.entry(a).or_default().push((b, d));
+        graph.entry(b).or_default().push((a, d));
+    };
+    for (a, b, d) in line_tree(stops, members) {
+        link(&mut graph, a, b, d);
+    }
+    let end = |graph: &LineGraph, stop: usize| graph.get(&stop).is_some_and(|n| n.len() == 1);
+    let ends: Vec<usize> = members
+        .iter()
+        .copied()
+        .filter(|&m| end(&graph, m))
+        .collect();
+    let position = |i: usize| stops[i].position.unwrap_or_default();
+    let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+    for (k, &a) in ends.iter().enumerate() {
+        for &b in &ends[k + 1..] {
+            let d = metres_between(position(a), position(b));
+            if d <= LOOP_LINK_MAX_METRES {
+                pairs.push((d, a.min(b), a.max(b)));
+            }
+        }
+    }
+    pairs.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)).then(x.2.cmp(&y.2)));
+    for (d, a, b) in pairs {
+        if !(end(&graph, a) && end(&graph, b)) {
+            continue;
+        }
+        let broken = shortest(&graph, a, Some(b))
+            .get(&b)
+            .is_none_or(|&along| along > LOOP_LINK_DETOUR * d);
+        if broken {
+            link(&mut graph, a, b, d);
+        }
+    }
+    graph
+}
+
+/// Every stop reachable from `stops[from]` along `line`'s fallback graph
+/// ([`line_graph`]), with its distance along it, by index.
 fn along_line(stops: &[StopRecord], from: usize, line: &TflStopLine) -> Vec<(usize, f64)> {
     let members: Vec<usize> = stops
         .iter()
@@ -317,25 +445,9 @@ fn along_line(stops: &[StopRecord], from: usize, line: &TflStopLine) -> Vec<(usi
         })
         .map(|(index, _)| index)
         .collect();
-    let mut neighbours: HashMap<usize, Vec<(usize, f64)>> = HashMap::new();
-    for (a, b, d) in line_tree(stops, &members) {
-        neighbours.entry(a).or_default().push((b, d));
-        neighbours.entry(b).or_default().push((a, d));
-    }
-    // A tree has one path to each stop: a walk outwards finds it.
-    let mut out = Vec::new();
-    let mut seen = vec![from];
-    let mut queue = vec![(from, 0.0)];
-    while let Some((at, distance)) = queue.pop() {
-        out.push((at, distance));
-        for &(next, d) in neighbours.get(&at).map(Vec::as_slice).unwrap_or_default() {
-            if !seen.contains(&next) {
-                seen.push(next);
-                queue.push((next, distance + d));
-            }
-        }
-    }
-    out
+    shortest(&line_graph(stops, &members), from, None)
+        .into_iter()
+        .collect()
 }
 
 /// One of a line's routes as indices into the stops, in running order,
@@ -520,13 +632,24 @@ fn rides(
     best.remove(&from);
 
     // One change, at a stop reached without one, onto a route on from it.
+    // The guard, each rule also implied by the last (a route that passes
+    // `from` reaches the stops after it without a change), spelled out:
+    // - the change is never at either end: `junction` is in `best`, which
+    //   has no `from`, and a stop the second train comes back to (the
+    //   Circle's Edgware Road) is skipped;
+    // - the second train never passes back through `from`: its stops from
+    //   there on are not taken;
+    // - a stop reached without a change never gets one.
     let mut changed: BTreeMap<usize, Ride> = BTreeMap::new();
     for (&junction, first) in &best {
         for route in &line_routes {
             for k in route.positions(junction) {
                 for m in k + 1..route.stops.len() {
                     let to = route.stops[m];
-                    if to == from || best.contains_key(&to) {
+                    if to == from {
+                        break;
+                    }
+                    if to == junction || best.contains_key(&to) {
                         continue;
                     }
                     let ride = Ride {
@@ -903,6 +1026,94 @@ async fn load_routes(pool: &PgPool) -> Result<Vec<(String, Vec<String>)>> {
     .await?)
 }
 
+/// `api_tfl_access_routes_missing_total{line, reason}`: each line of a
+/// planned `TfL` stop end whose rides fall back to the spanning tree
+/// (see the module doc), `reason` `line` (no routes loaded for the line:
+/// is poller-tfl's routes job on?) or `stop` (the line's routes do not
+/// pass the stop).
+pub const ROUTES_MISSING_METRIC: &str = "api_tfl_access_routes_missing_total";
+/// At most one warning per this long, per api process, for stop ends
+/// planned with no routes loaded for a line of theirs.
+const ROUTES_MISSING_WARN_EVERY: Duration = Duration::from_secs(60 * 60);
+static ROUTES_MISSING_WARNED: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Why rides from a stop on a line fall back to the spanning tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoutesMissing {
+    /// No routes are loaded for the line.
+    Line,
+    /// The line's routes do not pass the stop.
+    Stop,
+}
+
+impl RoutesMissing {
+    fn metric_label(self) -> &'static str {
+        match self {
+            RoutesMissing::Line => "line",
+            RoutesMissing::Stop => "stop",
+        }
+    }
+}
+
+impl LineRoutes {
+    /// Why `stop`'s rides on `line` use the spanning tree, if they do.
+    fn missing(&self, line: &str, stop: usize) -> Option<RoutesMissing> {
+        match self.by_line.get(line) {
+            None => Some(RoutesMissing::Line),
+            Some(routes) if !routes.iter().any(|r| r.stops.contains(&stop)) => {
+                Some(RoutesMissing::Stop)
+            }
+            Some(_) => None,
+        }
+    }
+}
+
+/// Whether a throttled warning is due at `now`: none in the last `every`
+/// (and records it).
+fn warn_due(last: &Mutex<Option<Instant>>, now: Instant, every: Duration) -> bool {
+    let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
+    if last.is_some_and(|at| now.saturating_duration_since(at) < every) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
+/// Counts [`ROUTES_MISSING_METRIC`] for the stop end `stops[end]`, and
+/// warns (at most every [`ROUTES_MISSING_WARN_EVERY`]) when a line of it
+/// has no routes loaded at all.
+fn record_missing_routes(stops: &[StopRecord], routes: &LineRoutes, end: usize) {
+    let mut without: Vec<&str> = Vec::new();
+    for line in &stops[end].summary.lines {
+        let Some(reason) = routes.missing(&line.id, end) else {
+            continue;
+        };
+        metrics::counter!(
+            common::metrics::metric_name(ROUTES_MISSING_METRIC),
+            "line" => line.id.clone(),
+            "reason" => reason.metric_label()
+        )
+        .increment(1);
+        if reason == RoutesMissing::Line {
+            without.push(&line.id);
+        }
+    }
+    if !without.is_empty()
+        && warn_due(
+            &ROUTES_MISSING_WARNED,
+            Instant::now(),
+            ROUTES_MISSING_WARN_EVERY,
+        )
+    {
+        tracing::warn!(
+            stop = %stops[end].summary.id,
+            lines = ?without,
+            "a TfL stop end was planned with no routes loaded for its lines; rides on them are \
+             straight-line estimates (is poller-tfl's routes job on?)"
+        );
+    }
+}
+
 /// National Rail stations within `max_metres` of `position` (a bounding
 /// box read; the caller measures).
 async fn stations_near(
@@ -980,6 +1191,7 @@ pub async fn load_access(
                 name: stops[index].summary.name.clone(),
             }));
         }
+        record_missing_routes(&stops, &routes, index);
         indices[slot] = Some(index);
         ends[slot] = Some(StopAccess {
             stop: stops[index].summary.clone(),
@@ -1668,6 +1880,51 @@ mod tests {
         (stops, both_ways("northern", &[bank, charing_cross]))
     }
 
+    /// [`northern`] with its branches' first stops (positions to about
+    /// 100 m, from a map): Belsize Park and Chalk Farm (Edgware), Tufnell
+    /// Park and Kentish Town (High Barnet), Oval, Stockwell and Clapham
+    /// North (Morden), Nine Elms and Battersea Power Station. Close
+    /// branches: Chalk Farm and Kentish Town either side of Camden Town,
+    /// Nine Elms and Stockwell either side of Kennington. Routes from both
+    /// northern branches by Bank to Morden and by Charing Cross to
+    /// Battersea, and by Charing Cross to Morden from Edgware.
+    fn northern_wide() -> (Vec<StopRecord>, Vec<(String, Vec<String>)>) {
+        let (mut stops, _) = northern();
+        let n = &["northern"];
+        for (id, at) in [
+            ("BZP", (51.5504, -0.1642)),
+            ("CFM", (51.5441, -0.1538)),
+            ("TFP", (51.5567, -0.1376)),
+            ("KTN", (51.5503, -0.1405)),
+            ("OVL", (51.4819, -0.1127)),
+            ("SKW", (51.4723, -0.1229)),
+            ("CPN", (51.4649, -0.1299)),
+            ("NEM", (51.4799, -0.1286)),
+            ("BPS", (51.4794, -0.1422)),
+        ] {
+            stops.push(stop(&format!("940GZZLU{id}"), n, at, &[]));
+        }
+        let bank = [
+            "EUS", "KSX", "AGL", "ODS", "MGT", "BNK", "LNB", "BOR", "EAC", "KNG",
+        ];
+        let charing_cross = [
+            "MTC", "EUS", "WRR", "GDG", "TCR", "LSQ", "CHX", "EMB", "WLO", "KNG",
+        ];
+        let route = |north: &[&str], middle: &[&str], south: &[&str]| {
+            ids(&[north, &["CTN"], middle, south].concat())
+        };
+        let (barnet, edgware) = (["TFP", "KTN"], ["BZP", "CFM"]);
+        let (morden, battersea) = (["OVL", "SKW", "CPN"], ["NEM", "BPS"]);
+        let routes = [
+            route(&barnet, &bank, &morden),
+            route(&edgware, &bank, &morden),
+            route(&barnet, &charing_cross, &battersea),
+            route(&edgware, &charing_cross, &battersea),
+            route(&edgware, &charing_cross, &morden),
+        ];
+        (stops, both_ways("northern", &routes))
+    }
+
     fn ride_metres(
         stops: &[StopRecord],
         routes: &LineRoutes,
@@ -1701,8 +1958,148 @@ mod tests {
         assert!((along - back).abs() < 1.0);
         // The spanning tree breaks the loop between Angel and Old Street,
         // and goes round by Bank and Charing Cross: over twice as far.
-        let tree = ride_metres(&stops, &LineRoutes::default(), "northern", ods, eus);
+        let members: Vec<usize> = (0..stops.len()).collect();
+        let tree = tree_metres(&stops, &members, index(&stops, ods))[&index(&stops, eus)];
         assert!(tree > 2.0 * along, "{tree}");
+        // The fallback closes it again: the same way as the route.
+        let fallback = ride_metres(&stops, &LineRoutes::default(), "northern", ods, eus);
+        assert!((fallback - along).abs() < 1.0, "{fallback}");
+    }
+
+    /// Each stop of `members` reached along [`line_tree`] alone (before the
+    /// loops were closed), with its distance from `stops[from]`.
+    fn tree_metres(stops: &[StopRecord], members: &[usize], from: usize) -> BTreeMap<usize, f64> {
+        let mut graph = LineGraph::new();
+        for (a, b, d) in line_tree(stops, members) {
+            graph.entry(a).or_default().push((b, d));
+            graph.entry(b).or_default().push((a, d));
+        }
+        shortest(&graph, from, None)
+    }
+
+    /// The links [`line_graph`] adds to the tree, as sorted id pairs
+    /// without the `940GZZLU` prefix.
+    fn loop_links(stops: &[StopRecord]) -> Vec<(String, String)> {
+        let members: Vec<usize> = (0..stops.len()).collect();
+        let tree: Vec<(usize, usize)> = line_tree(stops, &members)
+            .into_iter()
+            .map(|(a, b, _)| (a.min(b), a.max(b)))
+            .collect();
+        let name = |i: usize| {
+            stops[i]
+                .summary
+                .id
+                .trim_start_matches("940GZZLU")
+                .to_owned()
+        };
+        let mut links: Vec<(String, String)> = line_graph(stops, &members)
+            .into_iter()
+            .flat_map(|(a, next)| next.into_iter().map(move |(b, _)| (a, b)))
+            .filter(|&(a, b)| a < b && !tree.contains(&(a, b)))
+            .map(|(a, b)| {
+                let (a, b) = (name(a), name(b));
+                if a < b { (a, b) } else { (b, a) }
+            })
+            .collect();
+        links.sort();
+        links
+    }
+
+    fn pair(a: &str, b: &str) -> (String, String) {
+        (a.to_owned(), b.to_owned())
+    }
+
+    #[test]
+    fn the_fallback_closes_the_loops_the_tree_broke_and_no_more() {
+        // The Northern: Angel to Old Street only. Not Chalk Farm to Kentish
+        // Town (either side of Camden Town), nor Nine Elms to Oval.
+        let (stops, _) = northern_wide();
+        assert_eq!(loop_links(&stops), [pair("AGL", "ODS")]);
+        // The Circle: King's Cross to Farringdon, where the tree cut the
+        // loop; not Farringdon to Blackfriars, either side of the City's
+        // bend.
+        let (stops, _, _) = circle();
+        assert_eq!(loop_links(&stops), [pair("FCC", "KSX")]);
+        // Uxbridge's corner has no loop: Heathrow stays the long way round.
+        let stops = network();
+        let piccadilly: Vec<StopRecord> = stops
+            .iter()
+            .filter(|s| s.summary.lines.iter().any(|l| l.id == "piccadilly"))
+            .cloned()
+            .collect();
+        assert_eq!(loop_links(&piccadilly), []);
+        let heathrow = ride_metres(
+            &stops,
+            &LineRoutes::default(),
+            "piccadilly",
+            "940GUXB",
+            "940GHRC",
+        );
+        assert!(heathrow > 25_000.0, "{heathrow}");
+    }
+
+    #[test]
+    fn the_fallback_is_the_same_whatever_the_order_of_the_stops() {
+        let (stops, _) = northern_wide();
+        let by_id = |stops: &[StopRecord]| -> BTreeMap<(String, String), u32> {
+            let l = line("northern");
+            (0..stops.len())
+                .flat_map(|a| {
+                    rides(stops, &LineRoutes::default(), &l, a, Toward::Out)
+                        .into_iter()
+                        .map(move |(b, ride)| ((a, b), ride))
+                })
+                .map(|((a, b), ride)| {
+                    (
+                        (stops[a].summary.id.clone(), stops[b].summary.id.clone()),
+                        metres(ride.metres),
+                    )
+                })
+                .collect()
+        };
+        let mut reversed = stops.clone();
+        reversed.reverse();
+        let mut rotated = stops.clone();
+        rotated.rotate_left(7);
+        let expected = by_id(&stops);
+        assert_eq!(by_id(&reversed), expected);
+        assert_eq!(by_id(&rotated), expected);
+    }
+
+    /// Without routes, against the routes: no ride one train makes is over
+    /// 1.7 times as far (the tree's own Waterloo link, Borough here, still
+    /// sends Kennington to Waterloo round by Elephant & Castle), and none
+    /// is shorter than the tree alone made it (no new shortcut).
+    #[test]
+    fn the_fallback_stays_near_the_routes_on_the_northern() {
+        let (stops, rows) = northern_wide();
+        let routes = LineRoutes::new(&stops, &rows);
+        let l = line("northern");
+        let members: Vec<usize> = (0..stops.len()).collect();
+        let (mut over, mut checked) = (0, 0);
+        for a in 0..stops.len() {
+            let tree = tree_metres(&stops, &members, a);
+            let fallback: BTreeMap<usize, Ride> =
+                rides(&stops, &LineRoutes::default(), &l, a, Toward::Out)
+                    .into_iter()
+                    .collect();
+            for (b, truth) in rides(&stops, &routes, &l, a, Toward::Out) {
+                let ratio = fallback[&b].metres / truth.metres;
+                assert!(
+                    fallback[&b].metres >= truth.metres.min(tree[&b]) - 1.0,
+                    "{a} to {b}: {ratio}"
+                );
+                if truth.change_at.is_none() {
+                    checked += 1;
+                    assert!(ratio < 1.7, "{a} to {b}: {ratio}");
+                    if ratio > 1.5 {
+                        over += 1;
+                    }
+                }
+            }
+        }
+        // Kennington to Waterloo, Embankment and Charing Cross, both ways.
+        assert!(over <= 8, "{over} of {checked}");
     }
 
     #[test]
@@ -1806,16 +2203,130 @@ mod tests {
         assert!(station_ride(&uxbridge, &LineRoutes::default(), 0, Toward::In, "EUS").is_none());
     }
 
-    #[test]
-    fn without_routes_the_station_ride_is_the_trees_but_still_offered() {
+    /// Euston to Old Street (into Old Street) and back (out of it), as
+    /// [`station_ride`] gives them.
+    fn euston_old_street(routes: &LineRoutes) -> [AccessCandidate; 2] {
         let (stops, _) = northern();
         let ods = index(&stops, "940GZZLUODS");
-        let ride = station_ride(&stops, &LineRoutes::default(), ods, Toward::In, "EUS").unwrap();
-        // Round the loop's long way: slow, but one ride, and quicker than a
-        // train to Moorgate and a ride back.
-        assert!(ride.distance_metres > 7_000, "{}", ride.distance_metres);
-        assert_eq!(ride.stop_count, None);
-        assert!(ride.minutes < 30, "{}", ride.minutes);
+        [Toward::In, Toward::Out]
+            .map(|toward| station_ride(&stops, routes, ods, toward, "EUS").unwrap())
+    }
+
+    #[test]
+    fn without_routes_euston_old_street_is_still_the_short_way() {
+        // Not round the loop by Charing Cross and Bank (8 km): the
+        // fallback closes it between Angel and Old Street.
+        for ride in euston_old_street(&LineRoutes::default()) {
+            assert!(ride.distance_metres < 4_000, "{}", ride.distance_metres);
+            assert!(ride.minutes <= 13, "{}", ride.minutes);
+            assert_eq!(ride.change_at, None);
+            assert_eq!(ride.stop_count, None);
+        }
+    }
+
+    #[test]
+    fn with_routes_euston_old_street_is_one_ride_of_three_stops() {
+        let (stops, rows) = northern();
+        for ride in euston_old_street(&LineRoutes::new(&stops, &rows)) {
+            assert_eq!(ride.minutes, 12, "5 in, 7 riding");
+            assert_eq!(ride.change_at, None);
+            assert_eq!(ride.stop_count, Some(3));
+        }
+    }
+
+    /// Every ride that changes, on every fixture with routes, either way:
+    /// the change stop is neither end; a route reaches it from the start
+    /// and the end from it, the second without passing back through the
+    /// start; the ride is the two added up; and no route takes the start
+    /// to the end without a change.
+    #[test]
+    fn a_change_is_between_the_ends_and_only_when_needed() {
+        let (northern_stops, northern_rows) = northern_wide();
+        let (branched_stops, branched_routes) = branched();
+        let (circle_stops, _, circle_routes) = circle();
+        let fixtures = [
+            (
+                northern_stops.clone(),
+                LineRoutes::new(&northern_stops, &northern_rows),
+                "northern",
+            ),
+            (branched_stops, branched_routes, "metropolitan"),
+            (circle_stops, circle_routes, "circle"),
+        ];
+        let mut changes = 0;
+        for (stops, routes, line_id) in &fixtures {
+            let l = line(line_id);
+            for toward in [Toward::Out, Toward::In] {
+                let line_routes: Vec<Route> = routes.by_line[*line_id]
+                    .iter()
+                    .map(|r| match toward {
+                        Toward::Out => r.clone(),
+                        Toward::In => r.reversed(),
+                    })
+                    .collect();
+                // `a` then `b` on one route, with nothing of `avoid` between.
+                let one_ride = |a: usize, b: usize, avoid: Option<usize>| -> Option<f64> {
+                    line_routes
+                        .iter()
+                        .flat_map(|r| {
+                            r.positions(a).flat_map(move |i| {
+                                r.positions(b).filter(move |j| *j > i).filter_map(move |j| {
+                                    let passes = avoid.is_some_and(|x| r.stops[i..=j].contains(&x));
+                                    (!passes).then(|| r.along[j] - r.along[i])
+                                })
+                            })
+                        })
+                        .reduce(f64::min)
+                };
+                for a in 0..stops.len() {
+                    if routes.missing(line_id, a).is_some() {
+                        // The tree's (which has the stop itself, at 0).
+                        continue;
+                    }
+                    for (b, ride) in rides(stops, routes, &l, a, toward) {
+                        assert_ne!(a, b);
+                        let Some(j) = ride.change_at else {
+                            continue;
+                        };
+                        changes += 1;
+                        assert!(j != a && j != b, "{line_id}: {a} to {b} at {j}");
+                        assert!(one_ride(a, b, None).is_none(), "{line_id}: {a} to {b}");
+                        let first = one_ride(a, j, None).unwrap();
+                        let second = one_ride(j, b, Some(a)).unwrap();
+                        assert!((first + second - ride.metres).abs() < 1.0);
+                    }
+                }
+            }
+        }
+        assert!(changes > 50, "{changes}");
+    }
+
+    #[test]
+    fn missing_routes_are_told_apart_and_warned_of_rarely() {
+        let (stops, rows) = northern();
+        let ods = index(&stops, "940GZZLUODS");
+        assert_eq!(
+            LineRoutes::default().missing("northern", ods),
+            Some(RoutesMissing::Line)
+        );
+        let routes = LineRoutes::new(&stops, &rows);
+        assert_eq!(routes.missing("northern", ods), None);
+        // Mornington Crescent is on the Charing Cross route only; a route
+        // set without it leaves it to the tree.
+        let bank_only = LineRoutes::new(&stops, &rows[..2]);
+        let mtc = index(&stops, "940GZZLUMTC");
+        assert_eq!(
+            bank_only.missing("northern", mtc),
+            Some(RoutesMissing::Stop)
+        );
+        assert_eq!(bank_only.missing("northern", ods), None);
+
+        let last = Mutex::new(None);
+        let start = Instant::now();
+        let every = Duration::from_secs(60);
+        assert!(warn_due(&last, start, every));
+        assert!(!warn_due(&last, start + Duration::from_secs(59), every));
+        assert!(warn_due(&last, start + every, every));
     }
 
     /// A hand-written Circle line (positions to about 100 m, from a map),
