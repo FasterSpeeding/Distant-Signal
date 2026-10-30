@@ -91,12 +91,12 @@ describe('spokenPlatformLabel and platformTooltip', () => {
     [
       { state: 'changed', platform: '9', previous: '6', confirmed: false },
       'Platform 9 (changed from 6)',
-      'Changed from platform 6',
+      'Platform 9, changed from 6 (expected, not yet confirmed)',
     ],
     [
       { state: 'changed', platform: '9', previous: '6', confirmed: true },
       'Platform 9 (confirmed, changed from 6)',
-      'Changed from platform 6, now confirmed',
+      'Platform 9, changed from 6 (confirmed)',
     ],
     [{ state: 'cancelled', platform: '4' }, 'Platform 4 (cancelled)', CANCELLED_PLATFORM_TOOLTIP],
   ];

@@ -23,8 +23,9 @@ import { PhoneLabel } from './PhoneLabel';
  *   "(booked)" for a booked platform; a light badge for one a live board
  *   shows; a filled badge once it is confirmed.
  * - Changed: blue, the app's colour for a changed arrangement (never
- *   orange, which a delay badge beside it uses for lateness), with the old
- *   number struck through before the new one: "Platform ~~6~~ 9".
+ *   orange, which a delay badge beside it uses for lateness): the new
+ *   number first, then the old one in lighter type, struck through and
+ *   named in words: "Platform 9 was ~~6~~".
  * - Cancelled: red, the whole label struck through.
  *
  * A screen reader hears `spokenPlatformLabel` at every width ("Platform 9
@@ -37,7 +38,7 @@ import { PhoneLabel } from './PhoneLabel';
  * fact from "on platform X", and this never fabricates one.
  *
  * `compact` (under a "Platform" column header, `JourneyTimeline`) drops
- * the word "Platform" and "(booked)" below `sm`: "4", "~~6~~ 9". The
+ * the word "Platform" and "(booked)" below `sm`: "4", "9 was ~~6~~". The
  * spoken words are the same. `data-platform-badge` opts the badge out of
  * Mantine's ellipsis (`app/globals.css`); `data-platform-state` names the
  * state for tests and styles. */
@@ -97,10 +98,8 @@ function fullLabel(display: PlatformDisplay): ReactNode {
       return (
         <>
           <span aria-hidden="true">
-            Platform{' '}
-            <span className="platformBadge__numbers">
-              <s className="platformBadge__previous">{display.previous}</s> {display.platform}
-            </span>
+            <span className="platformBadge__current">Platform {display.platform}</span>{' '}
+            <WasPlatform previous={display.previous} />
           </span>
           <VisuallyHidden>{spokenPlatformLabel(display)}</VisuallyHidden>
         </>
@@ -108,6 +107,20 @@ function fullLabel(display: PlatformDisplay): ReactNode {
     case 'live':
       return name;
   }
+}
+
+/** A changed platform's superseded one, after the new number: "was 6",
+ * lighter than the badge's bold, the old number struck through. The word
+ * carries the meaning on its own: a strike-through alone is easy to miss
+ * at badge size, and all but vanishes through a "4", whose crossbar it
+ * overlaps, so "~~4~~ 5" read as "4 5". Dimmed by weight, not opacity, so
+ * it keeps the badge's measured contrast. */
+function WasPlatform({ previous }: { previous: string }) {
+  return (
+    <span className="platformBadge__was">
+      was <s className="platformBadge__previous">{previous}</s>
+    </span>
+  );
 }
 
 /** The phone form under a "Platform" column header: the same look without
@@ -122,7 +135,7 @@ function shortLabel(display: PlatformDisplay): ReactNode {
     case 'changed':
       return (
         <>
-          <s className="platformBadge__previous">{display.previous}</s> {display.platform}
+          {display.platform} <WasPlatform previous={display.previous} />
         </>
       );
     case 'live':

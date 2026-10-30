@@ -351,7 +351,7 @@ used, rather than as a literal in a component.
   | Booked (timetable only) | gray outline, number underlined in dots | Platform 4 (booked) ("4") | Platform 4 (booked, not confirmed) |
   | Live (on a board, unchanged) | gray light | Platform 4 ("4") | Platform 4 |
   | Confirmed | filled gray (`StatusBadge`'s informational fill and label tokens) | Platform 4 ("4") | Platform 4 (confirmed) |
-  | Changed | blue light, filled once confirmed (`StatusBadge`'s planned tokens); old number struck through | Platform ~~6~~ 9 ("~~6~~ 9") | Platform 9 (changed from 6) |
+  | Changed | blue light, filled once confirmed (`StatusBadge`'s planned tokens); new number first, then "was" and the old number in lighter type, struck through | Platform 9 was ~~6~~ ("9 was ~~6~~") | Platform 9 (changed from 6) |
   | Cancelled | red light, struck through | ~~Platform 4~~ ("~~4~~") | Platform 4 (cancelled) |
 
   Every state but a plain live one has a `title` tooltip, which only
@@ -730,8 +730,8 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
 - Focus: Mantine's 2px outline in filled primary, 2px offset.
 - Not colour alone: every status badge has a text label; cancelled
   platforms are struck through and say "(cancelled)"; changed platforms
-  strike through the old number and say "changed from" it; booked ones
-  say "(booked)"; the open-leg card has a border, tint, bold
+  name the old number after the new one ("was ~~6~~") and say "changed
+  from" it; booked ones say "(booked)"; the open-leg card has a border, tint, bold
   title and glyph.
 - Landmarks: `main`, `nav aria-label="Main"`, footer
   `nav aria-label="Site information"`; sections use `aria-labelledby`.

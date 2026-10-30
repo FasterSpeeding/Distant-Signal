@@ -92,7 +92,7 @@ export function platformTooltip(display: PlatformDisplay): string | undefined {
     case 'cancelled':
       return CANCELLED_PLATFORM_TOOLTIP;
     case 'changed':
-      return `Changed from platform ${display.previous}${display.confirmed ? ', now confirmed' : ''}`;
+      return `Platform ${display.platform}, changed from ${display.previous} (${display.confirmed ? 'confirmed' : 'expected, not yet confirmed'})`;
     case 'live':
       return display.confirmed ? 'Confirmed platform' : undefined;
   }
