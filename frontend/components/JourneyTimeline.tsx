@@ -24,6 +24,8 @@ import {
 } from '@/lib/stopTimes';
 import type { JourneyStop } from '@/lib/types';
 import { StateBadge } from './StateBadge';
+import { LegStopsDisclosure } from './LegStopsDisclosure';
+import type { LegStopRange } from '@/lib/legStopRange';
 
 /** The tracked pin's origin/destination display names (Task 3.6.2) --
  * always derivable from `TrainJourneyState.pinOriginCrs`/`pinOriginName`/
@@ -70,6 +72,8 @@ export function JourneyTimeline({
   endpointNames,
   skippedCrs,
   legDestinationCrs,
+  legRange,
+  trainPositionIndex = -1,
 }: {
   stops: JourneyStop[];
   endpointNames?: JourneyEndpointNames | undefined;
@@ -94,6 +98,16 @@ export function JourneyTimeline({
    * PAST it is dimmed -- the rest of the train's route is real information
    * but not what this leg's traveller needs to read first. */
   legDestinationCrs?: string | null | undefined;
+  /** A journey leg's own stops within `stops` (`legStopRange`, the same
+   * range `JourneyProgress` is clipped to). Given, only those rows show,
+   * from the boarding stop to the alighting stop; the train's stops before
+   * and after go behind collapsed `LegStopsDisclosure`s. `null` or omitted
+   * (a train page, or a leg whose stops weren't found) lists every stop. */
+  legRange?: LegStopRange | null | undefined;
+  /** The train's position as an index into `stops` (`trainPosition`), or
+   * `-1`. Only read with `legRange`: when it falls in a collapsed part,
+   * that part's control says where the train was last reported. */
+  trainPositionIndex?: number | undefined;
 }) {
   const total = stops.length;
   // Genuinely degenerate case (Task 3.6.2 point 4): every stop -- including
@@ -134,9 +148,38 @@ export function JourneyTimeline({
   // comparison below. `-1` (not found, or no leg destination to look for
   // at all -- a bare `/train/[uid]` caller) means every row below takes
   // the "not past it" branch, i.e. no dimming, exactly today's behaviour.
+  // On a train that calls there twice, the leg range's own alighting stop
+  // is the one meant.
+  const rangeEnd = legRange ? stops[legRange.end] : undefined;
   const legDestinationIndex = legDestinationCrs
-    ? stops.findIndex((stop) => stop.crs?.toUpperCase() === legDestinationCrs.toUpperCase())
+    ? legRange && rangeEnd?.crs?.toUpperCase() === legDestinationCrs.toUpperCase()
+      ? legRange.end
+      : stops.findIndex((stop) => stop.crs?.toUpperCase() === legDestinationCrs.toUpperCase())
     : -1;
+
+  const row = (stop: JourneyStop, index: number) => (
+    <JourneyStopRow
+      key={`${stop.crs ?? 'unknown'}-${index}`}
+      stop={stop}
+      index={index}
+      total={total}
+      endpointNames={endpointNames}
+      skippedCrs={skippedCrs}
+      showDelayColumn={showDelayColumn}
+      showPlatformColumn={showPlatformColumn}
+      isLegDestination={legDestinationIndex !== -1 && index === legDestinationIndex}
+      isPastLegDestination={legDestinationIndex !== -1 && index > legDestinationIndex}
+    />
+  );
+  const rows = (from: number, to: number) => stops.slice(from, to + 1).map((stop, offset) => row(stop, from + offset));
+  const colSpan = 3 + (showDelayColumn ? 1 : 0) + (showPlatformColumn ? 1 : 0);
+  const positionHint = (from: number, to: number) => {
+    if (trainPositionIndex < from || trainPositionIndex > to) return null;
+    const at = stops[trainPositionIndex];
+    return at ? `Train last reported at ${journeyStopLabel(at, trainPositionIndex, total, endpointNames)}` : null;
+  };
+  const first = stops[0];
+  const last = stops[total - 1];
 
   return (
     // The minimum width is for `sm` and up only; below it the table is as
@@ -167,22 +210,25 @@ export function JourneyTimeline({
             )}
           </TableTr>
         </TableThead>
-        <TableTbody>
-          {stops.map((stop, index) => (
-            <JourneyStopRow
-              key={`${stop.crs ?? 'unknown'}-${index}`}
-              stop={stop}
-              index={index}
-              total={total}
-              endpointNames={endpointNames}
-              skippedCrs={skippedCrs}
-              showDelayColumn={showDelayColumn}
-              showPlatformColumn={showPlatformColumn}
-              isLegDestination={legDestinationIndex !== -1 && index === legDestinationIndex}
-              isPastLegDestination={legDestinationIndex !== -1 && index > legDestinationIndex}
-            />
-          ))}
-        </TableTbody>
+        {legRange && legRange.start > 0 && first && (
+          <LegStopsDisclosure
+            label={`Earlier stops from ${journeyStopLabel(first, 0, total, endpointNames)} (${legRange.start})`}
+            colSpan={colSpan}
+            hint={positionHint(0, legRange.start - 1)}
+          >
+            {rows(0, legRange.start - 1)}
+          </LegStopsDisclosure>
+        )}
+        <TableTbody>{legRange ? rows(legRange.start, legRange.end) : rows(0, total - 1)}</TableTbody>
+        {legRange && legRange.end < total - 1 && last && (
+          <LegStopsDisclosure
+            label={`Later stops to ${journeyStopLabel(last, total - 1, total, endpointNames)} (${total - 1 - legRange.end})`}
+            colSpan={colSpan}
+            hint={positionHint(legRange.end + 1, total - 1)}
+          >
+            {rows(legRange.end + 1, total - 1)}
+          </LegStopsDisclosure>
+        )}
       </Table>
     </TableScrollContainer>
   );

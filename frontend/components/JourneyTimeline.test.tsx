@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { renderWithMantine } from '@/test/render';
 import { badgeTextTransform, spokenText } from '@/test/badge';
@@ -691,5 +691,105 @@ describe('JourneyTimeline cancelled calls (DS-181)', () => {
     expect(wimbledon?.querySelector('[data-cancelled="true"]')).not.toBeNull();
     expect(raynes).not.toHaveTextContent('Cancelled');
     expect(raynes?.querySelector('[data-cancelled]')).toBeNull();
+  });
+});
+
+// A journey leg's calling points: the leg's own stops, with the train's
+// stops before and after behind collapsed sections (`legRange`).
+describe('JourneyTimeline collapsed to a journey leg', () => {
+  const stops = [
+    stop({ crs: 'KGX', name: 'London Kings Cross', kind: 'Origin', actualDeparture: '2026-09-22T16:00:00Z' }),
+    stop({ crs: 'SVG', name: 'Stevenage' }),
+    stop({ crs: 'PBO', name: 'Peterborough', platform: '4', displayPlatform: '4' }),
+    stop({ crs: 'YRK', name: 'York' }),
+    stop({ crs: 'NCL', name: 'Newcastle' }),
+    stop({ crs: 'EDB', name: 'Edinburgh', kind: 'Terminate', cancelled: true }),
+  ];
+
+  it("lists only the leg's stops, with the rest behind two collapsed toggles", () => {
+    renderWithMantine(
+      <JourneyTimeline stops={stops} legRange={{ start: 2, end: 4 }} legDestinationCrs="NCL" trainPositionIndex={-1} />,
+    );
+    expect(screen.getByText('Peterborough')).toBeInTheDocument();
+    expect(screen.getByText('York')).toBeInTheDocument();
+    expect(screen.getByText('Newcastle')).toBeInTheDocument();
+    expect(screen.queryByText('Stevenage')).not.toBeInTheDocument();
+    expect(screen.queryByText('Edinburgh')).not.toBeInTheDocument();
+
+    const earlier = screen.getByRole('button', { name: 'Earlier stops from London Kings Cross (2)' });
+    const later = screen.getByRole('button', { name: 'Later stops to Edinburgh (1)' });
+    expect(earlier).toHaveAttribute('aria-expanded', 'false');
+    expect(later).toHaveAttribute('aria-expanded', 'false');
+    expect(document.getElementById(earlier.getAttribute('aria-controls') ?? '')).not.toBeNull();
+  });
+
+  it('opens a section to show its live rows, and closes it again', () => {
+    renderWithMantine(<JourneyTimeline stops={stops} legRange={{ start: 2, end: 4 }} legDestinationCrs="NCL" />);
+    const later = screen.getByRole('button', { name: 'Later stops to Edinburgh (1)' });
+    fireEvent.click(later);
+    expect(later).toHaveAttribute('aria-expanded', 'true');
+    // A cancelled stop keeps its cancellation once shown.
+    expect(screen.getByText('Edinburgh')).toHaveAttribute('data-cancelled', 'true');
+    fireEvent.click(later);
+    expect(later).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Edinburgh')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Earlier stops from London Kings Cross (2)' }));
+    expect(screen.getByText('London Kings Cross')).toBeInTheDocument();
+    expect(screen.getByText('Stevenage')).toBeInTheDocument();
+  });
+
+  it('spans the toggle row over every column', () => {
+    const { container } = renderWithMantine(<JourneyTimeline stops={stops} legRange={{ start: 2, end: 4 }} />);
+    // Station, Scheduled, Actual and Platform.
+    const cell = container.querySelector('[data-leg-stops-toggle] td');
+    expect(cell).toHaveAttribute('colspan', '4');
+  });
+
+  it('omits the earlier section when the leg boards at the origin', () => {
+    renderWithMantine(<JourneyTimeline stops={stops} legRange={{ start: 0, end: 3 }} />);
+    expect(screen.queryByRole('button', { name: /Earlier stops/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Later stops to Edinburgh (2)' })).toBeInTheDocument();
+  });
+
+  it('omits the later section when the leg alights at the terminus', () => {
+    renderWithMantine(<JourneyTimeline stops={stops} legRange={{ start: 2, end: 5 }} />);
+    expect(screen.getByRole('button', { name: 'Earlier stops from London Kings Cross (2)' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Later stops/ })).not.toBeInTheDocument();
+  });
+
+  it('hints where the train is when that is in a collapsed section, without opening it', () => {
+    renderWithMantine(<JourneyTimeline stops={stops} legRange={{ start: 2, end: 4 }} trainPositionIndex={0} />);
+    const earlier = screen.getByRole('button', { name: 'Earlier stops from London Kings Cross (2)' });
+    expect(earlier).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('Train last reported at London Kings Cross')).toBeInTheDocument();
+  });
+
+  it('gives no hint while the train is on the leg', () => {
+    const { container } = renderWithMantine(
+      <JourneyTimeline stops={stops} legRange={{ start: 2, end: 4 }} trainPositionIndex={3} />,
+    );
+    expect(container.querySelector('[data-leg-stops-hint]')).toBeNull();
+  });
+
+  it("marks the range's own alighting stop on a train that calls there twice", () => {
+    const loop = [
+      stop({ crs: 'LIV', name: 'Liverpool Lime Street', kind: 'Origin' }),
+      stop({ crs: 'MRF', name: 'Moorfields' }),
+      stop({ crs: 'JAM', name: 'James Street' }),
+      stop({ crs: 'MRF', name: 'Moorfields' }),
+      stop({ crs: 'SOP', name: 'Southport', kind: 'Terminate' }),
+    ];
+    renderWithMantine(<JourneyTimeline stops={loop} legRange={{ start: 2, end: 3 }} legDestinationCrs="MRF" />);
+    // Only the second Moorfields is on the leg, and it is the one marked.
+    expect(screen.getAllByText('Moorfields')).toHaveLength(1);
+    expect(screen.getByText('You get off here')).toBeInTheDocument();
+  });
+
+  it('lists every stop with no toggles without a leg range', () => {
+    renderWithMantine(<JourneyTimeline stops={stops} />);
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByText('Stevenage')).toBeInTheDocument();
+    expect(screen.getByText('Edinburgh')).toBeInTheDocument();
   });
 });

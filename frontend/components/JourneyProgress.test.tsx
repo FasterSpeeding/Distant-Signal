@@ -1439,3 +1439,133 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
     expect(screen.getByRole('group', { name: 'Journey progress: not yet started' })).toBeInTheDocument();
   });
 });
+
+// A journey leg's diagram shows only the leg's stops, boarding to
+// alighting, and its progress is relative to them (`legRange`).
+describe('JourneyProgress clipped to a journey leg', () => {
+  // KGX -> PBO -> YRK -> NCL -> EDB; the leg is PBO (1) to NCL (3).
+  const route = (reachedThrough: number, extra: Partial<JourneyStop>[] = []) =>
+    [
+      stop({ crs: 'KGX', name: 'London Kings Cross', kind: 'Origin' }),
+      stop({ crs: 'PBO', name: 'Peterborough' }),
+      stop({ crs: 'YRK', name: 'York' }),
+      stop({ crs: 'NCL', name: 'Newcastle' }),
+      stop({ crs: 'EDB', name: 'Edinburgh', kind: 'Terminate' }),
+    ].map((s, index) => ({
+      ...s,
+      ...(index <= reachedThrough ? { actualDeparture: '2026-09-22T16:00:00Z', delayMinutes: 0 } : {}),
+      ...extra[index],
+    }));
+  const legRange = { start: 1, end: 3 };
+
+  function renderLeg(stops: JourneyStop[], overrides: Partial<React.ComponentProps<typeof JourneyProgress>> = {}) {
+    return renderWithMantine(
+      <JourneyProgress
+        stops={stops}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+        lastReportedLocation={null}
+        legRange={legRange}
+        {...overrides}
+      />,
+    );
+  }
+
+  function nodeStates(container: HTMLElement): (string | null)[] {
+    return [...container.querySelectorAll('[data-journey-node]')].map((node) => node.getAttribute('data-node-state'));
+  }
+
+  it("draws only the leg's stops, with the boarding and alighting stops as its labelled ends", () => {
+    const { container } = renderLeg(route(-1));
+    expect(container.querySelectorAll('[data-journey-node]')).toHaveLength(3);
+    const endpoints = container.querySelectorAll('[data-journey-node-slot="endpoint"]');
+    expect(endpoints).toHaveLength(2);
+    expect(endpoints[0]).toHaveTextContent('Peterborough');
+    expect(endpoints[1]).toHaveTextContent('Newcastle');
+    expect(screen.queryByText('London Kings Cross')).not.toBeInTheDocument();
+    expect(screen.queryByText('Edinburgh')).not.toBeInTheDocument();
+  });
+
+  it('shows the leg as not started while the train is short of the boarding stop', () => {
+    const { container } = renderLeg(route(0));
+    expect(nodeStates(container)).toEqual(['not-reached', 'not-reached', 'not-reached']);
+    expect(
+      screen.getByText('Not started. The train is on its way to Peterborough, last reported at London Kings Cross.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('group')).toHaveAccessibleName(
+      'Journey progress: not yet started, train on its way to Peterborough, last reported at London Kings Cross',
+    );
+  });
+
+  it('counts the stop position from the boarding stop while on the leg', () => {
+    const { container } = renderLeg(route(2));
+    expect(nodeStates(container)).toEqual(['reached', 'marker', 'not-reached']);
+    expect(screen.getByText('Currently at York.')).toBeInTheDocument();
+    expect(screen.getByRole('group')).toHaveAccessibleName('Journey progress: currently at York, stop 2 of 3');
+  });
+
+  it('shows the leg as complete once the train reaches the alighting stop', () => {
+    const { container } = renderLeg(route(3));
+    expect(nodeStates(container)).toEqual(['reached', 'reached', 'marker']);
+    expect(screen.getByText('Arrived at Newcastle.')).toBeInTheDocument();
+  });
+
+  it('stays complete after the train runs on past the alighting stop', () => {
+    const { container } = renderLeg(route(4));
+    expect(nodeStates(container)).toEqual(['reached', 'reached', 'marker']);
+    expect(screen.getByText('Arrived at Newcastle.')).toBeInTheDocument();
+    expect(screen.getByRole('group')).toHaveAccessibleName('Journey progress: arrived at Newcastle');
+  });
+
+  it('reads "arrived at" the alighting stop for a train completed at its terminus', () => {
+    renderLeg(route(4), { status: 'completed' });
+    expect(screen.getByText('Arrived at Newcastle.')).toBeInTheDocument();
+  });
+
+  it('says a train cancelled before the boarding stop never reached it', () => {
+    renderLeg(route(0), { status: 'cancelled' });
+    expect(
+      screen.getByText('Cancelled before reaching Peterborough. Last confirmed at London Kings Cross.'),
+    ).toBeInTheDocument();
+  });
+
+  it('draws a cancelled alighting stop as cancelled', () => {
+    const { container } = renderLeg(route(1, [{}, {}, {}, { cancelled: true }]));
+    expect(nodeStates(container)[2]).toBe('cancelled-remaining');
+  });
+
+  it('places a reported location before the leg as not started too', () => {
+    renderLeg(route(-1), { lastReportedLocation: 'London Kings Cross' });
+    expect(
+      screen.getByText('Not started. The train is on its way to Peterborough, last reported at London Kings Cross.'),
+    ).toBeInTheDocument();
+  });
+
+  it('reads a report at the alighting stop as "last reported at", not as arrived', () => {
+    renderLeg(route(-1), { lastReportedLocation: 'Newcastle' });
+    expect(screen.getByText('Last reported at Newcastle.')).toBeInTheDocument();
+  });
+
+  it('keeps the existing captions while nothing has been reported', () => {
+    renderLeg(route(-1), { resolutionStatus: 'schedule_matched', status: null });
+    expect(screen.getByText("Scheduled route shown. Live tracking hasn't started yet.")).toBeInTheDocument();
+  });
+
+  it("drops the terminus's may-have-arrived glyph on a leg that gets off earlier", () => {
+    const { container } = renderLeg(route(2), { mayHaveArrived: true });
+    expect(container.querySelector('[data-may-have-arrived]')).toBeNull();
+  });
+
+  it('keeps the may-have-arrived glyph on a leg that gets off at the terminus', () => {
+    const { container } = renderLeg(route(3), { mayHaveArrived: true, legRange: { start: 1, end: 4 } });
+    expect(container.querySelector('[data-may-have-arrived]')).not.toBeNull();
+  });
+
+  it('shows the whole train with no leg range, as on a train page', () => {
+    const { container } = renderLeg(route(0), { legRange: null });
+    expect(container.querySelectorAll('[data-journey-node]')).toHaveLength(5);
+    expect(screen.getByText('Currently at London Kings Cross.')).toBeInTheDocument();
+  });
+});

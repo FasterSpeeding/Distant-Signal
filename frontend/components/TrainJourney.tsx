@@ -12,6 +12,8 @@ import { StateBadge } from './StateBadge';
 import { PredictedStartNotice } from './PredictedStartNotice';
 import { CancellationNotice } from './CancellationNotice';
 import { trainCancellation } from '@/lib/cancellation';
+import { legStopRange } from '@/lib/legStopRange';
+import { trainPosition } from '@/lib/trainPosition';
 
 /** Renders one train's journey through every state the backend can
  * return, per
@@ -47,6 +49,7 @@ export function TrainJourney({
   state,
   suppressTrainUidHeading = false,
   skippedCrs,
+  legOriginCrs,
   legDestinationCrs,
 }: {
   state: TrainJourneyState;
@@ -57,6 +60,12 @@ export function TrainJourney({
    * leg-scoped skip concept (Judgment Call 7). Threaded straight through
    * to `JourneyTimeline`. */
   skippedCrs?: string[] | undefined;
+  /** The journey-view leg's own origin CRS, where the traveller boards --
+   * `undefined` for every caller outside the journey view. With
+   * `legDestinationCrs` it picks the leg's stops (`legStopRange`):
+   * `JourneyProgress` shows only those and `JourneyTimeline` collapses the
+   * rest. */
+  legOriginCrs?: string | null | undefined;
   /** The journey-view leg's own destination CRS (2026-09-22 UX review
    * finding I16/2.7) -- `undefined` for every caller outside the journey
    * view, same posture as `skippedCrs`. Threaded straight through to
@@ -87,6 +96,18 @@ export function TrainJourney({
   // it, never turn it back into `null`.
   const visibleJourneyStops = state.journeyStops?.filter(isGenuineCallingPoint) ?? null;
 
+  // The journey leg's own stops, from boarding to alighting, on that same
+  // filtered list, so the progress line and the table agree on them. Only
+  // in the journey view: a train page passes neither end, and gets `null`.
+  const legRange =
+    visibleJourneyStops && (legOriginCrs || legDestinationCrs)
+      ? legStopRange(visibleJourneyStops, legOriginCrs, legDestinationCrs)
+      : null;
+  const positionIndex =
+    legRange && visibleJourneyStops
+      ? trainPosition(visibleJourneyStops, state.lastReportedLocation, endpointNames).index
+      : -1;
+
   // A bus or ferry is never reported live: no waiting/pending states, no
   // live summary or progress bar -- only what it is and its timetable.
   if (isTimetableOnly(state)) {
@@ -99,6 +120,7 @@ export function TrainJourney({
             endpointNames={endpointNames}
             skippedCrs={skippedCrs}
             legDestinationCrs={legDestinationCrs}
+            legRange={legRange}
           />
         )}
       </Stack>
@@ -134,6 +156,7 @@ export function TrainJourney({
           mayHaveArrived={state.mayHaveArrived}
           lastReportedLocation={state.lastReportedLocation}
           endpointNames={endpointNames}
+          legRange={legRange}
         />
       )}
       {visibleJourneyStops && (
@@ -142,6 +165,8 @@ export function TrainJourney({
           endpointNames={endpointNames}
           skippedCrs={skippedCrs}
           legDestinationCrs={legDestinationCrs}
+          legRange={legRange}
+          trainPositionIndex={positionIndex}
         />
       )}
     </Stack>
