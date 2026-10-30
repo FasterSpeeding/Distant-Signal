@@ -1001,7 +1001,7 @@ pub async fn list_schedule_calling_points_full_for_train(
 /// is unchanged.
 ///
 /// One indexed lookup: `service_date` is the primary key's leading column.
-async fn schedule_destination_departures_published_for(
+pub(crate) async fn schedule_destination_departures_published_for(
     pool: &PgPool,
     service_date: chrono::NaiveDate,
 ) -> Result<bool> {

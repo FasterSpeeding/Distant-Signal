@@ -5,21 +5,55 @@ import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import { ServiceRow, ServiceRowList } from './ServiceRow';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { LoadingText } from '@/components/LoadingText';
-import type { TrainSearchResult } from '@/lib/types';
-import { searchRowDetails, searchRowHeadcode, searchRowSummary, searchRowTime } from '@/lib/searchRow';
+import type { TrainArrivalResult, TrainSearchResult } from '@/lib/types';
+import {
+  arrivalRowDetails,
+  searchRowDetails,
+  searchRowHeadcode,
+  searchRowSummary,
+  searchRowTime,
+} from '@/lib/searchRow';
 import {
   nextDateLabel,
   resolvedDate,
   serviceDateLabel,
   splitSearchRows,
   trackNoun,
+  type StationBoard,
   type TrainSearchResults as TrainSearchResultsState,
 } from '@/lib/trainSearch';
 
-/** The train search's results: a prompt, loading, an error, an
+/** Whether a row is an arrivals board row. */
+function isArrival(row: TrainSearchResult): row is TrainArrivalResult {
+  return typeof (row as Partial<TrainArrivalResult>).arrival === 'string';
+}
+
+/** What the results say before there is anything to search. */
+function promptCopy(view: 'station' | 'between', board: StationBoard): string {
+  if (view === 'between') return 'Pick two stations to see the trains between them.';
+  return board === 'arrivals' ? 'Pick a station to see its arrivals.' : 'Pick a station to see its departures.';
+}
+
+/** The line above the rows saying which times they show. */
+function timesCopy(view: 'station' | 'between', board: StationBoard): string {
+  const which =
+    view === 'between'
+      ? 'Times are when each train leaves the first station, with its arrival at the second'
+      : board === 'arrivals'
+        ? 'Times are when each train arrives at this station'
+        : 'Times are when each train leaves this station';
+  return `${which}, from the scheduled timetable, and may be up to 30 minutes out of date. Open a train for its live status, platforms and calling points.`;
+}
+
+/** The timetable search's results: a prompt, loading, an error, an
  * unpublished timetable, no matches, or the rows with their "Load more"
- * footer. */
+ * footer. A station's departures and the trains between two stations are
+ * timed at the station searched (between two stations, with the arrival at
+ * the second); a station's arrivals by the arrival, headed by where each
+ * train comes from. */
 export function TrainSearchResults({
+  view = 'station',
+  board = 'departures',
   stationValid,
   searching,
   pending = false,
@@ -30,6 +64,9 @@ export function TrainSearchResults({
   operatorLookup,
   attachTicketId,
 }: {
+  view?: 'station' | 'between' | undefined;
+  board?: StationBoard | undefined;
+  /** Whether the station (or both stations) are valid codes. */
   stationValid: boolean;
   searching: boolean;
   /** A new search is running: the rows shown are for the previous one. */
@@ -39,6 +76,8 @@ export function TrainSearchResults({
   loadingMore: boolean;
   onLoadMore: () => void;
   operatorLookup: ReadonlyMap<string, string> | undefined;
+  /** Only in the ticket flow: each row gets a "Track this train" action
+   * that attaches this ticket. Otherwise a row is just its link. */
   attachTicketId: number | undefined;
 }) {
   const afterMidnightHeadingId = useId();
@@ -46,7 +85,7 @@ export function TrainSearchResults({
   if (!stationValid) {
     return (
       <Text size="sm" c="dimmed">
-        Enter a station above to search for trains that call there.
+        {promptCopy(view, board)}
       </Text>
     );
   }
@@ -56,7 +95,7 @@ export function TrainSearchResults({
   if (results === null) {
     return (
       <Text size="sm" c="dimmed">
-        Press Search to find trains that call at this station.
+        Press Search to see the timetable.
       </Text>
     );
   }
@@ -87,7 +126,11 @@ export function TrainSearchResults({
   // once here from `results.date`, never from live `dateValue`. See
   // `resolvedDate`'s own doc comment.
   const displayDate = resolvedDate(results.date);
-  const { previousDay, sameDay, afterMidnight } = splitSearchRows(results.rows, displayDate);
+  // An arrival row is split at midnight by its arrival.
+  const { previousDay, sameDay, afterMidnight } = splitSearchRows(
+    results.rows.map((row) => (isArrival(row) ? { ...row, dayOffset: row.arrivalDayOffset } : row)),
+    displayDate,
+  );
   // The previous date's trains still running after its midnight (a search
   // with no date picked asks for them; see `apiSearchQuery`), labelled
   // with their own service date, then the searched date's.
@@ -123,8 +166,7 @@ export function TrainSearchResults({
     <>
       <ProvisionalTimetableNote provisional={results.provisional} />
       <Text size="sm" c="dimmed">
-        Times are when each train leaves the station you searched, from the scheduled timetable, and may be up to 30
-        minutes out of date. Open a train to see its live status.
+        {timesCopy(view, board)}
       </Text>
       {/* Deliberately NOT wrapped in a `ScrollArea` (`mah`-capped or
        * otherwise). It used to be (`<ScrollArea mah={420}
@@ -155,16 +197,16 @@ export function TrainSearchResults({
        * scroller buys nothing here -- there are no sticky controls above
        * the list to keep on screen -- while costing real usability on
        * touch, where it steals the page's own scroll gesture. */}
-      {/* One `ServiceRow` per train, its "Track this train" button in the
-       * row's actions slot: the destination is the link to the train's
-       * page, so the button is never nested in a link. On a phone the
-       * actions wrap onto a line of their own under the destination. */}
-      {/* A date's whole train day: its trains leaving after midnight come
-       * last (train-day order), in a list of their own under the next
-       * date, each still marked "+1" and still linking to the searched
-       * date's train page (its service date). Before them all, any of the
-       * previous date's trains still running (`serviceDate` the day
-       * before), under that date, each marked "+1" against it, named as
+      {/* One `ServiceRow` per train, the whole row its link to the train's
+       * page. Only in the ticket flow does a row carry an action, its
+       * "Track this train" button, beside the destination link (never in
+       * it); on a phone the actions wrap onto a line of their own. */}
+      {/* A date's whole train day: its trains leaving (or, on the arrivals
+       * board, arriving) after midnight come last, in a list of their own
+       * under the next date, each still marked "+1" and still linking to
+       * the searched date's train page (its service date). Before them all,
+       * any of the previous date's trains still running (`serviceDate` the
+       * day before), under that date, each marked "+1" against it, named as
        * its service, and linking to that date's train page. */}
       {lists.map(({ key, rows, heading }) =>
         rows.length === 0 ? null : (
@@ -180,35 +222,50 @@ export function TrainSearchResults({
               data-list-pending={pending || undefined}
               aria-busy={pending}
             >
-              {rows.map((row) => (
-                <ServiceRow
-                  key={`${row.uid}-${row.scheduled ?? ''}`}
-                  train={searchRowSummary(row)}
-                  date={row.serviceDate ?? displayDate}
-                  timeOverride={searchRowTime(row)}
-                  dayOffset={row.dayOffset}
-                  details={
-                    [
-                      key === 'previous-day' && row.serviceDate
-                        ? `${serviceDateLabel(row.serviceDate)} service`
-                        : undefined,
-                      searchRowDetails(row, operatorLookup),
-                      searchRowHeadcode(row),
-                    ]
-                      .filter(Boolean)
-                      .join(' · ') || undefined
-                  }
-                  actions={
-                    <TrackThisTrainButton
-                      uid={row.uid}
-                      date={row.serviceDate ?? displayDate}
-                      {...(attachTicketId === undefined ? {} : { attachTicketId })}
-                      size="xs"
-                      noun={trackNoun(row)}
-                    />
-                  }
-                />
-              ))}
+              {rows.map((row) => {
+                const arrivalRow = isArrival(row) ? row : null;
+                const date = row.serviceDate ?? displayDate;
+                return (
+                  <ServiceRow
+                    key={`${row.uid}-${arrivalRow?.arrival ?? row.scheduled ?? ''}`}
+                    train={searchRowSummary(row)}
+                    headline={arrivalRow ? 'origin' : 'destination'}
+                    date={date}
+                    timeOverride={arrivalRow ? arrivalRow.arrival : searchRowTime(row)}
+                    dayOffset={arrivalRow ? arrivalRow.arrivalDayOffset : (row.dayOffset ?? undefined)}
+                    {...(view === 'between' && row.stopsAtArrival
+                      ? {
+                          arrival: row.stopsAtArrival,
+                          arrivalDayOffset: row.stopsAtArrivalDayOffset ?? undefined,
+                        }
+                      : {})}
+                    details={
+                      [
+                        key === 'previous-day' && row.serviceDate
+                          ? `${serviceDateLabel(row.serviceDate)} service`
+                          : undefined,
+                        arrivalRow
+                          ? arrivalRowDetails(arrivalRow, operatorLookup)
+                          : searchRowDetails(row, operatorLookup),
+                        searchRowHeadcode(row),
+                      ]
+                        .filter(Boolean)
+                        .join(' · ') || undefined
+                    }
+                    actions={
+                      attachTicketId === undefined ? undefined : (
+                        <TrackThisTrainButton
+                          uid={row.uid}
+                          date={date}
+                          attachTicketId={attachTicketId}
+                          size="xs"
+                          noun={trackNoun(row)}
+                        />
+                      )
+                    }
+                  />
+                );
+              })}
             </ServiceRowList>
           </Fragment>
         ),

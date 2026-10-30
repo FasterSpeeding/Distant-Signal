@@ -3321,6 +3321,33 @@ export interface TrainSearchPage extends TimetableCertaintyFields {
   serviceDates?: string[];
 }
 
+/** One `GET /public/trains/arrivals` row: a search row whose `stationCrs`
+ * is the board's station, plus the arrival there. `scheduled`/`dayOffset`
+ * are the departure onward: `scheduled` is `null`, and `dayOffset` absent,
+ * for a train that terminates here. */
+export interface TrainArrivalResult extends TrainSearchResult {
+  /** The arrival, `HH:MM`: the public time, else the working one. */
+  arrival: string;
+  /** Days after `serviceDate` the arrival falls on. */
+  arrivalDayOffset: number;
+  /** Whether the train ends at this station. */
+  terminates: boolean;
+}
+
+/** `GET /public/trains/arrivals`: a station's arrivals, one page. */
+export interface TrainArrivalsPage extends TimetableCertaintyFields {
+  results: TrainArrivalResult[];
+  nextCursor: string | null;
+  serviceDate?: string;
+}
+
+/** `GET /public/trains/by-headcode`: the trains running under one
+ * headcode on a date, each a search row at its origin. */
+export interface TrainHeadcodePage extends TimetableCertaintyFields {
+  results: TrainSearchResult[];
+  serviceDate?: string;
+}
+
 /** One `GET /public/trains/search/operators` entry: an ATOC code the
  * search's `operator` takes, with its name, `null` for a code the
  * timetable carries that the operator reference list does not name. */

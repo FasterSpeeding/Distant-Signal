@@ -36,6 +36,36 @@ be longer, and it should read `labels` to say what each option is
 - With `acrossMidnight=true`, alternatives from either date are kept when
   still within the bound of the merged best journey.
 
+## 2026-10-30: a station's arrivals, and trains by headcode
+
+Additive: two new public, unauthenticated reads over the published
+timetable, for the frontend's Trains section (DS-192;
+`crates/api/src/routes/trains/boards.rs`). DS-MCP needs no change; both
+may be useful to it.
+
+- `GET /public/trains/arrivals?station=RDG[&date=][&from=][&to=][&from_day_offset=][&to_day_offset=][&origin=][&operator=][&limit=][&after=]`:
+  a station's scheduled arrivals, in arrival order. Every train that can
+  set down there, terminating trains included (the calling-point search,
+  `/public/trains/search`, only sees departures). `date`, the time window,
+  `origin`, `operator`, `limit` and `after` work as on the search, the
+  window bounding the arrival. Today's board starts at `now` unless `from`
+  is given. Only `date`'s own trains: no `across_midnight`. A row is the
+  search's row plus `arrival` (`"HH:MM"`, public else working),
+  `arrivalDayOffset` and `terminates`; `stationCrs` is the station,
+  `scheduled`/`dayOffset` the departure onward (`scheduled` `null` and no
+  `dayOffset` for a terminating train). `200 {"results", "nextCursor",
+  "serviceDate", "window": {"from", "to"}}` plus `provisional`; `404` when
+  nothing is published for the date; `400` for a bad parameter, an unknown
+  name or a cursor from another request.
+- `GET /public/trains/by-headcode?headcode=1S00[&date=]`: every train
+  running under that headcode on the date (today by default), each as a
+  search row at its first station (`stationCrs` the origin, `scheduled`
+  its departure), in departure order, at most 50. `200 {"results",
+  "serviceDate"}` plus `provisional`; an empty list when no train runs as
+  it (or the date's train list is not published yet); `404` when nothing at
+  all is published for the date; `400` for a headcode that is not a
+  digit, a letter and two digits.
+
 ## 2026-10-30: Tube rides change trains when quicker, and use a station's other stops
 
 Additive. DS-MCP can show `boardStop` and `alightStop` where present; the

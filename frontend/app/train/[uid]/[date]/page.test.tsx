@@ -271,10 +271,16 @@ describe('TrackedTrainByUidPage success path', () => {
     expect(screen.queryByRole('button', { name: /Delete/i })).not.toBeInTheDocument();
   });
 
-  it('points at the new /trains page for finding other trains', async () => {
+  it('points back at the Trains section for looking up other trains', async () => {
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
     renderWithMantine(await TrackedTrainByUidPage({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) }));
-    expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');
+    expect(screen.getByRole('link', { name: 'Look up another train' })).toHaveAttribute('href', '/trains');
+  });
+
+  it('offers tracking as a light, secondary button, not the primary action', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
+    renderWithMantine(await TrackedTrainByUidPage({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) }));
+    expect(screen.getByRole('button', { name: 'Track this train' })).toHaveAttribute('data-variant', 'light');
   });
 
   // `PublicTrainState.trainUid`/`serviceDate` come straight from the route

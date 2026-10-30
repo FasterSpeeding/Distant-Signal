@@ -11,6 +11,7 @@ import {
   PREFERENCES_DESTINATION,
   PRIMARY_NAV_DESTINATIONS,
   JOURNEYS_DESTINATION,
+  TRAINS_DESTINATION,
   TRANSIT_DESTINATION,
 } from './navLinks';
 
@@ -29,9 +30,10 @@ describe('TRANSIT_DESTINATION', () => {
 });
 
 describe('the bar', () => {
-  it('has one Journeys entry, first, then the browse pages', () => {
+  it('has one Journeys entry, first, then Trains, then the browse pages', () => {
     expect(PRIMARY_NAV_DESTINATIONS.map((d) => d.label)).toEqual([
       'Journeys',
+      'Trains',
       'Status',
       'Lines',
       'Operators',
@@ -39,6 +41,12 @@ describe('the bar', () => {
       'Incidents',
     ]);
     expect(PRIMARY_NAV_DESTINATIONS[0]).toBe(JOURNEYS_DESTINATION);
+    expect(PRIMARY_NAV_DESTINATIONS[1]).toBe(TRAINS_DESTINATION);
+  });
+
+  it('sends Trains to the timetable at /trains, its own section', () => {
+    expect(TRAINS_DESTINATION).toMatchObject({ href: '/trains', label: 'Trains' });
+    expect(JOURNEYS_DESTINATION.section).not.toContain('/trains');
   });
 
   it('sends Journeys to /journeys, and starts new journeys on /plan, "Plan a journey"', () => {
@@ -49,7 +57,7 @@ describe('the bar', () => {
 
   it('lists no tracking page twice', () => {
     const hrefs = PRIMARY_NAV_DESTINATIONS.map((d) => d.href);
-    for (const href of ['/trains', '/journeys/new', '/track', '/track/mine']) {
+    for (const href of ['/journeys/new', '/track', '/track/mine']) {
       expect(hrefs).not.toContain(href);
     }
   });
@@ -88,16 +96,40 @@ describe('isActiveNavHref', () => {
       '/track/mine',
       '/track',
       '/track/mine/add-ticket',
-      '/trains',
       '/journeys/new',
       '/journeys/42',
       '/journeys/templates',
+      '/train/by-id/42',
     ]) {
       expect(isActiveNavHref(path, JOURNEYS_DESTINATION), path).toBe(true);
     }
-    expect(isActiveNavHref('/trainsx', JOURNEYS_DESTINATION)).toBe(false);
-    expect(isActiveNavHref('/planx', JOURNEYS_DESTINATION)).toBe(false);
-    expect(isActiveNavHref('/train/W12345/2026-09-17', JOURNEYS_DESTINATION)).toBe(false);
+    for (const path of ['/trains', '/trainsx', '/planx', '/train/W12345/2026-09-17']) {
+      expect(isActiveNavHref(path, JOURNEYS_DESTINATION), path).toBe(false);
+    }
+  });
+
+  it('marks Trains current on the timetable and on a train it opens, never on a tracked train', () => {
+    for (const path of ['/trains', '/train/W12345/2026-09-17']) {
+      expect(isActiveNavHref(path, TRAINS_DESTINATION), path).toBe(true);
+    }
+    for (const path of [
+      '/train/by-id/42',
+      '/train/by-id',
+      '/trainsx',
+      '/journeys',
+      '/plan',
+      '/track',
+      '/stations/RDG',
+    ]) {
+      expect(isActiveNavHref(path, TRAINS_DESTINATION), path).toBe(false);
+    }
+  });
+
+  it('marks exactly one primary entry current on each section page', () => {
+    for (const path of ['/trains', '/train/W12345/2026-09-17', '/train/by-id/42', '/journeys', '/plan', '/track']) {
+      const current = PRIMARY_NAV_DESTINATIONS.filter((d) => isActiveNavHref(path, d));
+      expect(current, path).toHaveLength(1);
+    }
   });
 
   it('marks Status current on the network history page', () => {

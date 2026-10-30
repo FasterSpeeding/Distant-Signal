@@ -135,12 +135,38 @@ test.describe('desktop nav bar (1440x900)', () => {
     const nav = page.locator('nav[aria-label="Main"]');
     // `exact: true`: Playwright's default accessible-name match is a
     // substring match, and 'Journeys' would otherwise also hit other links.
-    for (const label of ['Journeys', 'Status', 'Lines', 'Operators', 'Stations', 'Incidents']) {
+    for (const label of ['Journeys', 'Trains', 'Status', 'Lines', 'Operators', 'Stations', 'Incidents']) {
       await expect(nav.getByRole('link', { name: label, exact: true })).toBeVisible();
     }
     // DS-194: Plan a journey is reached from Journeys and the home page.
     await expect(nav.getByRole('link', { name: 'Plan a journey' })).toHaveCount(0);
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
+  });
+
+  // The Trains section (DS-192) is its own entry: current on the timetable
+  // and the train pages it opens, while Journeys keeps the tracking pages.
+  test('marks Trains, not Journeys, current on the timetable and a train it opens', async ({ page }) => {
+    const nav = page.locator('nav[aria-label="Main"]');
+    const trains = nav.getByRole('link', { name: 'Trains', exact: true });
+    const journeys = nav.getByRole('link', { name: 'Journeys', exact: true });
+    for (const path of ['/trains', '/trains?station=ZFA&date=2099-01-05', '/train/W62001/2099-01-05']) {
+      await page.goto(path);
+      await expect(trains, path).toHaveAttribute('aria-current', 'page');
+      await expect(journeys, path).not.toHaveAttribute('aria-current', 'page');
+    }
+    await page.goto('/track');
+    await expect(journeys).toHaveAttribute('aria-current', 'page');
+    await expect(trains).not.toHaveAttribute('aria-current', 'page');
+  });
+
+  test('reaches Trains from the bar by keyboard', async ({ page }) => {
+    await page.goto('/lines');
+    const trains = page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Trains', exact: true });
+    await trains.focus();
+    await expect(trains).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/trains$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Trains' })).toBeVisible();
   });
 
   test.describe('logged in', () => {
@@ -214,7 +240,16 @@ test.describe('phone nav bar (390x844)', () => {
 
     const drawer = await openNavDrawer(page);
     // `exact: true` for the same reason as the desktop-bar test above.
-    for (const label of ['Journeys', 'Status', 'Lines', 'Operators', 'Stations', 'Incidents', 'Preferences']) {
+    for (const label of [
+      'Journeys',
+      'Trains',
+      'Status',
+      'Lines',
+      'Operators',
+      'Stations',
+      'Incidents',
+      'Preferences',
+    ]) {
       await expect(drawer.getByRole('link', { name: label, exact: true })).toBeVisible();
     }
     // DS-194: no Plan a journey entry; the page is part of Journeys.
@@ -226,6 +261,16 @@ test.describe('phone nav bar (390x844)', () => {
     const drawer = await openNavDrawer(page);
     await expect(drawer.getByRole('link', { name: 'Journeys', exact: true })).toHaveAttribute('aria-current', 'page');
     await expect(drawer.getByRole('link', { name: 'Plan a journey' })).toHaveCount(0);
+  });
+
+  test('marks Trains current in the drawer on the timetable', async ({ page }) => {
+    await page.goto('/trains');
+    const drawer = await openNavDrawer(page);
+    await expect(drawer.getByRole('link', { name: 'Trains', exact: true })).toHaveAttribute('aria-current', 'page');
+    await expect(drawer.getByRole('link', { name: 'Journeys', exact: true })).not.toHaveAttribute(
+      'aria-current',
+      'page',
+    );
   });
 
   test('closes the drawer on navigating, rather than leaving it over the new page', async ({ page }) => {

@@ -1,7 +1,17 @@
 'use client';
 
 import { useId, useMemo, useState, type SubmitEvent } from 'react';
-import { Button, Checkbox, Group, Loader, MultiSelect, Stack, Text, VisuallyHidden } from '@mantine/core';
+import {
+  Button,
+  Checkbox,
+  Group,
+  Loader,
+  MultiSelect,
+  SegmentedControl,
+  Stack,
+  Text,
+  VisuallyHidden,
+} from '@mantine/core';
 import { DatePickerInput } from '@/components/LazyDateFields';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { nowInLondon } from '@/lib/londonWallClock';
@@ -10,7 +20,7 @@ import { TimeFilterInput } from './TimeFilterInput';
 import { TrainSearchResults } from './TrainSearchResults';
 import { ListFilterBar, SearchIcon, type ListNoun } from './ListFilterBar';
 import { noOptionsFound } from './noOptionsFound';
-import type { TrainSearchDates, TrainSearchPage } from '@/lib/types';
+import type { TrainArrivalsPage, TrainSearchDates, TrainSearchPage } from '@/lib/types';
 import { searchDateBounds, searchDateDescription } from '@/lib/searchDates';
 import { StationField } from './StationField';
 import { useLiveSearch } from '@/lib/useLiveSearch';
@@ -21,11 +31,14 @@ import {
   hasRows,
   operatorChoices,
   nextDateLabel,
+  parseBoardParam,
   parseNextDayParam,
   parseOperatorParam,
+  STATION_CODE_PATTERN,
   TIME_PATTERN,
   TRAIN_URL_PARAMS,
   upperBoundNextDay,
+  type StationBoard,
   type TrainSearchResults as TrainSearchResultsState,
 } from '@/lib/trainSearch';
 
@@ -64,94 +77,50 @@ function NextDayCheckbox({
   );
 }
 
-const CRS_PATTERN = /^[A-Za-z]{3}$/;
-/** Calling-point-first, whole-network train search -- the `/trains` page's
- * one interactive component.
+const CRS_PATTERN = STATION_CODE_PATTERN;
+
+/** The `/trains` page's timetable search, for two of its views
+ * (`TrainsLookup`): a station's departures or arrivals (`view="station"`,
+ * with a Departures/Arrivals switch), or the trains between two stations
+ * (`view="between"`). The third view, one train by headcode or UID, is
+ * `TrainServiceLookup`.
  *
  * Two shapes (docs/style-guide.md, "List search and filters"): the full
  * form with a Search button until the first search, then the compact
- * sticky bar, with Station in the search slot and every other field behind
- * "Filters". From then on every change searches live (`useLiveSearch`),
- * and the URL follows through `history.replaceState`. Generalizes the earlier destination-first
- * search into "any station the train calls at" as the primary, required
- * key, with "departing from" (the schedule's TRUE origin) and "stops at"
- * (one OTHER calling point on the route, not necessarily the destination) as
- * independent, optional filters layered on top -- see
- * docs/superpowers/specs/2026-09-08-calling-point-train-search-design.md and
- * docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md.
+ * sticky bar, with the station (or the two stations) in the search slot
+ * and every other field behind "Filters". From then on every change
+ * searches live (`useLiveSearch`), and the URL follows through
+ * `history.replaceState`, in the timetable's own words (`TRAIN_URL_PARAMS`:
+ * `station` or `from`/`to`, `board`, `date`, `time`/`until`...).
  *
- * Deliberately NOT a replacement for `TrackTrainForm`, and it does not try
- * to be: this searches published CIF timetable data by calling point and
- * cannot see a train that isn't in it (a station missing from
- * `stanox_crs`, a same-day amendment landing after the last CIF delivery).
- * `/track`'s manual-entry form remains the honest fallback for exactly
- * those gaps, and this component links to it explicitly.
+ * The departures board and the between-stations view are the calling-point
+ * search (`GET /public/trains/search`): `station` is any station a train
+ * leaves from, and between two stations `stops_at` is the second, which
+ * the train must reach later in its journey (see
+ * docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md).
+ * The arrivals board is `GET /public/trains/arrivals`: every train that
+ * sets down at the station, terminating trains included.
  *
- * Filter set: Station is required (it is the server-side search key).
- * Origin, Stops at, Operator, Date and an "Earliest departure"/"Latest
- * departure" time range are all optional. Operator (2026-10-22) is the
- * incident search's multi-select over the page's operator list, sent as
- * `operator=SW,GW` ("any of"); a code in the URL that is not on that list
- * is dropped rather than searched (`parseOperatorParam`). Date defaults to today and is
- * bounded to a roughly week-either-side window
- * (`crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
- * `SEARCH_WINDOW_BACKWARD_DAYS`) -- see
- * docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md.
+ * Filters: Date (today by default, bounded by `searchDates`, else a week
+ * either side), an earliest/latest time on the board's own times (a
+ * departure, or an arrival on the arrivals board; between two stations,
+ * the departure from the first), each with a "Next day" box for a time
+ * after the date's midnight; between two stations, an earliest/latest
+ * arrival at the second; on a station's board, "Starts at" (the train's
+ * first station); and Operator, "any of" the operators picked, a code
+ * that is not on the page's list dropped (`parseOperatorParam`).
  *
- * A date's search is its whole train day (2026-10-22): its trains that
- * leave after midnight come last, marked "+1". Each time filter has a
- * "Next day" box under it, for a time after the date's midnight; a latest
- * time earlier than its earliest one ("from 22:00 to 01:30") is after
- * midnight by necessity, so its box is ticked and locked
- * (`upperBoundNextDay`). Only a box the visitor ticked goes in the query
- * (`*_day_offset=1`); the API infers the locked case the same way.
- *
- * "Earliest departure"/"Latest departure" are deliberately NOT named
- * "From"/"To": that wording collided with the separate "Departing from"
- * station field above it -- a place and a time range sharing the word
- * "from" -- which live testing found genuinely confusing (a time range
- * read as if it were about the "Departing from" station rather than about
- * Station). Every one of these four time fields now also carries a
- * `description` naming the specific station it is scoped to, for the same
- * reason.
- *
- * "Stops at (optional)" replaced the earlier single-valued "Terminating at"
- * (the schedule's TRUE destination): structurally the same single-station
- * `StationField` (the same one the other
- * single-station fields above use), but a train matches as long as it calls
- * at this station, true destination or not -- PROVIDED that call falls
- * LATER in the journey than Station (2026-09-22; this used to be a
- * same-station-only rule, so naming the same station in both fields was the
- * only way to ask "does this working come BACK here" -- a loop/circular
- * service -- but a later-only reading is now what "Stops at" means for
- * every station named, loop or not: a search for "stops at X" should only
- * return trains you can actually ride from Station to X). See
- * docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md. An
- * earlier version of this field accepted several stations at once (a
- * Mantine `TagsInput`, matching ALL of them); that shipped and was then
- * deliberately scoped back down to exactly one station.
- *
- * A second, independent time-range pair -- "Earliest arrival"/"Latest
- * arrival" -- filters on when the train reaches Stops at's named calling
- * point, as opposed to "Earliest departure"/"Latest departure" above, which
- * stay scoped to Station. It only renders once Stops at is filled in,
- * mirroring the reveal condition the earlier "Terminating at" field used
- * for the same time-range pair.
+ * The rows are the timetable, each a link to the train's page. Only in the
+ * ticket flow (`attachTicketId`, from the Journeys page) does a row carry
+ * a "Track this train" action and the form offer the manual tracking
+ * fallback: anywhere else, tracking is a secondary action on the train's
+ * own page.
  *
  * Fetches through the same-origin `/api/*` proxy, like every other Client
- * Component in this app (`API_BASE_URL` is server-only).
- *
- * `operatorNames` (ATOC code to name, from the page's TOC list, as on
- * `StationTimetable`) names each result row's operator; without it the
- * row's details line carries no operator. `unnamedOperatorCodes` are the
- * other codes the timetable carries (`GET /public/trains/search/operators`
- * entries with no name): offered by code, so every train stays filterable.
- *
- * `searchDates` (`GET /public/trains/search/dates`, read by the page on the
- * server) bounds the date picker to what the search accepts; `null` or
- * absent (the read failed) falls back to a week either side of today, the
- * API's static window -- see `lib/searchDates.ts`. */
+ * Component in this app (`API_BASE_URL` is server-only). */
 export function TrainSearchForm({
+  view = 'station',
+  initialBoard: initialBoardProp = '',
   initialStation: initialStationProp = '',
   initialOrigin: initialOriginProp = '',
   initialStopsAt: initialStopsAtProp = '',
@@ -165,48 +134,63 @@ export function TrainSearchForm({
   initialArrivalFromDayOffset: initialArrivalFromDayOffsetProp = '',
   initialArrivalToDayOffset: initialArrivalToDayOffsetProp = '',
   initialOperator: initialOperatorProp = '',
+  seedFromUrl = true,
   attachTicketId,
   operatorNames,
   unnamedOperatorCodes,
   searchDates,
 }: {
+  /** A station's board, or the trains between two stations. */
+  view?: 'station' | 'between' | undefined;
+  /** `?board=`: `arrivals`, else departures. Station view only. */
+  initialBoard?: string | undefined;
+  /** The station (`?station=`), or between two stations the first
+   * (`?from=`). */
   initialStation?: string | undefined;
+  /** `?origin=`, where the train starts. Station view only. */
   initialOrigin?: string | undefined;
+  /** Between two stations, the second (`?to=`). */
   initialStopsAt?: string | undefined;
   initialDate?: string | undefined;
+  /** `?time=` and `?until=`: the earliest and latest time on the board. */
   initialFrom?: string | undefined;
   initialTo?: string | undefined;
   initialArrivalFrom?: string | undefined;
   initialArrivalTo?: string | undefined;
-  /** `?from_day_offset=` and its three siblings: `1` ticks that time's
-   * "Next day" box. */
+  /** `?time_day_offset=`, `?until_day_offset=` and the two arrival ones:
+   * `1` ticks that time's "Next day" box. */
   initialFromDayOffset?: string | undefined;
   initialToDayOffset?: string | undefined;
   initialArrivalFromDayOffset?: string | undefined;
   initialArrivalToDayOffset?: string | undefined;
   /** `?operator=`, comma-separated ATOC codes. */
   initialOperator?: string | undefined;
+  /** `false` when the view was switched to on the page, so the address
+   * bar (just cleared) seeds nothing. */
+  seedFromUrl?: boolean | undefined;
   attachTicketId?: number | undefined;
   operatorNames?: Readonly<Record<string, string>> | undefined;
   unnamedOperatorCodes?: readonly string[] | undefined;
   searchDates?: TrainSearchDates | null | undefined;
 }) {
+  const between = view === 'between';
   // Seeded from the address bar, not the server props: see
   // `useInitialSearchParams` (after Back, the props are stale). Station
   // codes are uppercased the way the page does.
-  const urlParams = useInitialSearchParams();
+  const initialSearchParams = useInitialSearchParams();
+  const urlParams = seedFromUrl ? initialSearchParams : null;
   const seed = (key: string, prop: string, code: boolean) =>
     urlParams ? ((code ? paramValue(urlParams, key)?.toUpperCase() : paramValue(urlParams, key)) ?? '') : prop;
-  const initialStation = seed('station', initialStationProp, true);
-  const initialOrigin = seed('origin', initialOriginProp, true);
-  const initialStopsAt = seed('stops_at', initialStopsAtProp, true);
+  const initialStation = seed(between ? 'from' : 'station', initialStationProp, true);
+  const initialOrigin = between ? '' : seed('origin', initialOriginProp, true);
+  const initialStopsAt = between ? seed('to', initialStopsAtProp, true) : '';
   const initialDate = seed('date', initialDateProp, false);
-  const initialFrom = seed('from', initialFromProp, false);
-  const initialTo = seed('to', initialToProp, false);
+  const initialFrom = seed('time', initialFromProp, false);
+  const initialTo = seed('until', initialToProp, false);
   const initialArrivalFrom = seed('arrival_from', initialArrivalFromProp, false);
   const initialArrivalTo = seed('arrival_to', initialArrivalToProp, false);
-  const initialFromDayOffset = seed('from_day_offset', initialFromDayOffsetProp, false);
-  const initialToDayOffset = seed('to_day_offset', initialToDayOffsetProp, false);
+  const initialFromDayOffset = seed('time_day_offset', initialFromDayOffsetProp, false);
+  const initialToDayOffset = seed('until_day_offset', initialToDayOffsetProp, false);
   const initialArrivalFromDayOffset = seed('arrival_from_day_offset', initialArrivalFromDayOffsetProp, false);
   const initialArrivalToDayOffset = seed('arrival_to_day_offset', initialArrivalToDayOffsetProp, false);
   const initialOperator = seed('operator', initialOperatorProp, false);
@@ -221,6 +205,10 @@ export function TrainSearchForm({
     () => operatorChoices(operatorNames ?? {}, unnamedOperatorCodes ?? []),
     [operatorNames, unnamedOperatorCodes],
   );
+  const [board, setBoard] = useState<StationBoard>(() =>
+    between ? 'departures' : parseBoardParam(seed('board', initialBoardProp, false)),
+  );
+  const arrivals = board === 'arrivals';
   const [operators, setOperators] = useState<string[]>(() =>
     parseOperatorParam(
       initialOperator,
@@ -240,17 +228,11 @@ export function TrainSearchForm({
   const [arrivalFrom, setArrivalFrom] = useState(initialArrivalFrom);
   const [arrivalTo, setArrivalTo] = useState(initialArrivalTo);
   /** Which of the four time filters are currently HALF-entered -- an hour
-   * segment filled in with the minutes left blank, or vice versa.
-   *
-   * This cannot be read off the four value states above, and that is the
-   * whole reason it exists: a native `<input type="time">` reports a
-   * half-entered time as `''`, exactly like an untouched one (see
-   * `TimeFilterInput`'s own doc comment). Without this, a field visibly
-   * reading "09:--" would be silently dropped by `searchParams()`' own
-   * `.trim()` gating and the search would run as though the caller had
-   * never set that filter at all. `TimeFilterInput` reports the state up
-   * through `onIncompleteChange`; `canSearch` below refuses to search on
-   * it. */
+   * segment filled in with the minutes left blank, or vice versa. A native
+   * `<input type="time">` reports a half-entered time as `''`, exactly like
+   * an untouched one (see `TimeFilterInput`), so without this a field
+   * visibly reading "09:--" would be silently dropped from the search.
+   * `canSearch` below refuses to search on it. */
   const [incompleteTimes, setIncompleteTimes] = useState({
     from: false,
     to: false,
@@ -259,41 +241,39 @@ export function TrainSearchForm({
   });
   const [results, setResults] = useState<TrainSearchResultsState>(null);
   // The RAW `dateValue` submitted with the last search that came back
-  // 404/unpublished, captured with the request -- separate from `results`
-  // because the `'unpublished'` variant carries no payload of its own to
-  // carry a `date` field on. Only ever read by the 'unpublished' branch of
-  // `TrainSearchResults`; never read live from `dateValue` there, for the
-  // same reason `results`' own `date` field exists (see `Results`' doc
-  // comment).
+  // 404/unpublished, captured with the request (the `'unpublished'`
+  // variant carries no payload of its own).
   const [unpublishedDate, setUnpublishedDate] = useState<string | null>(null);
-  /** Whether the search runs live. Off until the first Search press (or a
-   * URL that already names a station): before that the full form is shown,
-   * and a half-filled form must not start searching under the visitor. From
-   * then on the form is the compact bar and every change searches. */
-  const [live, setLive] = useState(() => CRS_PATTERN.test(initialStation.trim()));
+  // Whether the search runs live. Off until the first Search press (or a
+  // URL that already names the station or stations): before that the full
+  // form is shown, and a half-filled form must not start searching under
+  // the visitor. From then on the form is the compact bar and every
+  // change searches.
+  const [live, setLive] = useState(
+    () => CRS_PATTERN.test(initialStation.trim()) && (!between || CRS_PATTERN.test(initialStopsAt.trim())),
+  );
   // Separate from the search's own pending flag on purpose: a "Load more"
   // in flight must not dim the rows already on screen.
   const [loadingMore, setLoadingMore] = useState(false);
 
   const stationErrorId = useId();
+  const boardLabelId = useId();
 
   const stationValid = CRS_PATTERN.test(stationCrs.trim());
   const originValid = originCrs.trim() === '' || CRS_PATTERN.test(originCrs.trim());
-  const stopsAtValid = stopsAt.trim() === '' || CRS_PATTERN.test(stopsAt.trim());
+  // Between two stations the second is required; on a station's board
+  // there is none.
+  const stopsAtValid = between ? CRS_PATTERN.test(stopsAt.trim()) : stopsAt.trim() === '';
   const fromValid = fromTime.trim() === '' || TIME_PATTERN.test(fromTime.trim());
   const toValid = toTime.trim() === '' || TIME_PATTERN.test(toTime.trim());
   const arrivalFromValid = arrivalFrom.trim() === '' || TIME_PATTERN.test(arrivalFrom.trim());
   const arrivalToValid = arrivalTo.trim() === '' || TIME_PATTERN.test(arrivalTo.trim());
-  /** Gated on `stopsAt` for the arrival pair, mirroring exactly what
-   * `searchParams()` itself does with `arrival_from`/`arrival_to`: those
-   * two fields unmount when Stops at is cleared, and their state is
-   * deliberately remembered in case it is filled back in, so a half-entered
-   * arrival time left behind by a since-removed Stops at must not go on
-   * blocking a search it can no longer contribute a filter to. */
+  /** The arrival pair only counts between two stations, mirroring exactly
+   * what `searchParams()` itself sends. */
   const timesComplete =
     !incompleteTimes.from &&
     !incompleteTimes.to &&
-    (stopsAt.trim() === '' || (!incompleteTimes.arrivalFrom && !incompleteTimes.arrivalTo));
+    (!between || (!incompleteTimes.arrivalFrom && !incompleteTimes.arrivalTo));
   const filtersValid =
     stationValid &&
     originValid &&
@@ -304,20 +284,16 @@ export function TrainSearchForm({
     arrivalToValid &&
     timesComplete;
 
-  const manualHref = attachTicketId !== undefined ? `/track?ticketId=${attachTicketId}` : '/track';
   // Anchored to Europe/London (FE-4), like the server's own window, so a
   // visitor whose device isn't on UK time gets the edges the server
   // enforces rather than a 400 at either end.
   const today = nowInLondon().format('YYYY-MM-DD');
   const dateBounds = searchDateBounds(searchDates, today);
 
-  // What the "Earliest/Latest departure" and "Earliest/Latest arrival"
-  // fields' `description`s name as the station they are scoped to --
-  // preferring the actual entered CRS (so the helper text is concrete, e.g.
-  // "RDG") and falling back to naming the Station field when nothing valid
-  // has been entered yet, so the sentence still reads naturally.
-  const stationDisplay = stationValid ? stationCrs.trim().toUpperCase() : 'Station';
-  const stopsAtDisplay = stopsAtValid && stopsAt.trim() ? stopsAt.trim().toUpperCase() : 'Stops at';
+  // What the time fields' descriptions name as the station they are
+  // scoped to: the entered code when it is valid ("RDG"), else the field.
+  const stationDisplay = stationValid ? stationCrs.trim().toUpperCase() : between ? 'From' : 'Station';
+  const stopsAtDisplay = stopsAtValid && stopsAt.trim() ? stopsAt.trim().toUpperCase() : 'To';
 
   // The "Next day" boxes. A latest time is after midnight when its box is
   // ticked or when it is earlier than its earliest time; Latest arrival's
@@ -331,21 +307,16 @@ export function TrainSearchForm({
     ? upperBoundNextDay(arrivalTo, arrivalToNextDay, arrivalFrom, arrivalFromOnNextDay)
     : upperBoundNextDay(arrivalTo, arrivalToNextDay, fromTime, fromOnNextDay);
 
-  /** The current filter set as query parameters. Shared by the search and
-   * by "Load more" so that page 2 is unambiguously a continuation of page
-   * 1's query. */
+  /** The current filters as the API's query parameters (the search's and
+   * the arrivals board's share their names). Shared by the search and by
+   * "Load more" so that page 2 is unambiguously a continuation of page 1's
+   * query. */
   function searchParams() {
     const params = new URLSearchParams({ station: stationCrs.trim().toUpperCase() });
     if (dateValue) params.set('date', dateValue);
-    if (originCrs.trim()) params.set('origin', originCrs.trim().toUpperCase());
-    if (stopsAt.trim()) {
+    if (!between && originCrs.trim()) params.set('origin', originCrs.trim().toUpperCase());
+    if (between) {
       params.set('stops_at', stopsAt.trim().toUpperCase());
-      // Gated on stops_at being set, not just on the fields having values:
-      // this is what makes clearing Stops at drop any previously-entered
-      // arrival-time filter from the actual request, without needing to
-      // also clear arrivalFrom/To state -- the fields themselves unmount
-      // (see the conditional render below) but their state is deliberately
-      // remembered in case Stops at is filled back in.
       if (arrivalFrom.trim()) {
         params.set('arrival_from', arrivalFrom.trim());
         if (arrivalFromNextDay) params.set('arrival_from_day_offset', '1');
@@ -362,25 +333,68 @@ export function TrainSearchForm({
     if (toTime.trim()) {
       params.set('to', toTime.trim());
       // Only a box the visitor ticked: one ticked by necessity (a time
-      // earlier than Earliest departure) the API infers the same way.
+      // earlier than the earliest one) the API infers the same way.
       if (toNextDay) params.set('to_day_offset', '1');
     }
     if (operators.length > 0) params.set('operator', operators.join(','));
     return params;
   }
 
-  const query = filtersValid ? searchParams().toString() : null;
+  /** The API path for the board on screen. */
+  const endpoint = arrivals ? '/api/trains/arrivals' : '/api/trains/search';
+  /** One page's request URL for `query` (the filters, as `searchParams()`
+   * builds them). The calling-point search with no date picked also asks
+   * for yesterday's trains still running (`apiSearchQuery`); the arrivals
+   * board is the date's own trains only. */
+  const requestUrl = (query: string) => `${endpoint}?${arrivals ? query : apiSearchQuery(query)}`;
 
-  /** `GET /public/trains/search`'s page 1 for `searched`, run by
-   * `useLiveSearch`, which aborts it if the filters change first. */
-  const { pending } = useLiveSearch(live ? query : null, async (searched, signal) => {
+  const query = filtersValid ? requestUrl(searchParams().toString()) : null;
+
+  /** The current filters in the address bar's words (`TRAIN_URL_PARAMS`). */
+  function urlState(): Record<string, string> {
+    const state: Record<string, string> = {};
+    const station = stationCrs.trim().toUpperCase();
+    if (between) {
+      state.from = station;
+      state.to = stopsAt.trim().toUpperCase();
+    } else {
+      state.station = station;
+      if (arrivals) state.board = 'arrivals';
+      if (originCrs.trim()) state.origin = originCrs.trim().toUpperCase();
+    }
+    if (dateValue) state.date = dateValue;
+    if (fromTime.trim()) {
+      state.time = fromTime.trim();
+      if (fromNextDay) state.time_day_offset = '1';
+    }
+    if (toTime.trim()) {
+      state.until = toTime.trim();
+      if (toNextDay) state.until_day_offset = '1';
+    }
+    if (between) {
+      if (arrivalFrom.trim()) {
+        state.arrival_from = arrivalFrom.trim();
+        if (arrivalFromNextDay) state.arrival_from_day_offset = '1';
+      }
+      if (arrivalTo.trim()) {
+        state.arrival_to = arrivalTo.trim();
+        if (arrivalToNextDay) state.arrival_to_day_offset = '1';
+      }
+    }
+    if (operators.length > 0) state.operator = operators.join(',');
+    return state;
+  }
+
+  /** Page 1 for the request URL `requested`, run by `useLiveSearch`, which
+   * aborts it if the filters change first. */
+  const { pending } = useLiveSearch(live ? query : null, async (requested, signal) => {
     // The date that was actually searched, read from the request rather
     // than the live picker, which can move while the request is out.
-    const submittedDateValue = new URLSearchParams(searched).get('date');
+    const submittedDateValue = new URL(requested, 'http://localhost').searchParams.get('date');
     // A function, not `signal.aborted` inline: it changes across the awaits.
     const superseded = () => signal.aborted;
     try {
-      const response = await fetch(`/api/trains/search?${apiSearchQuery(searched)}`, { signal });
+      const response = await fetch(requested, { signal });
       if (superseded()) return;
       if (response.status === 404) {
         setResults('unpublished');
@@ -391,7 +405,7 @@ export function TrainSearchForm({
         setResults('error');
         return;
       }
-      const body = (await response.json()) as TrainSearchPage;
+      const body = (await response.json()) as TrainSearchPage | TrainArrivalsPage;
       if (superseded()) return;
       setResults({
         rows: body.results,
@@ -405,19 +419,16 @@ export function TrainSearchForm({
     }
   });
 
-  // Keeps this /trains history entry's URL on the search on screen, so
+  // Keeps this /trains history entry's URL on the timetable on screen, so
   // following a result to `/train/[uid]/[date]` and pressing Back restores
   // both the filters and the results (see
   // docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
   // §3.1). `history.replaceState` through `useUrlFilterSync`, not
-  // `router.replace`, which re-ran this page's server render (refetching
-  // the operator list and search dates) on every search. Only once the
-  // search is live: a form nobody has searched with yet leaves the URL
-  // alone. `ticketId` and any other param are kept.
-  useUrlFilterSync(live && query !== null ? query : null, (current, state) =>
-    state === null
-      ? current
-      : replaceUrlParams(current, TRAIN_URL_PARAMS, Object.fromEntries(new URLSearchParams(state))),
+  // `router.replace`, which re-ran this page's server render on every
+  // search. Only once the search is live: a form nobody has searched with
+  // yet leaves the URL alone. `ticketId` and any other param are kept.
+  useUrlFilterSync(live && query !== null ? urlState() : null, (current, state) =>
+    state === null ? current : replaceUrlParams(current, TRAIN_URL_PARAMS, state),
   );
 
   function handleSubmit(event: SubmitEvent) {
@@ -430,19 +441,12 @@ export function TrainSearchForm({
     if (results.nextCursor === null || loadingMore) return;
 
     // Page 1's actual raw date (`''` meaning "none picked"), not whatever
-    // the picker shows right now -- the caller may have moved `dateValue`
-    // after searching but before pressing "Load more". `searchParams()`
-    // itself would read live `dateValue`, so its own `date` handling is
-    // overridden below to match page 1 exactly: present with page 1's
-    // value, or absent, never a stale-vs-live mismatch either way. This
-    // keeps this request unambiguously "page 2 of the same search".
+    // the picker shows right now, so this request is unambiguously "page 2
+    // of the same search".
     const pageOneDate = results.date;
-    // The exact result-set object this page is a continuation of. A fresh
-    // search can resolve first and leave this response describing a result
-    // set that is no longer on screen; the live search always installs a
-    // BRAND NEW object, so identity is all that is needed to spot that.
-    // Without this check the stale page would append its rows to (and stamp
-    // its cursor, or its failure, onto) somebody else's search.
+    // The exact result-set object this page is a continuation of: a fresh
+    // search can resolve first, and a stale page must not append its rows
+    // to somebody else's search.
     const pagedFrom = results;
     setLoadingMore(true);
     try {
@@ -453,7 +457,7 @@ export function TrainSearchForm({
         params.delete('date');
       }
       params.set('after', results.nextCursor);
-      const response = await fetch(`/api/trains/search?${apiSearchQuery(params.toString())}`);
+      const response = await fetch(requestUrl(params.toString()));
       if (!response.ok) {
         // The cursor is kept, not nulled: this page just failed to load, and
         // the reader gets a named error plus a working retry rather than a
@@ -461,7 +465,7 @@ export function TrainSearchForm({
         setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
         return;
       }
-      const body = (await response.json()) as TrainSearchPage;
+      const body = (await response.json()) as TrainSearchPage | TrainArrivalsPage;
       setResults((current) =>
         current === pagedFrom
           ? {
@@ -480,7 +484,9 @@ export function TrainSearchForm({
     }
   }
 
-  const stationError = stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter station code' : null;
+  const codeError = 'Must be a 3-letter station code';
+  const stationError = stationCrs.length > 0 && !stationValid ? codeError : null;
+  const stopsAtError = between && stopsAt.length > 0 && !CRS_PATTERN.test(stopsAt.trim()) ? codeError : null;
 
   // Inside the filters popover the option lists and the date picker render
   // in place (`withinPortal: false`): a portalled dropdown counts as outside
@@ -489,7 +495,11 @@ export function TrainSearchForm({
   const inPanel = live;
   const comboboxProps = inPanel ? { comboboxProps: { withinPortal: false } } : {};
 
-  /** Every field but Station: the rest of the full form, then the panel. */
+  const timeNoun = arrivals ? 'arrival' : 'departure';
+  const timeVerb = arrivals ? 'reaching' : between ? 'leaving' : 'at';
+
+  /** Every field but the station (or stations): the rest of the full form,
+   * then the panel. */
   const otherFields = (
     <>
       {/* `clearButtonProps`: Mantine's `clearable` clear button ships with
@@ -508,31 +518,17 @@ export function TrainSearchForm({
         clearButtonProps={{ 'aria-label': 'Clear the date' }}
         {...(inPanel && { popoverProps: { withinPortal: false } })}
       />
-      <StationField
-        label="Departing from (optional)"
-        placeholder="e.g. Paddington or PAD"
-        description="Where the journey actually begins."
-        value={originCrs}
-        onChange={setOriginCrs}
-        {...comboboxProps}
-        error={originCrs.length > 0 && !originValid ? 'Must be a 3-letter station code' : null}
-      />
-      <StationField
-        label="Stops at (optional)"
-        placeholder="e.g. Reading or RDG"
-        description="A station this train reaches later in its journey than Station, its destination included."
-        value={stopsAt}
-        onChange={setStopsAt}
-        {...comboboxProps}
-        error={stopsAt.length > 0 && !stopsAtValid ? 'Must be a 3-letter station code' : null}
-      />
-      {/* All four time filters are `TimeFilterInput` -- a native
-       * `<input type="time">` with a clock button that opens the platform
-       * time picker and a clear button. See `TimeFilterInput`'s own doc
-       * comment. A native time input's value is already exactly the
-       * `"HH:MM"` these four fields put on the wire, and an emptied field is
-       * `""`, so clearing a field drops its query param. No `placeholder`:
-       * a native time input paints its own `--:--` segment hints. */}
+      {!between && (
+        <StationField
+          label="Starts at (optional)"
+          placeholder="e.g. Paddington or PAD"
+          description="The station the train starts from."
+          value={originCrs}
+          onChange={setOriginCrs}
+          {...comboboxProps}
+          error={originCrs.length > 0 && !originValid ? codeError : null}
+        />
+      )}
       <MultiSelect
         label="Operator (optional)"
         placeholder="Any operator"
@@ -549,13 +545,17 @@ export function TrainSearchForm({
         clearButtonProps={{ 'aria-label': 'Clear operator filter', className: 'iconHitArea24' }}
         {...comboboxProps}
       />
+      {/* All four time filters are `TimeFilterInput` -- a native
+       * `<input type="time">` with a clock button that opens the platform
+       * time picker and a clear button. Its value is already exactly the
+       * `"HH:MM"` the API takes, and an emptied field is `""`. */}
       <Group grow align="flex-start">
         <Stack gap={6}>
           <TimeFilterInput
             clockHint
-            label="Earliest departure (optional)"
-            name="earliest departure"
-            description={`Only trains at ${stationDisplay} at or after this time.`}
+            label={`Earliest ${timeNoun} (optional)`}
+            name={`earliest ${timeNoun}`}
+            description={`Only trains ${timeVerb} ${stationDisplay} at or after this time.`}
             value={fromTime}
             onChange={setFromTime}
             onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, from: incomplete }))}
@@ -565,9 +565,9 @@ export function TrainSearchForm({
         </Stack>
         <Stack gap={6}>
           <TimeFilterInput
-            label="Latest departure (optional)"
-            name="latest departure"
-            description={`Only trains at ${stationDisplay} at or before this time.`}
+            label={`Latest ${timeNoun} (optional)`}
+            name={`latest ${timeNoun}`}
+            description={`Only trains ${timeVerb} ${stationDisplay} at or before this time.`}
             value={toTime}
             onChange={setToTime}
             onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, to: incomplete }))}
@@ -578,12 +578,12 @@ export function TrainSearchForm({
             label={nextDayLabel}
             checked={toDay.nextDay}
             implied={toDay.implied}
-            impliedReason="Earlier than the earliest departure, so after midnight."
+            impliedReason={`Earlier than the earliest ${timeNoun}, so after midnight.`}
             onChange={setToNextDay}
           />
         </Stack>
       </Group>
-      {stopsAt.trim() !== '' && (
+      {between && (
         <Group grow align="flex-start">
           <Stack gap={6}>
             <TimeFilterInput
@@ -628,18 +628,16 @@ export function TrainSearchForm({
 
   const activeCount =
     (dateValue ? 1 : 0) +
-    (originCrs.trim() ? 1 : 0) +
-    (stopsAt.trim() ? 1 : 0) +
+    (!between && originCrs.trim() ? 1 : 0) +
     (fromTime.trim() ? 1 : 0) +
     (toTime.trim() ? 1 : 0) +
-    (stopsAt.trim() && arrivalFrom.trim() ? 1 : 0) +
-    (stopsAt.trim() && arrivalTo.trim() ? 1 : 0) +
+    (between && arrivalFrom.trim() ? 1 : 0) +
+    (between && arrivalTo.trim() ? 1 : 0) +
     (operators.length > 0 ? 1 : 0);
 
   function clearPanelFilters() {
     setDateValue(null);
     setOriginCrs('');
-    setStopsAt('');
     setOperators([]);
     setFromTime('');
     setToTime('');
@@ -652,13 +650,15 @@ export function TrainSearchForm({
     setIncompleteTimes({ from: false, to: false, arrivalFrom: false, arrivalTo: false });
   }
 
-  // Known only once the last page is in: the search api has no total.
+  // Known only once the last page is in: the api has no total.
   const matchCount = !pending && hasRows(results) && results.nextCursor === null ? results.rows.length : null;
 
   const resultsSection = (
     <Stack gap="xs" mih={72}>
       <TrainSearchResults
-        stationValid={stationValid}
+        view={view}
+        board={board}
+        stationValid={stationValid && stopsAtValid}
         searching={pending && results === null}
         pending={pending}
         results={results}
@@ -671,39 +671,88 @@ export function TrainSearchForm({
     </Stack>
   );
 
+  // Only in the ticket flow: there, tracking the train is the point, and a
+  // train missing from the published timetable still has a way in.
   // `inline`/`underline="always"`: this link sits mid-sentence in body
-  // text, so colour alone can't be what marks it (WCAG 1.4.1), and it must
-  // render as a `<span>`, not `TextLink`'s default `<p>`.
-  const manualFallback = (
-    <Text size="sm" c="dimmed">
-      Can&apos;t find your train?{' '}
-      <TextLink href={manualHref} inline underline="always">
-        Track it manually
-      </TextLink>{' '}
-      by entering its origin station and departure time.
-    </Text>
+  // text, so colour alone can't be what marks it (WCAG 1.4.1).
+  const manualFallback =
+    attachTicketId !== undefined ? (
+      <Text size="sm" c="dimmed">
+        Can&apos;t find your train?{' '}
+        <TextLink href={`/track?ticketId=${attachTicketId}`} inline underline="always">
+          Track it manually
+        </TextLink>{' '}
+        by entering its origin station and departure time.
+      </Text>
+    ) : null;
+
+  // The station view's Departures/Arrivals switch, above the form or bar.
+  // Switching keeps every filter and, once live, searches at once.
+  const boardSwitch = between ? null : (
+    <Stack gap={4}>
+      <VisuallyHidden id={boardLabelId}>Board</VisuallyHidden>
+      <SegmentedControl
+        aria-labelledby={boardLabelId}
+        value={board}
+        onChange={(value) => setBoard(value === 'arrivals' ? 'arrivals' : 'departures')}
+        data={[
+          { label: 'Departures', value: 'departures' },
+          { label: 'Arrivals', value: 'arrivals' },
+        ]}
+        w="fit-content"
+      />
+    </Stack>
   );
 
   if (live) {
     return (
       <Stack gap="md">
+        {boardSwitch}
         <ListFilterBar
           search={
-            <StationField
-              aria-label="Station"
-              placeholder="Station, e.g. Reading or RDG"
-              value={stationCrs}
-              onChange={setStationCrs}
-              // Only the red outline here: the bar is one fixed-height row,
-              // so the message itself goes below it.
-              error={stationError !== null}
-              aria-describedby={stationError ? stationErrorId : undefined}
-              leftSection={
-                pending ? <Loader size={14} aria-hidden="true" data-testid="list-filter-pending" /> : <SearchIcon />
-              }
-              flex="1 1 auto"
-              miw={0}
-            />
+            between ? (
+              <Group gap="xs" wrap="nowrap" flex="1 1 auto" miw={0}>
+                <StationField
+                  aria-label="From"
+                  placeholder="From"
+                  value={stationCrs}
+                  onChange={setStationCrs}
+                  error={stationError !== null}
+                  aria-describedby={stationError ? stationErrorId : undefined}
+                  leftSection={
+                    pending ? <Loader size={14} aria-hidden="true" data-testid="list-filter-pending" /> : <SearchIcon />
+                  }
+                  flex="1 1 0"
+                  miw={0}
+                />
+                <StationField
+                  aria-label="To"
+                  placeholder="To"
+                  value={stopsAt}
+                  onChange={setStopsAt}
+                  error={stopsAtError !== null}
+                  aria-describedby={stopsAtError ? stationErrorId : undefined}
+                  flex="1 1 0"
+                  miw={0}
+                />
+              </Group>
+            ) : (
+              <StationField
+                aria-label="Station"
+                placeholder="Station, e.g. Reading or RDG"
+                value={stationCrs}
+                onChange={setStationCrs}
+                // Only the red outline here: the bar is one fixed-height row,
+                // so the message itself goes below it.
+                error={stationError !== null}
+                aria-describedby={stationError ? stationErrorId : undefined}
+                leftSection={
+                  pending ? <Loader size={14} aria-hidden="true" data-testid="list-filter-pending" /> : <SearchIcon />
+                }
+                flex="1 1 auto"
+                miw={0}
+              />
+            )
           }
           noun={TRAIN_NOUN}
           matchCount={matchCount}
@@ -715,13 +764,13 @@ export function TrainSearchForm({
         >
           {otherFields}
         </ListFilterBar>
-        {stationError && (
+        {(stationError ?? stopsAtError) && (
           <Text size="sm" c="red" id={stationErrorId}>
-            {stationError}
+            {stationError ?? stopsAtError}
           </Text>
         )}
-        {/* No count to announce (the search api has no total), but a
-            screen reader still hears that a search is running. */}
+        {/* No count to announce (the api has no total), but a screen reader
+            still hears that a search is running. */}
         <VisuallyHidden role="status">{pending ? 'Searching' : ''}</VisuallyHidden>
         {resultsSection}
         {manualFallback}
@@ -730,24 +779,48 @@ export function TrainSearchForm({
   }
 
   return (
-    <Stack gap="md" component="form" onSubmit={handleSubmit}>
-      <StationField
-        label="Station"
-        placeholder="e.g. Reading or RDG"
-        description="Any station this train calls at along its route."
-        value={stationCrs}
-        onChange={setStationCrs}
-        error={stationError}
-        required
-      />
-      {otherFields}
-      <Group>
-        <Button type="submit" disabled={!filtersValid}>
-          Search
-        </Button>
-      </Group>
-      {resultsSection}
-      {manualFallback}
+    <Stack gap="md">
+      {boardSwitch}
+      <Stack gap="md" component="form" onSubmit={handleSubmit}>
+        {between ? (
+          <>
+            <StationField
+              label="From"
+              placeholder="e.g. Reading or RDG"
+              value={stationCrs}
+              onChange={setStationCrs}
+              error={stationError}
+              required
+            />
+            <StationField
+              label="To"
+              placeholder="e.g. London Paddington or PAD"
+              description="A station the train calls at after the first, its destination included."
+              value={stopsAt}
+              onChange={setStopsAt}
+              error={stopsAtError}
+              required
+            />
+          </>
+        ) : (
+          <StationField
+            label="Station"
+            placeholder="e.g. Reading or RDG"
+            value={stationCrs}
+            onChange={setStationCrs}
+            error={stationError}
+            required
+          />
+        )}
+        {otherFields}
+        <Group>
+          <Button type="submit" disabled={!filtersValid}>
+            Search
+          </Button>
+        </Group>
+        {resultsSection}
+        {manualFallback}
+      </Stack>
     </Stack>
   );
 }
