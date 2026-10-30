@@ -2004,7 +2004,7 @@ export interface TripPlanAccessLeg {
   changeAt?: TflStop;
   /** Where the ride is boarded, when that is another stop area of the
    * plan's own stop's station (Paddington (H&C Line) for Paddington); its
-   * minutes include the walk to it. Absent until the api sends it (DS-191). */
+   * minutes include the walk to it (DS-191). */
   boardStop?: TflStop;
   /** Where the ride is left, when that is another stop area of the
    * station; its minutes include the walk from it. */
