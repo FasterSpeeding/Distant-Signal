@@ -57,6 +57,10 @@ const PAGES: [name: string, path: string][] = [
   ['trains', '/trains'],
   // After a search: the compact bar, with Station in its search slot.
   ['trains-searched', `/trains?station=${REAL_STATION_CRS}`],
+  // The Trains section's arrivals board and headcode lookup (DS-192), on
+  // the seed's W62001.
+  ['trains-arrivals', '/trains?station=ZFC&board=arrivals&date=2099-01-05'],
+  ['trains-headcode', '/trains?headcode=2Z42&date=2099-01-05'],
   ['train', `/train/${TRAIN_UID}/${TRAIN_DATE}`],
   // A train cut short (DS-181): the seed's W81181, cancelled en route at
   // York with a reason, Edinburgh struck through.

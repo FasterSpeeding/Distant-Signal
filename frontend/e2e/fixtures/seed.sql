@@ -776,6 +776,27 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------
+-- The Trains section's views (trains.spec.ts), at stations nothing else
+-- uses, on the seed's 2099-01-05: W62001, headcode 2Z42, leaves ZFA at
+-- 10:00, calls at ZFB (arrives 10:28, leaves 10:30) and terminates at ZFC
+-- at 11:00. A station's departures (ZFA), its arrivals (ZFB, and ZFC for a
+-- terminating train), the trains between two stations (ZFA to ZFC) and
+-- the headcode lookup all find it.
+-- ---------------------------------------------------------------------
+INSERT INTO schedule_destination_departures
+  (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs,
+   day_offset, public_departure, calling_point_arrival, destination_arrival,
+   public_destination_arrival, operator_atoc, headcode)
+VALUES
+  ('2099-01-05', 'ZFC', '10:00', 'W62001', 'ZFA', 'ZFA', 0, '10:00', NULL, '11:00', '11:00', 'CC', '2Z42'),
+  ('2099-01-05', 'ZFC', '10:30', 'W62001', 'ZFB', 'ZFA', 0, '10:30', '10:28', '11:00', '11:00', 'CC', '2Z42')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO schedule_services (service_date, uid, mode, headcode, operator_atoc, stp)
+VALUES ('2099-01-05', 'W62001', 'train', '2Z42', 'CC', 'P')
+ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
 -- Two TfL stops for the /tfl/stops/{id} page (DS-136, tfl-stop.spec.ts and
 -- the `tfl-stop` visual baseline). The api asks TFL_BASE_URL for their
 -- arrivals; the frontend-e2e job points it at scripts/tfl-arrivals-stub.py,

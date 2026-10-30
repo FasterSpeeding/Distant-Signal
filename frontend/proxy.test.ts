@@ -48,6 +48,43 @@ describe('proxy', () => {
   });
 });
 
+describe('proxy on /trains', () => {
+  it('permanently redirects an old-shape search to the same search in its new names', () => {
+    const res = proxy(
+      new NextRequest('http://localhost:3000/trains?station=MAN&stops_at=WAT&from=09:00&to_day_offset=1&ticketId=7'),
+    );
+    expect(res.status).toBe(308);
+    const location = new URL(res.headers.get('location')!);
+    expect(location.pathname).toBe('/trains');
+    expect(Object.fromEntries(location.searchParams)).toEqual({
+      from: 'MAN',
+      to: 'WAT',
+      time: '09:00',
+      until_day_offset: '1',
+      ticketId: '7',
+    });
+  });
+
+  it('sends a UID straight to its train page', () => {
+    const res = proxy(new NextRequest('http://localhost:3000/trains?uid=w12345&date=2026-10-31'));
+    expect(res.status).toBe(307);
+    expect(new URL(res.headers.get('location')!).pathname).toBe('/train/W12345/2026-10-31');
+  });
+
+  it('renders a current search, with its CSP', () => {
+    for (const query of ['', '?station=RDG&time=09:00', '?from=RDG&to=PAD', '?headcode=1S00']) {
+      const res = proxy(new NextRequest(`http://localhost:3000/trains${query}`));
+      expect(res.headers.get('location'), query).toBeNull();
+      expect(res.headers.get('Content-Security-Policy'), query).toContain('nonce-');
+    }
+  });
+
+  it('leaves other pages with a from= alone', () => {
+    const res = proxy(new NextRequest('http://localhost:3000/plan?from=09:00'));
+    expect(res.headers.get('location')).toBeNull();
+  });
+});
+
 describe('proxy matcher', () => {
   const source = config.matcher[0]!.source;
   // Next compiles the matcher with path-to-regexp; the source is a single

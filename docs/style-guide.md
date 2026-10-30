@@ -166,11 +166,18 @@ used, rather than as a literal in a component.
   text colour at 20%).
 - The bar starts with the wordmark (`Wordmark`: the favicon's signal arm on
   its grape tile, 24px, then "Distant Signal" in 16px bold). Its links are
-  Journeys, Status, Lines, Operators, Stations and Incidents
+  Journeys, Trains, Status, Lines, Operators, Stations and Incidents
   (`lib/navLinks.ts`). Journeys is the one tracking entry: it opens the
   Journeys page (`/journeys`; `/track/mine` redirects there) and stays
-  marked current on `/plan`, `/track`, `/trains` and every `/journeys`
-  page. Starting a journey is not a nav entry: "Plan a journey" (`/plan`;
+  marked current on `/plan`, `/track`, a tracked train's page
+  (`/train/by-id/...`) and every `/journeys` page. Trains is the
+  timetable (`/trains`): a station's departures and arrivals, the trains
+  between two stations, or a train by headcode or UID, with no tracking or
+  journey steps in the way. It stays marked current on the train pages
+  its results open (`/train/[uid]/[date]`), where tracking is a light,
+  secondary button. Journeys links to it ("Find a train") where someone
+  needs to pick a train, rather than embedding a search of its own.
+  Starting a journey is not a nav entry: "Plan a journey" (`/plan`;
   `/journeys/new` redirects there) is a button on the Journeys page and at
   the top of the home page's "Upcoming journeys", and a link on station
   and stop pages. It plans a route, or starts from a train you know or a
@@ -538,8 +545,12 @@ used, rather than as a literal in a component.
   - *Filters only, not sticky*, inside a section: the line and station
     issue lists, with the All/Active/Upcoming tabs inline as `trailing`.
     No button when there is nothing to narrow.
-  - *Another main control*: /trains puts Station in the search slot. It
-    shows the full form until the first search, then the bar.
+  - *Another main control*: /trains puts Station (between two stations,
+    From and To) in the search slot. It shows the full form until the
+    first search, then the bar. Above it, two segmented controls pick the
+    view (Station, Between stations, Headcode or UID; stacked below `xs`
+    by `.ds-entry-mode-control`) and, on a station, Departures or
+    Arrivals.
 
   Filter state lives in the URL through `useUrlFilterSync`
   (`history.replaceState`, debounced), never `router.replace`, which
@@ -773,9 +784,9 @@ never "this app".
   text: "7 more lines are not at Good Service" (`severityLabel` in
   `lib/severity.ts`). On a badge the same status
   is sentence case ("Good service", `severityBadgeLabel`).
-- A page's h1 is its nav label: Journeys, Plan a journey, Status, Lines,
-  Operators, Stations, Incidents, Ask about trains, Preferences. A page
-  linked from a hub takes the link's words ("Find a train").
+- A page's h1 is its nav label: Journeys, Plan a journey, Trains, Status,
+  Lines, Operators, Stations, Incidents, Ask about trains, Preferences. A
+  page linked from a hub takes the link's words ("Add a ticket").
 - Helper text is one line. If the detail matters, put it behind a "How
   this is calculated" disclosure.
 - Meta descriptions: one plain sentence, 20 words or fewer, at most 160
@@ -1025,6 +1036,14 @@ start a journey; `/journeys/new` redirects there permanently with its
 query. "Plan a journey" left the nav: the Journeys page and the home
 page's "Upcoming journeys" lead with it as a button, and Journeys stays
 marked current on `/plan`.
+
+Trains (DS-192, 30 Oct 2026): "Find a train" left Journeys to become the
+Trains section of the nav (`/trains`, h1 "Trains"), schedule-first: a
+station's departures and arrivals, the trains between two stations, a
+train by headcode or UID. Its rows are plain links to the train's page;
+tracking is a light button there (or, in the ticket flow, on each row).
+The URL describes the timetable (`station`, `board`, `from`/`to`,
+`headcode`, `date`, `time`/`until`), and old links redirect.
 
 Clickable cards (23 Oct 2026): `ClickableCard` replaces `CardLink` (a
 link around the whole card) and the title-only `<Link data-card-link>`

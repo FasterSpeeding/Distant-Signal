@@ -237,7 +237,18 @@ describe('TrainSearchForm', () => {
     renderWithMantine(<TrainSearchForm />);
 
     expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
-    expect(screen.getByText('Enter a station above to search for trains that call there.')).toBeInTheDocument();
+    expect(screen.getByText('Pick a station to see its departures.')).toBeInTheDocument();
+  });
+
+  it('invites a schedule lookup in every view, never a journey', () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    const { unmount } = renderWithMantine(<TrainSearchForm initialBoard="arrivals" />);
+    expect(screen.getByText('Pick a station to see its arrivals.')).toBeInTheDocument();
+    unmount();
+    renderWithMantine(<TrainSearchForm view="between" />);
+    expect(screen.getByText('Pick two stations to see the trains between them.')).toBeInTheDocument();
+    expect(screen.queryByText(/journey/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /track/i })).not.toBeInTheDocument();
   });
 
   it('sends only the station when no optional filter is set', async () => {
@@ -357,7 +368,7 @@ describe('TrainSearchForm', () => {
   it('sends every optional filter it has, uppercased', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" initialStopsAt="OXF" />);
+    renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" />);
 
     fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '09:00' } });
     fireEvent.change(panelField('Latest departure (optional)'), { target: { value: '12:00' } });
@@ -365,9 +376,144 @@ describe('TrainSearchForm', () => {
 
     await waitFor(() =>
       expect(searchCallUrl(fetchMock)).toBe(
-        '/api/trains/search?station=MAN&origin=EUS&stops_at=OXF&from=09%3A00&to=12%3A00&across_midnight=true',
+        '/api/trains/search?station=MAN&origin=EUS&from=09%3A00&to=12%3A00&across_midnight=true',
       ),
     );
+  });
+
+  it('searches between two stations as station and stops_at', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm view="between" initialStation="MAN" initialStopsAt="OXF" />);
+
+    fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '09:00' } });
+    await clickSearch();
+
+    await waitFor(() =>
+      expect(searchCallUrl(fetchMock)).toBe(
+        '/api/trains/search?station=MAN&stops_at=OXF&from=09%3A00&across_midnight=true',
+      ),
+    );
+    // No "Starts at" between two stations, and no station view fields.
+    expect(screen.queryByRole('combobox', { name: 'Starts at (optional)' })).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('MAN');
+    expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('OXF');
+  });
+
+  it('needs both stations before it searches between them', () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm view="between" />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'MAN' } });
+    expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'WAT' } });
+    expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
+    expect(searchCallUrls(fetchMock)).toHaveLength(0);
+  });
+
+  it('shows the arrival at the second station on each row between two stations', async () => {
+    const body = JSON.stringify({
+      results: [{ ...PAGE_ONE[0], destinationArrival: null, destinationName: null, stopsAtArrival: '09:47' }],
+      nextCursor: null,
+    });
+    vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(body, { status: 200 }) }));
+    renderWithMantine(<TrainSearchForm view="between" initialStation="MAN" initialStopsAt="OXF" />);
+    await clickSearch();
+
+    const link = await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
+    expect(link.closest('li')).toHaveTextContent(/arr.*09:47/);
+    expect(
+      screen.getByText(/Times are when each train leaves the first station, with its arrival at the second/),
+    ).toBeInTheDocument();
+  });
+
+  describe('arrivals board', () => {
+    const ARRIVALS = JSON.stringify({
+      results: [
+        {
+          uid: 'C20001',
+          scheduled: null,
+          stationCrs: 'MAN',
+          originCrs: 'EUS',
+          originName: 'London Euston',
+          destinationCrs: 'MAN',
+          destinationName: 'Manchester Piccadilly',
+          destinationArrival: '09:05',
+          destinationArrivalDayOffset: 0,
+          arrival: '09:05',
+          arrivalDayOffset: 0,
+          terminates: true,
+        },
+        {
+          uid: 'C20002',
+          scheduled: '09:12',
+          dayOffset: 0,
+          stationCrs: 'MAN',
+          originCrs: 'BHM',
+          originName: 'Birmingham New Street',
+          destinationCrs: 'GLC',
+          destinationName: 'Glasgow Central',
+          destinationArrival: '12:30',
+          destinationArrivalDayOffset: 0,
+          arrival: '09:10',
+          arrivalDayOffset: 0,
+          terminates: false,
+        },
+      ],
+      nextCursor: null,
+    });
+
+    function mockArrivals() {
+      const base = mockFetchByUrl();
+      return vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith('/api/trains/arrivals')) return Promise.resolve(new Response(ARRIVALS, { status: 200 }));
+        return base(input);
+      });
+    }
+
+    it('lists arrivals by where each train comes from, timed by its arrival', async () => {
+      const fetchMock = mockArrivals();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialBoard="arrivals" />);
+
+      const terminating = await screen.findByRole('link', { name: /^09:05 from London Euston\b/ });
+      expect(terminating).toHaveAttribute('href', expect.stringMatching(/^\/train\/C20001\//));
+      expect(terminating.closest('li')).toHaveTextContent('Terminates here');
+      const calling = screen.getByRole('link', { name: /^09:10 from Birmingham New Street\b/ });
+      expect(calling.closest('li')).toHaveTextContent('To Glasgow Central');
+      expect(screen.getByText(/Times are when each train arrives at this station/)).toBeInTheDocument();
+      expect(
+        fetchMock.mock.calls.map((args: unknown[]) => String(args[0])).filter((url) => url.startsWith('/api/trains/')),
+      ).toEqual(['/api/trains/arrivals?station=MAN']);
+    });
+
+    it('switches between departures and arrivals, keeping the station', async () => {
+      const fetchMock = mockArrivals();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+      await awaitMountSettled();
+
+      fireEvent.click(screen.getByRole('radio', { name: 'Arrivals' }));
+      expect(await screen.findByRole('link', { name: /^09:05 from London Euston\b/ })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('radio', { name: 'Departures' }));
+      expect(await screen.findByRole('link', { name: rowName('08:22', 'WAT') })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
+    });
+
+    it('names its time filters for arrivals and sends them as from and to', async () => {
+      const fetchMock = mockArrivals();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialBoard="arrivals" />);
+      await awaitMountSettled();
+
+      fireEvent.change(panelField('Earliest arrival (optional)'), { target: { value: '09:00' } });
+      await waitFor(() =>
+        expect(fetchMock.mock.calls.map((args: unknown[]) => String(args[0])).at(-1)).toBe(
+          '/api/trains/arrivals?station=MAN&from=09%3A00',
+        ),
+      );
+    });
   });
 
   /** The four time filters are `TimeFilterInput` -- a native
@@ -390,7 +536,7 @@ describe('TrainSearchForm', () => {
       // `initialStopsAt` so the arrival pair (which only renders once Stops
       // at is filled in) is on screen alongside the departure pair -- all
       // four at once is the case where their button names have to differ.
-      renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
+      renderWithMantine(<TrainSearchForm view="between" initialStation="MAN" initialStopsAt="WAT" />);
 
       for (const { label, name } of TIME_FIELDS) {
         const input = panelField(label);
@@ -532,44 +678,17 @@ describe('TrainSearchForm', () => {
       await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&across_midnight=true'));
     });
 
-    it('forgets a half-entered arrival time once Stops at removes the field', async () => {
-      const fetchMock = mockFetchByUrl();
-      vi.stubGlobal('fetch', fetchMock);
-      renderFullForm({ initialStopsAt: 'WAT' });
-      // `canSearch` is gated on `!searching` too, so the "not disabled"
-      // assertions below would otherwise be racing this form's own
-      // mount-time auto-search, not just the condition under test.
-      await awaitMountSettled();
+    it('refuses to search between two stations on a half-entered arrival time', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm view="between" />);
+      fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'MAN' } });
+      fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'WAT' } });
+      expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
 
       const arrival = panelField('Earliest arrival (optional)');
       Object.defineProperty(arrival, 'validity', { configurable: true, get: () => ({ badInput: true }) });
       fireEvent.blur(arrival);
       expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
-
-      // Clearing Stops at unmounts both arrival filters. The half-entered
-      // one can no longer contribute a query param -- `searchParams()`
-      // gates `arrival_from`/`arrival_to` on `stops_at` -- so it must stop
-      // blocking the search too.
-      fireEvent.change(panelCombobox('Stops at (optional)'), {
-        target: { value: '' },
-      });
-      expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
-
-      // And the flag must be genuinely retracted, not merely ignored while
-      // Stops at is empty: putting Stops at back brings a FRESH, healthy
-      // arrival field, which reports nothing of its own (the callback only
-      // fires on a transition). A flag that merely went dormant would come
-      // back live here and wedge the form with no error text to explain it.
-      fireEvent.change(panelCombobox('Stops at (optional)'), {
-        target: { value: 'RDG' },
-      });
-      expect(panelField('Earliest arrival (optional)')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
-
-      await clickSearch();
-      await waitFor(() =>
-        expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG&across_midnight=true'),
-      );
     });
 
     it('does not let the picker or clear button submit the form', async () => {
@@ -595,13 +714,11 @@ describe('TrainSearchForm', () => {
       expect(searchCallUrls(fetchMock)).toHaveLength(callsBeforeInteraction);
     });
 
-    it('blocks the search on an unacceptable ARRIVAL time too, not just a departure one', async () => {
+    it('blocks the search on an unacceptable ARRIVAL time too, not just a departure one', () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
-      renderFullForm({ initialStopsAt: 'WAT' });
-      // `canSearch` is gated on `!searching` too, so the disabled-button
-      // assertion below would otherwise be racing this form's own
-      // mount-time auto-search, not just the invalid time under test.
-      await awaitMountSettled();
+      renderWithMantine(<TrainSearchForm view="between" />);
+      fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'MAN' } });
+      fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'WAT' } });
 
       // The arrival pair is conditionally rendered, so its contribution to
       // `canSearch` is easy to lose without noticing -- pinned separately
@@ -830,9 +947,9 @@ describe('TrainSearchForm', () => {
   // the "Track this train" button in the row's actions slot. The button
   // must never sit inside the link (nested interactive content), and both
   // belong to the same row.
-  it("puts the track button beside the row's link, never inside it", async () => {
+  it("puts the ticket flow's track button beside the row's link, never inside it", async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" attachTicketId={7} />);
 
     await clickSearch();
     const link = await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
@@ -878,9 +995,21 @@ describe('TrainSearchForm', () => {
     expect(link).toHaveAttribute('href', '/train/C10001/2026-07-16');
   });
 
-  it('renders a Track this train action on every row', async () => {
+  it('makes each row just its link to the train, with no tracking action', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    await clickSearch();
+
+    const link = await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
+    expect(link.tagName).toBe('A');
+    expect(link.closest('li')).toBe(link.parentElement);
+    expect(screen.queryByRole('button', { name: /^Track this/ })).not.toBeInTheDocument();
+  });
+
+  it('renders a Track this train action on every row in the ticket flow', async () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(<TrainSearchForm initialStation="MAN" attachTicketId={7} />);
 
     await clickSearch();
 
@@ -944,9 +1073,7 @@ describe('TrainSearchForm', () => {
     await clickSearch();
 
     expect(
-      await screen.findByText(
-        /Times are when each train leaves the station you searched, from the scheduled timetable/,
-      ),
+      await screen.findByText(/Times are when each train leaves this station, from the scheduled timetable/),
     ).toBeInTheDocument();
   });
 
@@ -957,11 +1084,11 @@ describe('TrainSearchForm', () => {
     expect(screen.getByRole('link', { name: 'Track it manually' })).toHaveAttribute('href', '/track?ticketId=7');
   });
 
-  it('offers the manual /track fallback with no query string when there is no ticketId', () => {
+  it('offers no tracking fallback outside the ticket flow', () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm />);
 
-    expect(screen.getByRole('link', { name: 'Track it manually' })).toHaveAttribute('href', '/track');
+    expect(screen.queryByRole('link', { name: 'Track it manually' })).not.toBeInTheDocument();
   });
 
   describe('operator filter', () => {
@@ -1430,34 +1557,34 @@ describe('TrainSearchForm', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
-  it('sends stops_at uppercased when entered directly (not just via a suggestion pick)', async () => {
+  it('sends the second station uppercased when typed in directly (not just via a suggestion pick)', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+    renderWithMantine(<TrainSearchForm view="between" initialStation="MAN" initialStopsAt="WAT" />);
+    await awaitMountSettled();
 
-    fireEvent.change(panelCombobox('Stops at (optional)'), {
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), {
       target: { value: 'rdg' },
     });
-    await clickSearch();
-
     await waitFor(() =>
       expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG&across_midnight=true'),
     );
   });
 
-  it('does not render the arrival-time filter until a station is entered in Stops at', async () => {
-    vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
-
-    expect(screen.queryByLabelText('Earliest arrival (optional)')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Latest arrival (optional)')).not.toBeInTheDocument();
-
-    await awaitMountSettled();
-  });
-
-  it('renders the arrival-time filter once a station is entered in Stops at', async () => {
+  it('has no second station or arrival-time filter on a station board', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
+    await awaitMountSettled();
+
+    openFiltersIfCompact();
+    expect(screen.queryByLabelText('Earliest arrival (optional)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Latest arrival (optional)')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'To' })).not.toBeInTheDocument();
+  });
+
+  it('renders the arrival-time filter between two stations', async () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(<TrainSearchForm view="between" initialStation="MAN" initialStopsAt="WAT" />);
 
     expect(panelField('Earliest arrival (optional)')).toBeInTheDocument();
     expect(panelField('Latest arrival (optional)')).toBeInTheDocument();
@@ -1465,10 +1592,10 @@ describe('TrainSearchForm', () => {
     await awaitMountSettled();
   });
 
-  it('sends arrival_from/arrival_to only when stops_at is set', async () => {
+  it('sends arrival_from/arrival_to between two stations', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialStation="man" initialStopsAt="wat" />);
+    renderWithMantine(<TrainSearchForm view="between" initialStation="man" initialStopsAt="wat" />);
 
     fireEvent.change(panelField('Earliest arrival (optional)'), { target: { value: '09:00' } });
     fireEvent.change(panelField('Latest arrival (optional)'), { target: { value: '09:30' } });
@@ -1481,18 +1608,18 @@ describe('TrainSearchForm', () => {
     );
   });
 
-  it('drops any previously-entered arrival-time filter once Stops at is cleared', async () => {
+  it('stops searching between two stations once the second is cleared', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="RDG" />);
+    renderWithMantine(<TrainSearchForm view="between" initialStation="MAN" initialStopsAt="RDG" />);
+    await awaitMountSettled();
+    const calls = searchCallUrls(fetchMock).length;
 
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: '' } });
     fireEvent.change(panelField('Earliest arrival (optional)'), { target: { value: '09:00' } });
-    fireEvent.change(panelCombobox('Stops at (optional)'), {
-      target: { value: '' },
-    });
-    await clickSearch();
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
-    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&across_midnight=true'));
+    expect(searchCallUrls(fetchMock)).toHaveLength(calls);
   });
 
   // docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
@@ -1524,7 +1651,8 @@ describe('TrainSearchForm', () => {
       // the page's server render (refetching the operator list and search
       // dates) on every search. Replace, not push, so /trains stays one
       // history entry. Params the form doesn't own (`ticketId`) are kept.
-      await waitFor(() => expect(window.location.search).toBe('?station=MAN&origin=EUS&ticketId=7&from=09%3A00'));
+      // The URL says it in the timetable's words: `time`, not the API's `from`.
+      await waitFor(() => expect(window.location.search).toBe('?station=MAN&origin=EUS&ticketId=7&time=09%3A00'));
       expect(replaceState).toHaveBeenCalledTimes(1);
       expect(replaceMock).not.toHaveBeenCalled();
       expect(pushMock).not.toHaveBeenCalled();
@@ -1532,12 +1660,31 @@ describe('TrainSearchForm', () => {
       window.history.replaceState(null, '', '/');
     });
 
+    it('writes the between-stations view and the arrivals board to the URL in their own words', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      window.history.replaceState(null, '', '/trains?from=MAN&to=WAT');
+      const { unmount } = renderWithMantine(
+        <TrainSearchForm view="between" initialStation="MAN" initialStopsAt="WAT" />,
+      );
+      await awaitMountSettled();
+      fireEvent.change(panelField('Latest departure (optional)'), { target: { value: '10:00' } });
+      await waitFor(() => expect(window.location.search).toBe('?from=MAN&to=WAT&until=10%3A00'));
+      unmount();
+
+      window.history.replaceState(null, '', '/trains?station=MAN');
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+      await awaitMountSettled();
+      fireEvent.click(screen.getByRole('radio', { name: 'Arrivals' }));
+      await waitFor(() => expect(window.location.search).toBe('?station=MAN&board=arrivals'));
+      window.history.replaceState(null, '', '/');
+    });
+
     it('pre-fills every field -- including all four time-range filters -- from initial props', async () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
       renderWithMantine(
         <TrainSearchForm
+          view="between"
           initialStation="MAN"
-          initialOrigin="EUS"
           initialStopsAt="WAT"
           initialDate="2026-09-16"
           initialFrom="09:00"
@@ -1548,9 +1695,8 @@ describe('TrainSearchForm', () => {
       );
       await awaitMountSettled();
 
-      expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
-      expect(panelCombobox('Departing from (optional)')).toHaveValue('EUS');
-      expect(panelCombobox('Stops at (optional)')).toHaveValue('WAT');
+      expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('MAN');
+      expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('WAT');
       expect(panelField('Date (optional)')).toHaveValue('2026-09-16');
       expect(panelField('Earliest departure (optional)')).toHaveValue('09:00');
       expect(panelField('Latest departure (optional)')).toHaveValue('12:00');
@@ -1584,7 +1730,7 @@ describe('TrainSearchForm', () => {
 });
 
 describe('TrainSearchForm: buses and ferries', () => {
-  it('a bus row has its badge, reads "Timetable only" and has a "Track this bus" button', async () => {
+  it('a bus row has its badge, reads "Timetable only" and, in the ticket flow, a "Track this bus" button', async () => {
     const body = JSON.stringify({
       results: [
         {
@@ -1603,7 +1749,7 @@ describe('TrainSearchForm: buses and ferries', () => {
       nextCursor: null,
     });
     vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(body, { status: 200 }) }));
-    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" attachTicketId={7} />);
     await clickSearch();
 
     expect(await screen.findByText('Bus service')).toBeInTheDocument();

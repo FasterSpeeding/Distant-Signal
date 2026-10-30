@@ -10,11 +10,13 @@ export const SITEMAP_REVALIDATE_SECONDS = 6 * 60 * 60;
  * a few thousand; past this, split it with `generateSitemaps`. */
 export const SITEMAP_URL_LIMIT = 50_000;
 
-/** The public pages that need no list: the home page, the indexes and the
- * planner. `/transit` and the legal pages are added only while they are
- * served (`buildSitemap`). */
+/** The public pages that need no list: the home page, the indexes, the
+ * planner and the Trains section (its bare page: a search's query string
+ * is never listed, `isExcludedPath`). `/transit` and the legal pages are
+ * added only while they are served (`buildSitemap`). */
 export const STATIC_PATHS: readonly string[] = [
   '/',
+  '/trains',
   '/status',
   '/lines',
   '/stations',

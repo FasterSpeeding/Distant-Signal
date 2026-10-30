@@ -54,6 +54,24 @@ export function searchRowDetails(
   return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 
+/** An arrivals board row's dimmed second line, the row being headed by
+ * where the train comes from: "Terminates here", or where it goes on to
+ * ("To London Paddington"), then its operator as `searchRowDetails` has
+ * it. */
+export function arrivalRowDetails(
+  row: Pick<TrainSearchResult, 'destinationCrs' | 'destinationName' | 'operator'> & { terminates: boolean },
+  operatorNames?: ReadonlyMap<string, string>,
+): string | undefined {
+  const parts: string[] = [];
+  if (row.terminates) {
+    parts.push('Terminates here');
+  } else if (row.destinationCrs) {
+    parts.push(`To ${row.destinationName ?? row.destinationCrs}`);
+  }
+  if (row.operator && operatorNames) parts.push(operatorLabel(row.operator, operatorNames));
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
 /** The row's headcode as labelled secondary text, "Headcode 1S00", as the
  * train page shows it (`trainIdentifiers`). From `identity`, else the
  * older `headcode`; `undefined` when neither is known. */

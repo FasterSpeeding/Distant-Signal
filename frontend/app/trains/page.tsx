@@ -1,8 +1,9 @@
 import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
-import { TrainSearchForm } from '@/components/TrainSearchForm';
+import { TrainsLookup } from '@/components/TrainsLookup';
 import { getAllTocs, getTrainSearchDates, getTrainSearchOperators } from '@/lib/api';
 import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
+import { trainsViewFor } from '@/lib/trainSearch';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata, in the same four-field
  * shape every detail page in this app already emits (see
@@ -14,115 +15,76 @@ import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
  * reading `searchParams`, for the same reason `/incidents` gives: the
  * params here pre-fill a search form, and `?ticketId=` in particular is
  * one visitor's own ticket -- a title varying on it would leak per-visitor
- * state into a cached preview card for no gain. The `<h1>`'s copy below
- * does vary with `attachTicketId`; this deliberately describes the page's
- * ordinary, shareable purpose instead.
+ * state into a cached preview card for no gain. The canonical URL is the
+ * bare `/trains`, whatever the query string.
  *
- * Title matches the page's own `<h1>` ("Find a train"), which is also the
- * link to this route from the Journeys page (`/journeys`), the nav's one
- * tracking entry since round 2.
- *
- * "another station along its route" is deliberately generic rather than
- * spelling out the ordering rule in this short SEO/OG blurb: `stops_at`
- * requires that named station to fall LATER in the journey than `station`
- * (2026-09-22; see `crates/api/src/data/queries.rs`, which spells the rule
- * out in full, and `TrainSearchForm`'s own field description). The wording
- * here is still accurate under that rule -- every match genuinely is
- * "another station along its route" -- it just does not additionally claim
- * the ordering, which belongs in the field's own, more detailed
- * description rather than this page-level summary. */
-const METADATA_TITLE = 'Find a train';
-const METADATA_DESCRIPTION = 'Search UK trains by station and date, then open one for its live status or track it.';
+ * Title matches the page's own `<h1>` and its nav label, "Trains"
+ * (`lib/navLinks.ts`'s `TRAINS_DESTINATION`, docs/style-guide.md "Tone"). */
+const METADATA_TITLE = 'Trains';
+const METADATA_DESCRIPTION =
+  'Timetables for every station: departures, arrivals, trains between two stations, or one train by headcode or UID.';
 
 export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, {
   ...OWN_PREVIEW_IMAGE,
   path: '/trains',
 });
 
-/** `/trains` -- the primary train-discovery surface. Generalized from a
- * destination-first search into a calling-point-first one -- see
- * docs/superpowers/specs/2026-09-08-calling-point-train-search-design.md
- * and docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md.
+type TrainsSearchParams = Record<string, string | string[] | undefined>;
+
+/** The page's `searchParams` as a `URLSearchParams`, keeping every value of
+ * a repeated param, in order. */
+function toUrlSearchParams(raw: TrainsSearchParams): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === undefined) continue;
+    for (const entry of Array.isArray(value) ? value : [value]) params.append(key, entry);
+  }
+  return params;
+}
+
+/** `/trains` -- the Trains section: the whole network's timetable, for
+ * seeing schedules and finding a specific train, with no tracking or
+ * journey steps in the way (2026-10-30; until then this was "Find a
+ * train", reached from the Journeys page and marked as part of Journeys
+ * in the nav). Three views (`TrainsLookup`): a station's departures or
+ * arrivals, the trains between two stations, or one train by headcode or
+ * UID. Every result opens the train's own page (`/train/[uid]/[date]`),
+ * where tracking it is a secondary action.
  *
- * Ships ALONGSIDE `/track`, never replacing it: `/track`'s manual-entry
- * form is the honest fallback for every gap this search cannot close.
+ * The query string is the view (see `TRAIN_URL_PARAMS`), so each is a
+ * shareable link:
  *
- * Query params mirror `/track`'s own convention: `?station=` pre-fills the
- * required search key, `?origin=`/`?stops_at=`/`?date=`/`?from=`/`?to=`/
- * `?arrival_from=`/`?arrival_to=`, their `?*_day_offset=`s and `?operator=` pre-fill the optional filters (so a
- * filtered search is a shareable link, and so this /trains history entry's
- * own URL can restore what was last searched -- see
- * docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md),
- * and `?ticketId=` carries a standalone ticket through so the row-level
- * "Track this train" action can attach it. */
-export default async function TrainsPage({
-  searchParams,
-}: {
-  searchParams: Promise<{
-    station?: string | string[];
-    origin?: string | string[];
-    stops_at?: string | string[];
-    date?: string | string[];
-    from?: string | string[];
-    to?: string | string[];
-    arrival_from?: string | string[];
-    arrival_to?: string | string[];
-    from_day_offset?: string | string[];
-    to_day_offset?: string | string[];
-    arrival_from_day_offset?: string | string[];
-    arrival_to_day_offset?: string | string[];
-    operator?: string | string[];
-    ticketId?: string | string[];
-  }>;
-}) {
-  const {
-    station,
-    origin,
-    stops_at: stopsAt,
-    date,
-    from,
-    to,
-    arrival_from: arrivalFrom,
-    arrival_to: arrivalTo,
-    from_day_offset: fromDayOffset,
-    to_day_offset: toDayOffset,
-    arrival_from_day_offset: arrivalFromDayOffset,
-    arrival_to_day_offset: arrivalToDayOffset,
-    operator,
-    ticketId,
-  } = await searchParams;
-  // Next.js supplies a `string[]` for a repeated query param -- fall back
-  // to the first value rather than letting `.toUpperCase()` throw on an
-  // array. Same handling as `app/track/page.tsx:10-13`. `stops_at` is a
-  // single-station filter now (see TrainSearchForm's own doc comment), so
-  // it collapses to the first entry exactly like every other param here.
-  const stationParam = Array.isArray(station) ? station[0] : station;
-  const originParam = Array.isArray(origin) ? origin[0] : origin;
-  const stopsAtParam = Array.isArray(stopsAt) ? stopsAt[0] : stopsAt;
-  const dateParam = Array.isArray(date) ? date[0] : date;
-  // `from`/`to`/`arrival_from`/`arrival_to` are time-of-day strings
-  // (`"HH:MM"`), not station codes -- unlike `station`/`origin`/`stops_at`
-  // below, these are never `.toUpperCase()`d.
-  const fromParam = Array.isArray(from) ? from[0] : from;
-  const toParam = Array.isArray(to) ? to[0] : to;
-  const arrivalFromParam = Array.isArray(arrivalFrom) ? arrivalFrom[0] : arrivalFrom;
-  const arrivalToParam = Array.isArray(arrivalTo) ? arrivalTo[0] : arrivalTo;
-  // The four `*_day_offset`s (`1`: that time is after midnight) and
-  // `operator` (comma-separated codes, read tolerantly by the form).
-  const first = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
-  const ticketIdParam = Array.isArray(ticketId) ? ticketId[0] : ticketId;
+ * - `?station=RDG[&board=arrivals]`, `?from=RDG&to=PAD` or
+ *   `?headcode=1S00`, with `date`, `time`/`until` and the filters;
+ * - `?uid=W12345[&date=]` redirects to that train's page (a 307: with no
+ *   date it depends on today), and a link in the old shape (`stops_at`, or
+ *   `from`/`to` as times) gets a permanent redirect to the same search in
+ *   today's names; `proxy.ts` sends both (`trainsRedirect`), before this
+ *   page renders;
+ * - `?ticketId=` (the Journeys page's "find the train this ticket is for")
+ *   is carried through, and only then do rows offer "Track this train".
+ *
+ * Specs: docs/superpowers/specs/2026-09-08-calling-point-train-search-design.md,
+ * 2026-09-09-stops-at-search-filter-design.md and
+ * 2026-09-22-train-search-state-persistence-design.md. */
+export default async function TrainsPage({ searchParams }: { searchParams: Promise<TrainsSearchParams> }) {
+  const params = toUrlSearchParams(await searchParams);
+  // Next.js supplies a `string[]` for a repeated query param: the first
+  // value is used. Station codes are uppercased; times, dates and
+  // operator codes are read as they are by the form.
+  const first = (key: string) => params.get(key) ?? undefined;
+  const code = (key: string) => first(key)?.toUpperCase();
+  const view = trainsViewFor(params);
+  const between = view === 'between';
+  const ticketIdParam = first('ticketId');
   const attachTicketId = ticketIdParam && /^\d+$/.test(ticketIdParam) ? Number(ticketIdParam) : undefined;
   // Names each result row's operator, from the same hour-cached TOC list
   // `app/stations/[crs]/page.tsx` fetches. If the list fails to load (or
   // comes back empty) the rows carry no operator at all, rather than a
-  // bare ATOC code.
-  // The date picker's bounds: what the search accepts
-  // (`getTrainSearchDates`, cached for a few minutes). Fetched alongside
-  // the TOC list; a failure leaves `null`, and the form falls back to a
-  // week either side of today.
-  // The Operator field also offers the codes the timetable carries that
-  // the TOC list does not name (`getTrainSearchOperators`, by code), so
-  // every train stays filterable; if that read fails, the TOC list alone.
+  // bare ATOC code. The date picker's bounds come from
+  // `getTrainSearchDates` (a failure falls back to a week either side of
+  // today), and the Operator field also offers the codes the timetable
+  // carries that the TOC list does not name (`getTrainSearchOperators`).
   const [tocs, searchDates, searchOperators] = await Promise.all([
     getAllTocs().catch(() => []),
     getTrainSearchDates().catch(() => null),
@@ -135,30 +97,35 @@ export default async function TrainsPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Find a train</Title>
+      <Title order={1}>Trains</Title>
       <Text c="dimmed">
         {attachTicketId !== undefined
           ? "Find the train your saved ticket is for. It'll be attached automatically once you track it."
-          : 'Search the whole network by any station a train calls at. Open any result for its live status, or track it to get updates.'}
+          : 'Timetables for the whole network. See what leaves or arrives at a station, the trains between two stations, or one train by its headcode or UID.'}
       </Text>
-      <TrainSearchForm
-        initialStation={stationParam?.toUpperCase()}
-        initialOrigin={originParam?.toUpperCase()}
-        initialStopsAt={stopsAtParam?.toUpperCase()}
-        initialDate={dateParam}
-        initialFrom={fromParam}
-        initialTo={toParam}
-        initialArrivalFrom={arrivalFromParam}
-        initialArrivalTo={arrivalToParam}
-        initialFromDayOffset={first(fromDayOffset)}
-        initialToDayOffset={first(toDayOffset)}
-        initialArrivalFromDayOffset={first(arrivalFromDayOffset)}
-        initialArrivalToDayOffset={first(arrivalToDayOffset)}
-        initialOperator={first(operator)}
-        attachTicketId={attachTicketId}
-        operatorNames={operatorNames}
-        unnamedOperatorCodes={unnamedOperatorCodes}
-        searchDates={searchDates}
+      <TrainsLookup
+        initialView={view}
+        initialCode={code('headcode') ?? code('uid')}
+        searchForm={{
+          initialBoard: first('board'),
+          initialStation: code(between ? 'from' : 'station'),
+          initialStopsAt: between ? code('to') : undefined,
+          initialOrigin: between ? undefined : code('origin'),
+          initialDate: first('date'),
+          initialFrom: first('time'),
+          initialTo: first('until'),
+          initialArrivalFrom: first('arrival_from'),
+          initialArrivalTo: first('arrival_to'),
+          initialFromDayOffset: first('time_day_offset'),
+          initialToDayOffset: first('until_day_offset'),
+          initialArrivalFromDayOffset: first('arrival_from_day_offset'),
+          initialArrivalToDayOffset: first('arrival_to_day_offset'),
+          initialOperator: first('operator'),
+          attachTicketId,
+          operatorNames,
+          unnamedOperatorCodes,
+          searchDates,
+        }}
       />
     </Stack>
   );
