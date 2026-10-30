@@ -288,12 +288,20 @@ pub struct PlannedItinerary {
     /// its Pareto set (DS-196), holding the CRS that tells it apart (if
     /// any). Turned into `labels` by [`label_options`].
     #[serde(skip)]
-    pub alternative: Option<Option<String>>,
+    pub alternative: Option<AlternativeRoute>,
     /// `results=options` only (additive, 2026-10-30, DS-196): what this
     /// option is -- see [`OptionLabel`]. The same on every segment's part
     /// of one journey. Absent in `fastest` mode.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<OptionLabel>,
+}
+
+/// Why an itinerary is an alternative route (DS-196): see
+/// [`PlannedItinerary::alternative`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlternativeRoute {
+    /// The station that tells it apart from the fastest option.
+    pub via_crs: Option<String>,
 }
 
 /// One label of a `results=options` journey (DS-196), served as
@@ -656,6 +664,10 @@ impl SegmentSearch<'_> {
 
     /// [`Self::search`] between resolved `TIPLOC` sets (either end may be an
     /// OR choice of stations, a group waypoint's).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per mode, each short; splitting them would scatter the cap logic"
+    )]
     pub fn search_tiplocs(
         &self,
         from_tiplocs: &[String],
@@ -902,13 +914,19 @@ fn diversify_with<J: OptionJourney>(
 
 /// [`PlannedItinerary::alternative`] for `choice`: its distinguishing
 /// station as a CRS.
-fn alternative_crs<J>(choice: &Choice<J>, interchange: &InterchangeData) -> Option<Option<String>> {
-    choice.alternative.as_ref().map(|alternative| {
-        alternative
-            .via_tiploc
-            .as_deref()
-            .and_then(|tiploc| crs_for_tiploc(interchange, tiploc))
-    })
+fn alternative_crs<J>(
+    choice: &Choice<J>,
+    interchange: &InterchangeData,
+) -> Option<AlternativeRoute> {
+    choice
+        .alternative
+        .as_ref()
+        .map(|alternative| AlternativeRoute {
+            via_crs: alternative
+                .via_tiploc
+                .as_deref()
+                .and_then(|tiploc| crs_for_tiploc(interchange, tiploc)),
+        })
 }
 
 /// Why a segment has no itineraries -- served as the segment's
@@ -2308,8 +2326,10 @@ pub fn label_options(
         if fewest_changes == Some(j) {
             labels.push(OptionLabel::FewestChanges);
         }
-        if let Some(via_crs) = segments[0].itineraries[j].alternative.clone() {
-            labels.push(OptionLabel::Alternative { via_crs });
+        if let Some(alternative) = segments[0].itineraries[j].alternative.clone() {
+            labels.push(OptionLabel::Alternative {
+                via_crs: alternative.via_crs,
+            });
         }
         for segment in segments.iter_mut() {
             segment.itineraries[j].labels.clone_from(&labels);

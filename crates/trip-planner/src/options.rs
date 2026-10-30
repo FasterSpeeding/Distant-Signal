@@ -28,6 +28,13 @@
 //! At most [`MAX_SEARCHES`] extra searches run, and nothing runs when the
 //! best journey has no corridor to ban (a non-stop train).
 //!
+//! Cost (`tests/bench_arrive_by.rs`'s `bench_options_cpu`: 20 random pairs
+//! on a synthetic ~400k-connection day, release, CPU time, 2026-10-30):
+//! RAPTOR's Pareto set alone took 16.3 s before DS-196 and 6.0 s after it
+//! (each round's sweep now stops at the best arrival so far, see
+//! `raptor::raptor_search_restricted`); the alternatives add 0.4 s, and
+//! turn 39 options into 61.
+//!
 //! The same train or route at another time is deliberately not an option:
 //! the planner's "Earlier routes"/"Later routes" paging already covers
 //! departure times, and a list of the same train every half hour is what
@@ -282,14 +289,17 @@ pub fn diversify<J: OptionJourney>(
         }
     }
 
-    alternatives.sort_by_key(|(j, _)| {
-        rank(
-            options.direction,
-            j.departure_min(),
-            j.arrival_min(),
-            j.changes(),
-        )
-    });
+    assemble(base, alternatives, options.direction)
+}
+
+/// `base` in its own order, then `alternatives` best first.
+fn assemble<J: OptionJourney>(
+    base: Vec<J>,
+    mut alternatives: Vec<(J, Alternative)>,
+    direction: Direction,
+) -> Vec<Choice<J>> {
+    alternatives
+        .sort_by_key(|(j, _)| rank(direction, j.departure_min(), j.arrival_min(), j.changes()));
     base.into_iter()
         .map(|journey| Choice {
             journey,
@@ -567,7 +577,6 @@ impl Bans {
 }
 
 #[cfg(test)]
-#[expect(clippy::too_many_lines, reason = "scenario tests read top to bottom")]
 mod tests {
     use std::collections::HashMap;
 

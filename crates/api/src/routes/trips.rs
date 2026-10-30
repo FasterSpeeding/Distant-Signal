@@ -3966,6 +3966,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 routes::trips -- --ignored --test-threads=1`"]
+    #[expect(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
     async fn options_mode_adds_a_labelled_alternative_corridor() {
         let pool = connect().await;
         let date = NaiveDate::from_ymd_opt(2026, 10, 31).unwrap();
