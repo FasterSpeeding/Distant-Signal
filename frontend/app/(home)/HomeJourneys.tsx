@@ -9,7 +9,7 @@ import { LoginControl } from '@/components/LoginControl';
 import { SectionTitle } from '@/components/SectionTitle';
 import { StatusRow } from '@/components/StatusRow';
 import { TextLink } from '@/components/TextLink';
-import { TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
+import { NoTrainPickedYetBadge, TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
 import { formatTime } from '@/lib/dateFormat';
 import { describeFailure } from '@/lib/failure';
 import { followedFromLabel } from '@/lib/followedFrom';
@@ -19,6 +19,7 @@ import {
   currentLeg,
   homeJourneyStatusGroup,
   isLoneTrain,
+  MAX_SHARED_JOURNEYS,
   MAX_UPCOMING_JOURNEYS,
   nextLateDepartureReliance,
   type HomeCurrent,
@@ -36,10 +37,11 @@ import {
 } from '@/lib/journeyName';
 import { legStatusGroup, type JourneySummaryGroup } from '@/lib/journeyStatus';
 import { routeLabel, stationLabel } from '@/lib/stationLabel';
-import { journeyListItemCancellation } from '@/lib/trackedRowStatus';
+import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
+import { journeyListItemCancellation, viewerCanPickTrain } from '@/lib/trackedRowStatus';
 import { trackedTrainDisplayName, trackedTrainHref, trackedTrainRouteLabel } from '@/lib/trackingName';
 import { isUntrackedLeg, untrackedLegPlaces, untrackedLegTimes, untrackedLegTitle } from '@/lib/untrackedLeg';
-import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
+import type { JourneyDetail, JourneyLegDetail, SharedVia } from '@/lib/types';
 
 /* The logged-in home page's journey sections: "Current journey" (the one
  * under way now) and "Upcoming journeys". A train tracked on its own is a
@@ -188,10 +190,11 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
 export function HomeJourneyRow({ journey }: { journey: HomeJourney }) {
   const name = journeyListItemNameInput(journey.item);
   const followed = journey.item.followedFrom;
+  const group = homeJourneyStatusGroup(journey);
   const details = [
     journeyPreviewLine(name),
     journey.departure ? `Departs ${formatTime(journey.departure)}` : null,
-    followed ? followedFromLabel(followed) : null,
+    followed ? followedFromLabel(followed) : sharedViaLabel(journey.item.sharedVia ?? []),
   ]
     .filter((part): part is string => part !== null)
     .join(' · ');
@@ -212,14 +215,29 @@ export function HomeJourneyRow({ journey }: { journey: HomeJourney }) {
           )
         }
         trailing={
-          <JourneyStatusGroupBadge
-            group={homeJourneyStatusGroup(journey)}
-            cancellation={journeyListItemCancellation(journey.item)}
-          />
+          // "Needs a train picked" asks only someone who can pick one: the
+          // owner, or a follower (DS-199).
+          group === 'unmatched' && !viewerCanPickTrain(journey.item) ? (
+            <NoTrainPickedYetBadge />
+          ) : (
+            <JourneyStatusGroupBadge group={group} cancellation={journeyListItemCancellation(journey.item)} />
+          )
         }
       />
     </ClickableCard>
   );
+}
+
+/** Who shared a journey into the caller's groups, and where: "Shared by
+ * Olive in Family", with "and 1 more" when it reached them through several
+ * groups. The Journeys page row's "From <group>" and "Shared by" in one
+ * dimmed line. `null` for a journey with no group share. */
+export function sharedViaLabel(sharedVia: readonly SharedVia[]): string | null {
+  const [first] = sharedVia;
+  if (first === undefined) return null;
+  const sharer = memberLabel(first.addedByName, first.addedByTag, MEMBER_PLACEHOLDER_INLINE);
+  const others = sharedVia.length - 1;
+  return `Shared by ${sharer} in ${first.groupName}${others > 0 ? ` and ${others} more` : ''}`;
 }
 
 /** A lone train's default name (route, date and time), the line under a
@@ -370,22 +388,35 @@ export function CurrentJourneySection({
  * upcoming it says so, and still offers "Plan a journey" where a new user
  * would look for it. When `loadFailed` (the journeys couldn't be read), it
  * says that instead of claiming there are none, and still lists any lone
- * trains under it. */
+ * trains under it.
+ *
+ * Under the caller's own, "Shared with you" (DS-199): journeys other
+ * members shared into the caller's groups that they don't follow
+ * (`sharedHomeJourneys`), under way or still to come, each saying who
+ * shared it and in which group. The first `MAX_SHARED_JOURNEYS`, then a
+ * line pointing to the Journeys page for the rest. Following one moves it
+ * up among the caller's own. Rendered only when there is one. */
 export function UpcomingJourneysSection({
   upcoming,
+  shared = [],
   loadFailed = false,
 }: {
   upcoming: readonly HomeEntry[];
+  shared?: readonly HomeJourney[];
   loadFailed?: boolean;
 }) {
   const shown = upcoming.slice(0, MAX_UPCOMING_JOURNEYS);
   const hidden = upcoming.length - shown.length;
+  const sharedShown = shared.slice(0, MAX_SHARED_JOURNEYS);
+  const sharedHidden = shared.length - sharedShown.length;
   return (
     <Stack component="section" aria-labelledby="upcoming-journeys-heading" gap="md">
       <Group justify="space-between" gap="sm">
         <SectionTitle id="upcoming-journeys-heading">Upcoming journeys</SectionTitle>
         <Group gap="md">
-          {shown.length > 0 && <TextLink href={JOURNEYS_DESTINATION.href}>View all</TextLink>}
+          {(shown.length > 0 || sharedShown.length > 0) && (
+            <TextLink href={JOURNEYS_DESTINATION.href}>View all</TextLink>
+          )}
           <ButtonLink href={PLAN_JOURNEY_HREF} variant="light">
             {PLAN_JOURNEY_LABEL}
           </ButtonLink>
@@ -394,7 +425,11 @@ export function UpcomingJourneysSection({
       {loadFailed ? (
         <Text c="dimmed">{describeFailure('load', 'your journeys')}</Text>
       ) : (
-        shown.length === 0 && <Text c="dimmed">No upcoming journeys.</Text>
+        shown.length === 0 && (
+          <Text c="dimmed">
+            {sharedShown.length > 0 ? 'No upcoming journeys of your own.' : 'No upcoming journeys.'}
+          </Text>
+        )
       )}
       {shown.length > 0 && (
         <Stack gap="xs">
@@ -407,6 +442,19 @@ export function UpcomingJourneysSection({
         <Text size="sm" c="dimmed">
           {hidden} more upcoming {hidden === 1 ? 'journey is' : 'journeys are'} on the Journeys page.
         </Text>
+      )}
+      {sharedShown.length > 0 && (
+        <Stack gap="xs">
+          <SectionTitle order={3}>Shared with you</SectionTitle>
+          {sharedShown.map((journey) => (
+            <HomeJourneyRow key={`journey-${journey.item.id}`} journey={journey} />
+          ))}
+          {sharedHidden > 0 && (
+            <Text size="sm" c="dimmed">
+              {sharedHidden} more shared {sharedHidden === 1 ? 'journey is' : 'journeys are'} on the Journeys page.
+            </Text>
+          )}
+        </Stack>
       )}
     </Stack>
   );

@@ -455,6 +455,35 @@ VALUES
   ('fixture-group-1', 900102, 'fixture-member', NOW())
 ON CONFLICT DO NOTHING;
 
+-- Two upcoming train journeys of fixture-member's, shared into the same
+-- group, for shared-journeys.spec.ts (DS-199): one on their own tracking
+-- of the planned W77777 (so fixture-owner, who doesn't follow it, sees
+-- the train fixture-member picked, not "Needs a train picked"), and one
+-- whose train leg has no train picked yet ("No train picked yet" to
+-- fixture-owner until they follow it). Fixed ids, nobody follows them.
+INSERT INTO journeys (id, user_id, custom_name, created_at, updated_at)
+VALUES
+  (900111, 'fixture-member', 'Fixture shared train', NOW(), NOW()),
+  (900112, 'fixture-member', 'Fixture shared train to pick', NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, train_subscription_id, match_mode)
+SELECT 900111, 1, 'KGX', 'EDB', '2099-01-05', ts.id, 'manual'
+FROM train_subscriptions ts
+JOIN trains t ON t.id = ts.trains_id
+WHERE t.train_uid = 'W77777' AND t.service_date = '2099-01-05' AND ts.user_id = 'fixture-member'
+ON CONFLICT (journey_id, leg_order) DO NOTHING;
+
+INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, depart_after, match_mode)
+VALUES (900112, 1, 'EDB', 'KGX', '2099-01-06', '09:00', 'unmatched')
+ON CONFLICT (journey_id, leg_order) DO NOTHING;
+
+INSERT INTO group_journeys (group_id, journey_id, added_by, added_at)
+VALUES
+  ('fixture-group-1', 900111, 'fixture-member', NOW()),
+  ('fixture-group-1', 900112, 'fixture-member', NOW())
+ON CONFLICT DO NOTHING;
+
 -- ---------------------------------------------------------------------
 -- Transit: a small Manchester Metrolink network (transit networks spec;
 -- the pages under /transit, shown because ci.yml's frontend-e2e job sets
@@ -747,6 +776,27 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------
+-- The Trains section's views (trains.spec.ts), at stations nothing else
+-- uses, on the seed's 2099-01-05: W62001, headcode 2Z42, leaves ZFA at
+-- 10:00, calls at ZFB (arrives 10:28, leaves 10:30) and terminates at ZFC
+-- at 11:00. A station's departures (ZFA), its arrivals (ZFB, and ZFC for a
+-- terminating train), the trains between two stations (ZFA to ZFC) and
+-- the headcode lookup all find it.
+-- ---------------------------------------------------------------------
+INSERT INTO schedule_destination_departures
+  (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs,
+   day_offset, public_departure, calling_point_arrival, destination_arrival,
+   public_destination_arrival, operator_atoc, headcode)
+VALUES
+  ('2099-01-05', 'ZFC', '10:00', 'W62001', 'ZFA', 'ZFA', 0, '10:00', NULL, '11:00', '11:00', 'CC', '2Z42'),
+  ('2099-01-05', 'ZFC', '10:30', 'W62001', 'ZFB', 'ZFA', 0, '10:30', '10:28', '11:00', '11:00', 'CC', '2Z42')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO schedule_services (service_date, uid, mode, headcode, operator_atoc, stp)
+VALUES ('2099-01-05', 'W62001', 'train', '2Z42', 'CC', 'P')
+ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
 -- Two TfL stops for the /tfl/stops/{id} page (DS-136, tfl-stop.spec.ts and
 -- the `tfl-stop` visual baseline). The api asks TFL_BASE_URL for their
 -- arrivals; the frontend-e2e job points it at scripts/tfl-arrivals-stub.py,
@@ -822,3 +872,78 @@ SELECT t.id, '0002', 'IB', 'EN ROUTE', '99811', '2026-12-03T11:05:00Z' FROM t
 ON CONFLICT (trains_id, msg_type) DO UPDATE SET
   reason_code = EXCLUDED.reason_code, canx_type = EXCLUDED.canx_type,
   loc_stanox = EXCLUDED.loc_stanox, event_at = EXCLUDED.event_at;
+
+-- ---------------------------------------------------------------------
+-- A journey leg that boards and alights partway along its train
+-- (journey-leg-progress.spec.ts): W90901 on 2099-02-02 calls at five
+-- fixture stations, ZLA to ZLE, and fixture-member's journey 900002 rides
+-- it from ZLB to ZLD. The train has left ZLA and been reported there, so
+-- the leg hasn't started: its progress line shows ZLB to ZLD only, as
+-- not started, and its calling points show ZLB to ZLD with ZLA and ZLE
+-- behind "Earlier stops" and "Later stops" toggles. Reached through an
+-- unlisted share link (the RAW token is in the spec; this row stores its
+-- SHA-256 hex digest, as for the group invite above), so it appears on no
+-- list page or screenshot. Fixture TIPLOCs and codes named through
+-- `stanox_crs` and `tiploc_locations` only, as for W81181 above.
+-- ---------------------------------------------------------------------
+INSERT INTO trains (train_uid, service_date, origin_crs, scheduled_departure, destination_crs, calling_points, train_id, resolved_at, created_at)
+VALUES (
+    'W90901', '2099-02-02', 'ZLA', '2099-02-02T09:00:00Z', 'ZLE',
+    '[{"tiploc":"ZDSLPA","kind":"Origin","bookedArrival":null,"bookedDeparture":"09:00:00","publicDeparture":"09:00:00","isHalfMinuteArrival":false,"isHalfMinuteDeparture":false,"dayOffset":0},{"tiploc":"ZDSLPB","kind":"Intermediate","bookedArrival":"09:20:00","bookedDeparture":"09:21:00","publicArrival":"09:20:00","publicDeparture":"09:21:00","isHalfMinuteArrival":false,"isHalfMinuteDeparture":false,"dayOffset":0},{"tiploc":"ZDSLPC","kind":"Intermediate","bookedArrival":"09:40:00","bookedDeparture":"09:41:00","publicArrival":"09:40:00","publicDeparture":"09:41:00","isHalfMinuteArrival":false,"isHalfMinuteDeparture":false,"dayOffset":0},{"tiploc":"ZDSLPD","kind":"Intermediate","bookedArrival":"10:00:00","bookedDeparture":"10:01:00","publicArrival":"10:00:00","publicDeparture":"10:01:00","isHalfMinuteArrival":false,"isHalfMinuteDeparture":false,"dayOffset":0},{"tiploc":"ZDSLPE","kind":"Terminate","bookedArrival":"10:20:00","bookedDeparture":null,"publicArrival":"10:20:00","isHalfMinuteArrival":false,"isHalfMinuteDeparture":false,"dayOffset":0}]'::jsonb,
+    'TRUST-FIXTURE-90', NOW(), NOW()
+)
+ON CONFLICT (train_uid, service_date) DO UPDATE SET
+  train_id = EXCLUDED.train_id, calling_points = EXCLUDED.calling_points, resolved_at = EXCLUDED.resolved_at;
+
+INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence)
+VALUES
+  ('99901', 'ZLA', 'ZDSLPA', 'Fixture Ashby', 1),
+  ('99902', 'ZLB', 'ZDSLPB', 'Fixture Brook', 1),
+  ('99903', 'ZLC', 'ZDSLPC', 'Fixture Cross', 1),
+  ('99904', 'ZLD', 'ZDSLPD', 'Fixture Dale', 1),
+  ('99905', 'ZLE', 'ZDSLPE', 'Fixture End', 1)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO tiploc_locations (tiploc, location_type, name, display_name, source_sequence)
+VALUES
+  ('ZDSLPA', 'station', 'Fixture Ashby', 'Fixture Ashby', 1),
+  ('ZDSLPB', 'station', 'Fixture Brook', 'Fixture Brook', 1),
+  ('ZDSLPC', 'station', 'Fixture Cross', 'Fixture Cross', 1),
+  ('ZDSLPD', 'station', 'Fixture Dale', 'Fixture Dale', 1),
+  ('ZDSLPE', 'station', 'Fixture End', 'Fixture End', 1)
+ON CONFLICT DO NOTHING;
+
+WITH t AS (
+  SELECT id FROM trains WHERE train_uid = 'W90901' AND service_date = '2099-02-02'
+)
+INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_destination_crs, resolution_status, tracked_at, trains_id, notifications_enabled)
+SELECT 'fixture-member', '2099-02-02', 'ZLB', 'ZLD', 'resolved', NOW(), t.id, FALSE
+FROM t
+WHERE NOT EXISTS (SELECT 1 FROM train_subscriptions ts WHERE ts.trains_id = t.id);
+
+WITH t AS (
+  SELECT id FROM trains WHERE train_uid = 'W90901' AND service_date = '2099-02-02'
+)
+INSERT INTO train_current_state (status, last_reported_location, last_event_type, delay_minutes, updated_at, trains_id, event_time)
+SELECT 'en_route', 'Fixture Ashby', 'DEPARTURE', 0, NOW(), t.id, NOW()
+FROM t
+ON CONFLICT (trains_id) WHERE trains_id IS NOT NULL DO UPDATE SET
+  status = EXCLUDED.status, last_reported_location = EXCLUDED.last_reported_location, updated_at = EXCLUDED.updated_at;
+
+INSERT INTO journeys (id, user_id, custom_name, created_at, updated_at)
+VALUES (900002, 'fixture-member', 'Fixture partway ride', NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+WITH sub AS (
+  SELECT ts.id FROM train_subscriptions ts
+  JOIN trains t ON t.id = ts.trains_id
+  WHERE t.train_uid = 'W90901' AND t.service_date = '2099-02-02' AND ts.user_id = 'fixture-member'
+)
+INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, train_subscription_id, match_mode)
+SELECT 900002, 1, 'ZLB', 'ZLD', '2099-02-02', sub.id, 'manual'
+FROM sub
+ON CONFLICT (journey_id, leg_order) DO NOTHING;
+
+INSERT INTO unlisted_links (token_hash, resource_type, resource_id, created_by, created_at, expires_at)
+VALUES (encode(sha256(convert_to('fixture-leg-progress-token-12345', 'UTF8')), 'hex'), 'journey', '900002', 'fixture-member', NOW(), NOW() + INTERVAL '30 days')
+ON CONFLICT DO NOTHING;

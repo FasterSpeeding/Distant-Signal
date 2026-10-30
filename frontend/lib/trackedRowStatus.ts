@@ -28,8 +28,12 @@ import type {
  *  - `noReport`: its day has passed and it never arrived (no report, or
  *    reports that stopped short of the arrival);
  *  - `noTrainPicked`: its day has passed and no train was ever picked;
+ *  - `noTrainPickedYet`: a train leg still has no train, on a journey
+ *    shared with the viewer that they don't follow, so picking one is not
+ *    theirs to do (`viewerCanPickTrain`);
  *  - `timetableOnly`: a bus or ferry, which Network Rail never reports. */
-export type TrackedRowStatusKind = JourneySummaryGroup | 'completed' | 'noReport' | 'noTrainPicked' | 'timetableOnly';
+export type TrackedRowStatusKind =
+  JourneySummaryGroup | 'completed' | 'noReport' | 'noTrainPicked' | 'noTrainPickedYet' | 'timetableOnly';
 
 export interface TrackedRowStatus {
   kind: TrackedRowStatusKind;
@@ -146,14 +150,25 @@ export function journeyListItemCancellation(journey: JourneyListItem): ListCance
   return trainLegs === 1 ? (journey.cancellation ?? null) : null;
 }
 
+/** Whether the viewer is the one to pick a train for this journey's
+ * open legs, and so should be asked to: their own journey, or one they
+ * follow. A journey shared into one of their groups that they don't follow
+ * is the owner's to fill in (DS-199). */
+export function viewerCanPickTrain(journey: Pick<JourneyListItem, 'followedFrom' | 'sharedVia'>): boolean {
+  return journey.followedFrom !== undefined || (journey.sharedVia ?? []).length === 0;
+}
+
 /** One row of `GET /Journeys/mine`, by its whole-journey summary
- * (`journeyListItemSummary`). Past means the current leg's day is over. */
+ * (`journeyListItemSummary`). Past means the current leg's day is over.
+ * "Needs a train picked" asks only a viewer who can act on it
+ * (`viewerCanPickTrain`); anyone else reads "No train picked yet". */
 export function journeyRowStatus(journey: JourneyListItem, today: string): TrackedRowStatus {
-  return journeySummaryRowStatus(
+  const status = journeySummaryRowStatus(
     journeyListItemSummary(journey),
     journey.serviceDate < today,
     journeyListItemCancellation(journey),
   );
+  return status.kind === 'unmatched' && !viewerCanPickTrain(journey) ? { ...status, kind: 'noTrainPickedYet' } : status;
 }
 
 /** The journey page header's status, from every leg. `null` with no legs. */

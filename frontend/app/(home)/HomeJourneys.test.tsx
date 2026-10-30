@@ -12,10 +12,16 @@ import {
   trainState,
   untrackedLeg,
 } from '@/test/journeyFixtures';
-import { loneTrainLeg, MAX_UPCOMING_JOURNEYS, type HomeJourney, type HomeLoneTrain } from '@/lib/homeJourneys';
+import {
+  loneTrainLeg,
+  MAX_SHARED_JOURNEYS,
+  MAX_UPCOMING_JOURNEYS,
+  type HomeJourney,
+  type HomeLoneTrain,
+} from '@/lib/homeJourneys';
 import { trackedTrainRowStatus } from '@/lib/trackedRowStatus';
 import type { JourneyDetail, TrackedTrainListItem } from '@/lib/types';
-import { CurrentJourneyCard, CurrentJourneySection, UpcomingJourneysSection } from './HomeJourneys';
+import { CurrentJourneyCard, CurrentJourneySection, sharedViaLabel, UpcomingJourneysSection } from './HomeJourneys';
 import { openBreakSummary } from '@/test/replanFixtures';
 
 // The open-break banner's "See options" sheet is a client component.
@@ -453,6 +459,90 @@ describe('UpcomingJourneysSection', () => {
     expect(within(cardOf(train)).getByText('Cancelled')).toBeInTheDocument();
     expect(within(section).queryByText('No upcoming journeys.')).not.toBeInTheDocument();
     expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
+  });
+
+  describe('Shared with you (DS-199)', () => {
+    const SHARED_VIA = {
+      groupId: 'grp-1',
+      groupName: 'Family',
+      addedByName: 'Olive',
+      addedByTag: null,
+      addedAt: '2026-09-16T08:00:00Z',
+    };
+
+    /** A journey Olive shared into Family, not followed: the api blanks
+     * the owner's subscription id, and keeps her train's state. */
+    function shared(id: number, customName: string, overrides: Partial<HomeJourney['item']> = {}): HomeJourney {
+      const journey = upcoming(id, customName);
+      return {
+        ...journey,
+        item: { ...journey.item, sharedVia: [SHARED_VIA], trainSubscriptionId: null, ...overrides },
+      };
+    }
+
+    it("lists them under the caller's own, saying who shared them and where, with the owner's train", () => {
+      renderWithMantine(
+        <UpcomingJourneysSection upcoming={[upcoming(1, 'Mine')]} shared={[shared(2, "Olive's trip")]} />,
+      );
+      const section = screen.getByRole('region', { name: 'Upcoming journeys' });
+      const heading = within(section).getByRole('heading', { name: 'Shared with you', level: 3 });
+      const mine = within(section).getByRole('link', { name: /Mine/ });
+      const olives = within(section).getByRole('link', { name: /Olive's trip/ });
+      expect(mine.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(heading.compareDocumentPosition(olives) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(olives).toHaveAttribute('href', '/journeys/2');
+      expect(within(cardOf(olives)).getByText(/Shared by Olive in Family/)).toBeInTheDocument();
+      expect(within(cardOf(olives)).getByText('Planned')).toBeInTheDocument();
+      expect(within(cardOf(mine)).queryByText(/Shared/)).not.toBeInTheDocument();
+    });
+
+    it('shows "No train picked yet", not "Needs a train picked", when the owner has not picked one', () => {
+      const open = { matchMode: 'unmatched', resolutionStatus: null, status: null, trackingPhase: null } as const;
+      const followed = shared(3, 'Followed, open', { ...open, followedFrom: FOLLOWED_FROM });
+      renderWithMantine(
+        <UpcomingJourneysSection
+          upcoming={[
+            { ...upcoming(1, 'Mine, open'), item: { ...upcoming(1).item, ...open, customName: 'Mine, open' } },
+            followed,
+          ]}
+          shared={[shared(2, 'Shared, open', open)]}
+        />,
+      );
+      const section = screen.getByRole('region', { name: 'Upcoming journeys' });
+      const card = (name: string) => cardOf(within(section).getByRole('link', { name }));
+      expect(within(card('Shared, open')).getByText('No train picked yet')).toBeInTheDocument();
+      expect(within(card('Shared, open')).queryByText('Needs a train picked')).not.toBeInTheDocument();
+      expect(within(card('Followed, open')).getByText('Needs a train picked')).toBeInTheDocument();
+      expect(within(card('Mine, open')).getByText('Needs a train picked')).toBeInTheDocument();
+    });
+
+    it(`caps them at ${MAX_SHARED_JOURNEYS}, says how many more, and offers View all with none of the caller's own`, () => {
+      const many = Array.from({ length: MAX_SHARED_JOURNEYS + 1 }, (_, index) =>
+        shared(index + 1, `Shared ${index + 1}`),
+      );
+      renderWithMantine(<UpcomingJourneysSection upcoming={[]} shared={many} />);
+      const section = screen.getByRole('region', { name: 'Upcoming journeys' });
+      expect(within(section).getAllByRole('link', { name: /^Shared \d/ })).toHaveLength(MAX_SHARED_JOURNEYS);
+      expect(within(section).getByText('1 more shared journey is on the Journeys page.')).toBeInTheDocument();
+      expect(within(section).getByText('No upcoming journeys of your own.')).toBeInTheDocument();
+      expect(within(section).queryByText('No upcoming journeys.')).not.toBeInTheDocument();
+      expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
+    });
+
+    it('renders no Shared with you heading when nothing is shared', () => {
+      renderWithMantine(<UpcomingJourneysSection upcoming={[upcoming(1)]} />);
+      expect(screen.queryByRole('heading', { name: 'Shared with you' })).not.toBeInTheDocument();
+    });
+
+    it('names a sharer with no name as "a member", and counts the other groups', () => {
+      expect(sharedViaLabel([{ ...SHARED_VIA, addedByName: null, addedByTag: '7f3a' }])).toBe(
+        'Shared by a member (#7f3a) in Family',
+      );
+      expect(sharedViaLabel([SHARED_VIA, { ...SHARED_VIA, groupId: 'grp-2', groupName: 'Commuters' }])).toBe(
+        'Shared by Olive in Family and 1 more',
+      );
+      expect(sharedViaLabel([])).toBeNull();
+    });
   });
 
   it("when the journeys couldn't be read, says so and still lists the lone trains", () => {

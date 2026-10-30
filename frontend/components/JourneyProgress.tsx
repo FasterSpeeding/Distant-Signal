@@ -3,11 +3,13 @@
 import { useEffect, useRef } from 'react';
 import { Box, Flex, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
-import { journeyStopLabel, resolvedStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
+import { journeyStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
 import { PlatformBadge } from './PlatformBadge';
 import { DELAY_TONE_COLOR } from './DelayBadge';
 import { WarningIcon } from './WarningIcon';
 import { stopDisplayTime } from '@/lib/stopTimes';
+import { trainPosition } from '@/lib/trainPosition';
+import { legProgressIndex, type LegPhase, type LegStopRange } from '@/lib/legStopRange';
 import type { JourneyStatus, JourneyStop, ResolutionStatus, TrackingPhase } from '@/lib/types';
 
 /** The one place an Origin/Terminate node's diameter is defined --
@@ -64,95 +66,12 @@ interface JourneyProgressProps {
   // for the same reason it is there: a caller with no pin data on hand
   // still compiles, and just gets the by-index fallback.
   endpointNames?: JourneyEndpointNames;
-}
-
-/** The last scheduled calling point with a confirmed reported event -- an
- * ARRIVAL, DEPARTURE, or PASS message TRUST has already sent. This is the
- * ONLY thing "you are here" is allowed to mean in this component.
- *
- * This deliberately walks `actualArrival`/`actualDeparture`/`lastEventType`
- * ONLY -- never `estimatedArrival`/`estimatedDeparture`, which are a forward
- * propagation of the train's current overall delay onto stops nothing has
- * confirmed yet, not a report of anything Network Rail said happened there.
- *
- * The `lastEventType === 'PASS'` arm exists because a PASS at a genuine
- * BOOKED calling point no longer populates `actualArrival`/`actualDeparture`
- * (`crates/api/src/data/journey.rs`'s `overlay_movement_events` -- a PASS
- * there means the train ran through without calling, so showing it as a
- * completed stop in `JourneyTimeline.tsx` was a real display bug). That fix
- * must not regress THIS component: a PASS is still real, reported evidence
- * that the train has physically gone past that point, so it must still
- * advance "you are here" exactly as an ARRIVAL/DEPARTURE would -- it just no
- * longer does so via the `actual*` fields, which now mean "the train called
- * here", a narrower fact than "the train has been confirmed past here".
- *
- * `docs/superpowers/specs/2026-08-28-train-tracking-design.md` already
- * investigated and explicitly rejected Train Describer (TD) / berth-level
- * physical position tracking as a non-goal for this app, reasoning that
- * TRUST's schedule-location events are the right granularity for "where is
- * this train relative to its stops." This function -- and the marker it
- * drives -- is a restatement of that decision, not a new instance of it: it
- * NEVER returns a value that implies the train is between two stops, NEVER
- * advances on a timer, and NEVER changes except when a new confirmed event
- * actually arrives on the next data refresh. A future edit must not
- * "smooth" or animate the marker between two confirmed indices -- there is
- * no data behind such a position, by design, and adding one would silently
- * reopen the TD/GPS non-goal in a different visual form. `-1` (no stop
- * confirmed yet) is a legitimate, common return value, not an error case. */
-function lastReachedIndex(stops: JourneyStop[]): number {
-  for (let i = stops.length - 1; i >= 0; i--) {
-    const stop = stops[i];
-    if (stop && (stop.actualArrival !== null || stop.actualDeparture !== null || stop.lastEventType === 'PASS')) {
-      return i;
-    }
-  }
-  return -1;
-}
-
-/** The index of the calling point whose own station name/CRS is the one
- * `TrainJourneyState.lastReportedLocation` names -- `-1` when the reported
- * location matches no listed stop, or when there is no reported location
- * at all.
- *
- * This exists to close a self-contradiction, not to invent a position
- * (2026-09-22 UX review, C3). The summary block above this diagram prints
- * "Last reported: Doncaster (departure)" straight off
- * `lastReportedLocation`, while `lastReachedIndex` walks only the
- * per-stop `actualArrival`/`actualDeparture`/`lastEventType` overlay. When
- * a movement report reached `train_current_state` but the per-stop overlay
- * didn't pick it up -- a TIPLOC/CRS key that didn't join, a schedule
- * refresh that dropped the actuals, an ingest ordering gap -- the two
- * disagree, and the page said BOTH "Last reported: Doncaster" and
- * "Last reported at Doncaster -- that report couldn't be matched to a
- * timetabled stop" about a Doncaster sitting in the table below with a
- * real time.
- *
- * The `lastReachedIndex` doc comment's rule is untouched and still
- * governs: a marker may only ever sit ON a calling point, never between
- * two, never on a timer. This adds one more piece of CONFIRMED,
- * report-derived evidence for which calling point that is -- the same
- * report the summary line is already printing -- rather than a second,
- * weaker notion of position. `resolvedStopLabel` (not `journeyStopLabel`)
- * so a reported location can never match the by-index "Stop 3"
- * placeholder; `stop.crs` is compared too so a report that names a CRS
- * matches a row that resolved a full name, and vice versa. Scanned
- * backwards, matching `lastReachedIndex`'s own convention for a route that
- * calls at the same station twice. */
-function reportedLocationIndex(
-  stops: JourneyStop[],
-  lastReportedLocation: string | null,
-  endpointNames: JourneyEndpointNames | undefined,
-): number {
-  const target = lastReportedLocation?.trim().toLowerCase();
-  if (!target) return -1;
-  for (let i = stops.length - 1; i >= 0; i--) {
-    const stop = stops[i];
-    if (!stop) continue;
-    const label = resolvedStopLabel(stop, i, stops.length, endpointNames);
-    if (label?.trim().toLowerCase() === target) return i;
-    if (stop.crs?.trim().toLowerCase() === target) return i;
-  }
-  return -1;
+  /** The journey leg's stops within `stops` (`legStopRange`): the diagram
+   * then shows only those, from where the traveller boards to where they
+   * alight, and its position and captions are relative to them. `null` or
+   * omitted (a train page, or a leg whose stops weren't found) shows the
+   * whole calling pattern. */
+  legRange?: LegStopRange | null;
 }
 
 /** Origin and Terminate are the two node kinds that print their station
@@ -164,8 +83,17 @@ function isEndpoint(kind: JourneyStop['kind']): boolean {
   return kind === 'Origin' || kind === 'Terminate';
 }
 
-function nodeDiameter(kind: JourneyStop['kind']): number {
-  return isEndpoint(kind) ? ENDPOINT_DIAMETER : INTERMEDIATE_DIAMETER;
+/** Whether a node is drawn as an endpoint (a bigger circle with its name
+ * printed). On a journey leg's clipped diagram that is the boarding and
+ * alighting stops, whatever kind of call they are on the train's own
+ * route; otherwise the train's own Origin and Terminate. */
+function nodeIsEndpoint(stop: JourneyStop, index: number, total: number, clipped: boolean): boolean {
+  if (clipped) return index === 0 || index === total - 1;
+  return isEndpoint(stop.kind);
+}
+
+function nodeDiameter(endpoint: boolean): number {
+  return endpoint ? ENDPOINT_DIAMETER : INTERMEDIATE_DIAMETER;
 }
 
 type NodeState = 'reached' | 'marker' | 'not-reached' | 'cancelled-remaining';
@@ -269,6 +197,10 @@ function progressCopy(
    * which this app reserves for a stop the overlay itself confirmed. */
   markerFromReportedLocation: boolean,
   trackingPhase: TrackingPhase | null = null,
+  /** A journey leg's progress (`legRange`): where the train is relative to
+   * the leg, and the name of the stop it was last at (outside the leg's
+   * stops when `phase` is `before`). `null` for the whole train. */
+  leg: { phase: LegPhase; trainAt: string | null } | null = null,
 ): ProgressCopy {
   const terminus = stops[stops.length - 1];
   if (terminus === undefined) {
@@ -276,6 +208,30 @@ function progressCopy(
   }
 
   const total = stops.length;
+  // The leg's stops only: at or past the alighting stop the leg is done,
+  // whatever the train does next; short of the boarding stop it hasn't
+  // started, even though the train has.
+  if (leg?.phase === 'after') {
+    const alightName = journeyStopLabel(terminus, total - 1, total, endpointNames);
+    return {
+      caption: `Arrived at ${alightName}.`,
+      ariaLabel: `Journey progress: arrived at ${alightName}`,
+    };
+  }
+  if (leg?.phase === 'before' && leg.trainAt) {
+    const board = stops[0];
+    const boardName = board ? journeyStopLabel(board, 0, total, endpointNames) : null;
+    if (status === 'cancelled') {
+      return {
+        caption: `Cancelled before reaching ${boardName}. Last confirmed at ${leg.trainAt}.`,
+        ariaLabel: `Journey progress: cancelled before reaching ${boardName}, last confirmed at ${leg.trainAt}`,
+      };
+    }
+    return {
+      caption: `Not started. The train is on its way to ${boardName}, last reported at ${leg.trainAt}.`,
+      ariaLabel: `Journey progress: not yet started, train on its way to ${boardName}, last reported at ${leg.trainAt}`,
+    };
+  }
   const markerStop = lastIndex >= 0 ? stops[lastIndex] : undefined;
   const markerName = markerStop ? journeyStopLabel(markerStop, lastIndex, total, endpointNames) : null;
   const stopNumber = lastIndex + 1;
@@ -369,7 +325,7 @@ function progressCopy(
  * Rendered directly above `JourneyTimeline` in `TrainJourney.tsx`, behind
  * the identical `{state.journeyStops && ...}` guard. */
 export function JourneyProgress({
-  stops,
+  stops: allStops,
   trackingPhase = null,
   resolutionStatus,
   status,
@@ -377,7 +333,13 @@ export function JourneyProgress({
   mayHaveArrived,
   lastReportedLocation,
   endpointNames,
+  legRange = null,
 }: JourneyProgressProps) {
+  const clipped = legRange !== null;
+  const stops = legRange ? allStops.slice(legRange.start, legRange.end + 1) : allStops;
+  // "May have arrived" is about the train's terminus: on a leg that gets
+  // off earlier it says nothing about the leg's own last stop.
+  const markerMayHaveArrived = mayHaveArrived && (!legRange || legRange.end === allStops.length - 1);
   // Two sources for the ONE marker index, in strict precedence order. The
   // per-stop `actual*`/PASS overlay wins whenever it has anything at all;
   // only when it is empty does the summary block's own
@@ -386,10 +348,24 @@ export function JourneyProgress({
   // when NEITHER source confirmed a calling point, which is the state the
   // "couldn't be matched to a timetabled stop" caption below actually
   // describes.
-  const confirmedIndex = lastReachedIndex(stops);
-  const reportedIndex = confirmedIndex === -1 ? reportedLocationIndex(stops, lastReportedLocation, endpointNames) : -1;
-  const markerFromReportedLocation = confirmedIndex === -1 && reportedIndex !== -1;
-  const lastIndex = markerFromReportedLocation ? reportedIndex : confirmedIndex;
+  //
+  // Found on the train's WHOLE calling pattern, then (on a journey leg)
+  // mapped onto the leg's own stops by `legProgressIndex`: before the
+  // boarding stop nothing on the leg is reached, and at or past the
+  // alighting stop all of it is.
+  const position = trainPosition(allStops, lastReportedLocation, endpointNames);
+  const legProgress = legRange ? legProgressIndex(position.index, legRange) : null;
+  // A report (not a confirmed call) naming the alighting stop itself says
+  // where the train was, not that the leg is over: it reads "last
+  // reported at" like any other reported stop.
+  const legPhase =
+    legProgress?.phase === 'after' && position.fromReport && position.index === legRange?.end
+      ? 'on'
+      : (legProgress?.phase ?? null);
+  const markerFromReportedLocation = position.fromReport && legPhase !== 'after';
+  const lastIndex = legProgress ? legProgress.index : position.index;
+  const beforeStop = legPhase === 'before' && position.index >= 0 ? allStops[position.index] : undefined;
+  const trainAt = beforeStop ? journeyStopLabel(beforeStop, position.index, allStops.length, endpointNames) : null;
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const nodeRefs = useRef<(HTMLDivElement | null)[]>([]);
   // One stable callback-ref per index, cached across renders, so a re-render
@@ -414,11 +390,12 @@ export function JourneyProgress({
     resolutionStatus,
     status,
     trainUid,
-    mayHaveArrived,
+    markerMayHaveArrived,
     lastReportedLocation,
     endpointNames,
     markerFromReportedLocation,
     trackingPhase,
+    legPhase ? { phase: legPhase, trainAt } : null,
   );
 
   // Scrolls THIS diagram's own horizontal scroll box, and only it --
@@ -455,7 +432,7 @@ export function JourneyProgress({
     // under a `lastIndex`-only dependency and leaves it off-screen.
   }, [lastIndex, stops.length]);
 
-  const endpointCount = stops.filter((stop) => isEndpoint(stop.kind)).length;
+  const endpointCount = stops.filter((stop, index) => nodeIsEndpoint(stop, index, stops.length, clipped)).length;
 
   return (
     <Stack gap="xs">
@@ -520,7 +497,8 @@ export function JourneyProgress({
               total={stops.length}
               lastIndex={lastIndex}
               status={status}
-              mayHaveArrived={mayHaveArrived}
+              mayHaveArrived={markerMayHaveArrived}
+              endpoint={nodeIsEndpoint(stop, index, stops.length, clipped)}
               endpointNames={endpointNames}
               nodeRef={nodeRefSetter(index)}
             />
@@ -554,6 +532,7 @@ function JourneyProgressNode({
   lastIndex,
   status,
   mayHaveArrived,
+  endpoint,
   endpointNames,
   nodeRef,
 }: {
@@ -563,13 +542,13 @@ function JourneyProgressNode({
   lastIndex: number;
   status: JourneyStatus | null;
   mayHaveArrived: boolean;
+  endpoint: boolean;
   endpointNames: JourneyEndpointNames | undefined;
   nodeRef: (el: HTMLDivElement | null) => void;
 }) {
-  const diameter = nodeDiameter(stop.kind);
+  const diameter = nodeDiameter(endpoint);
   const state = nodeState(index, lastIndex, status, stop);
   const delay = delayState(stop.delayMinutes);
-  const endpoint = isEndpoint(stop.kind);
   const label = journeyStopLabel(stop, index, total, endpointNames);
   // Same departure-first precedence as `JourneyTimeline.tsx`'s own
   // `scheduled` (see `journeyStopLabel`'s doc comment) -- this tooltip

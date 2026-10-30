@@ -1,7 +1,7 @@
 import { addCalendarDays, londonCalendarDay, londonDayEndIso } from './londonWallClock';
 import { legArrivalInstant, legDepartureInstant, legExpectedDepartureInstant } from './journeyLegChaining';
 import { journeyDetailSummary, journeyListItemSummary, type JourneySummaryGroup } from './journeyStatus';
-import type { TrackedRowStatus } from './trackedRowStatus';
+import { viewerCanPickTrain, type TrackedRowStatus } from './trackedRowStatus';
 import { splitTrainRows } from './upcomingPast';
 import { isUntrackedLeg } from './untrackedLeg';
 import type {
@@ -34,6 +34,11 @@ export const MAX_HOME_JOURNEY_DETAILS = 6;
 
 /** How many upcoming journeys the home page lists before "View all". */
 export const MAX_UPCOMING_JOURNEYS = 5;
+
+/** How many journeys shared with the caller, and not followed, the home
+ * page lists under "Shared with you" (DS-199), and so reads in full at
+ * most: a short glance, with the rest on the Journeys page. */
+export const MAX_SHARED_JOURNEYS = 3;
 
 /** A journey the home page shows, with its full detail when it was read. */
 export interface HomeJourney {
@@ -430,4 +435,28 @@ export function splitHomeJourneys(
   );
   const [current = null, ...alsoInProgress] = inProgress;
   return { current, alsoInProgress, upcoming };
+}
+
+/** Whether a `GET /Journeys/mine` row is a journey another member shared
+ * into one of the caller's groups that the caller doesn't follow
+ * (`include=shared`, DS-178): someone else's travel, which the home page
+ * lists apart under "Shared with you" rather than among the caller's own.
+ * A journey they follow is theirs to watch, and stays with their own. */
+export function isSharedNotFollowed(item: JourneyListItem): boolean {
+  return !viewerCanPickTrain(item);
+}
+
+/** The home page's "Shared with you" (DS-199): journeys shared with the
+ * caller that they don't follow (`isSharedNotFollowed`) and that are under
+ * way or still to come, by the same phase rules as their own
+ * (`splitHomeJourneys`). Under way first, soonest arriving first, then
+ * upcoming soonest first. `details` holds the ones read in full. */
+export function sharedHomeJourneys(
+  items: readonly JourneyListItem[],
+  details: ReadonlyMap<number, JourneyDetail>,
+  now: Date,
+): HomeJourney[] {
+  const { current, alsoInProgress, upcoming } = splitHomeJourneys(items, details, [], now);
+  const entries: HomeEntry[] = [...(current === null ? [] : [current]), ...alsoInProgress, ...upcoming];
+  return entries.filter((entry): entry is HomeJourney => !isLoneTrain(entry));
 }

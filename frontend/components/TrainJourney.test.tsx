@@ -1220,3 +1220,56 @@ describe('TrainJourney: tracking phases', () => {
     expect(screen.queryByText('Planned')).not.toBeInTheDocument();
   });
 });
+
+// A journey leg (`legOriginCrs`/`legDestinationCrs`): the progress line
+// and the calling points both cover the leg's own stops, from one range.
+describe('TrainJourney on a journey leg', () => {
+  const stops = [
+    journeyStop({ crs: 'KGX', name: 'London Kings Cross', kind: 'Origin', actualDeparture: '2026-09-22T16:00:00Z' }),
+    // A junction pass, filtered out before the range is found.
+    journeyStop({ crs: null, name: null, tiploc: 'HCRTJN' }),
+    journeyStop({ crs: 'PBO', name: 'Peterborough' }),
+    journeyStop({ crs: 'YRK', name: 'York' }),
+    journeyStop({ crs: 'NCL', name: 'Newcastle' }),
+    journeyStop({ crs: 'EDB', name: 'Edinburgh', kind: 'Terminate' }),
+  ];
+  const state = baseState({
+    resolutionStatus: 'resolved',
+    trainUid: 'W12345',
+    status: 'en_route',
+    lastReportedLocation: 'London Kings Cross',
+    journeyStops: stops,
+  });
+
+  it("clips the progress line and collapses the table to the leg's stops", () => {
+    renderWithMantine(
+      <TrainJourney state={state} legOriginCrs="PBO" legDestinationCrs="YRK" suppressTrainUidHeading />,
+    );
+    const group = screen.getByRole('group', { name: /Journey progress/ });
+    expect(group.querySelectorAll('[data-journey-node]')).toHaveLength(2);
+    expect(screen.getByText(/^Not started\. The train is on its way to Peterborough/)).toBeInTheDocument();
+
+    const table = screen.getByRole('table', { name: 'Journey timeline' });
+    expect(
+      within(table).getByRole('button', { name: 'Earlier stops from London Kings Cross (1)' }),
+    ).toBeInTheDocument();
+    expect(within(table).getByRole('button', { name: 'Later stops to Edinburgh (2)' })).toBeInTheDocument();
+    expect(within(table).getByText('Train last reported at London Kings Cross')).toBeInTheDocument();
+    expect(within(table).queryByText('Newcastle')).not.toBeInTheDocument();
+  });
+
+  it('shows the whole train when neither leg stop is on it', () => {
+    renderWithMantine(<TrainJourney state={state} legOriginCrs="ZZZ" legDestinationCrs="YYY" />);
+    const group = screen.getByRole('group', { name: /Journey progress/ });
+    expect(group.querySelectorAll('[data-journey-node]')).toHaveLength(5);
+    expect(screen.queryByRole('button', { name: /stops (from|to)/ })).not.toBeInTheDocument();
+  });
+
+  it('is unchanged on a train page, which passes no leg', () => {
+    renderWithMantine(<TrainJourney state={state} />);
+    const group = screen.getByRole('group', { name: /Journey progress/ });
+    expect(group.querySelectorAll('[data-journey-node]')).toHaveLength(5);
+    expect(screen.queryByRole('button', { name: /stops (from|to)/ })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('table', { name: 'Journey timeline' })).getByText('Newcastle')).toBeInTheDocument();
+  });
+});

@@ -15,9 +15,21 @@ test('/sitemap.xml lists public pages and none of the short-lived ones', async (
   expect(body).toContain('<urlset');
   expect(body).toMatch(new RegExp(`<loc>[^<]*/stations/${CRS}</loc>`));
   expect(body).toMatch(/<loc>[^<]*\/lines<\/loc>/);
+  expect(body).toMatch(/<loc>[^<]*\/trains<\/loc>/);
+  expect(body).not.toMatch(/<loc>[^<]*\/trains\?/);
   expect(body).not.toMatch(/<loc>[^<]*\/train\//);
   expect(body).not.toMatch(/<loc>[^<]*\/incidents\/[^<]/);
   expect(body).not.toMatch(/<loc>[^<]*\/history/);
+});
+
+test('the Trains section names the bare /trains as its canonical URL, whatever the search', async ({ page }) => {
+  await page.goto('/trains?station=ZFA&date=2099-01-05');
+  await expect(page).toHaveTitle('Trains · Distant Signal');
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', /\/trains$/);
+  await expect(page.locator('meta[name="description"]')).toHaveAttribute(
+    'content',
+    'Timetables for every station: departures, arrivals, trains between two stations, or one train by headcode or UID.',
+  );
 });
 
 test('a lower-case station code redirects permanently to the upper-case page', async ({ request }) => {
