@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import TrackedTrainByUidPage, { toJourneyState, trainStatusSummary, generateMetadata } from './page';
@@ -12,6 +12,7 @@ vi.mock('@/lib/api', async () => {
   return {
     ...actual,
     getPublicTrainByUidAndDate: vi.fn(),
+    getPreviewTrain: vi.fn(),
     getMyTrackedTrains: vi.fn(),
     getTrackedTrainById: vi.fn(),
   };
@@ -486,6 +487,47 @@ describe('toJourneyState', () => {
 describe('generateMetadata', () => {
   beforeEach(() => {
     notFoundMock.mockClear();
+    vi.mocked(api.getPreviewTrain).mockReset();
+    vi.mocked(api.getPreviewTrain).mockRejectedValue(new Error('not stubbed'));
+  });
+
+  it('lists its own preview card, versioned by the train state the card shows', async () => {
+    // On the train's own day, while it runs: its card is live.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-31T18:50:00Z'));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const train = publicTrainState({ originName: 'London Waterloo', destinationName: 'Woking' });
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(train);
+    vi.mocked(api.getPreviewTrain).mockResolvedValue({ ...train, delayMinutes: 0 });
+    const onTime = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
+    const [image] = onTime.openGraph?.images as { url: string; alt: string }[];
+    expect(image).toEqual({
+      url: expect.stringMatching(/^\/train\/W12345\/2026-08-31\/card\.png\?v=[0-9a-f]{8}$/) as unknown,
+      alt: '19:32 London Waterloo to Woking on Distant Signal',
+      width: 1200,
+      height: 630,
+      type: 'image/png',
+    });
+    expect(onTime.twitter).toMatchObject({ images: [{ url: image!.url }] });
+    expect(api.getPreviewTrain).toHaveBeenCalledWith('W12345', '2026-08-31');
+
+    const again = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
+    expect((again.openGraph?.images as { url: string }[])[0]!.url).toBe(image!.url);
+
+    vi.mocked(api.getPreviewTrain).mockResolvedValue({ ...train, delayMinutes: 7 });
+    const late = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
+    expect((late.openGraph?.images as { url: string }[])[0]!.url).not.toBe(image!.url);
+  });
+
+  it('still lists its card, unversioned by state, when the preview read fails', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
+    vi.mocked(api.getPreviewTrain).mockRejectedValue(new Error('down'));
+    const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
+    expect((metadata.openGraph?.images as { url: string }[])[0]!.url).toMatch(
+      /^\/train\/W12345\/2026-08-31\/card\.png\?v=[0-9a-f]{8}$/,
+    );
   });
 
   it('titles the page with origin and destination when both are known', async () => {

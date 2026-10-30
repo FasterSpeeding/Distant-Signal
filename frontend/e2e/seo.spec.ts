@@ -6,6 +6,8 @@ import { test, expect } from '@playwright/test';
 const CRS = process.env.E2E_REAL_STATION_CRS ?? 'KGX';
 const INCIDENT_ID = process.env.E2E_REAL_INCIDENT_ID ?? 'E879EB6C791C470AB6C2A7458AE68C3B';
 const LINE_ID = process.env.E2E_REAL_LINE_ID ?? 'lner-ecml';
+const TRAIN_UID = process.env.E2E_TRAIN_UID ?? 'W12345';
+const TRAIN_DATE = process.env.E2E_TRAIN_DATE ?? '2026-09-17';
 
 test('/sitemap.xml lists public pages and none of the short-lived ones', async ({ request }) => {
   const response = await request.get('/sitemap.xml');
@@ -44,6 +46,9 @@ const LIVE_PREVIEWS: [page: string, missing: string, description: RegExp][] = [
   [`/incidents/${INCIDENT_ID}`, '/incidents/NO-SUCH-INCIDENT', /^(Disruption|Planned work)/],
   [`/lines/${LINE_ID}`, '/lines/no-such-line', /^Live status, disruption/],
   [`/stations/${CRS}`, '/stations/ZZZ', /^Disruption, accessibility and departures for /],
+  // The public train page (the seed's train); a session-only
+  // `/train/by-id/...` page has no card of its own.
+  [`/train/${TRAIN_UID}/${TRAIN_DATE}`, '/train/ZZ9999/2099-01-01', /./],
 ];
 
 for (const [path, missing, description] of LIVE_PREVIEWS) {
@@ -66,6 +71,12 @@ for (const [path, missing, description] of LIVE_PREVIEWS) {
     expect((await request.get(`${missing}/card.png`)).status()).toBe(404);
   });
 }
+
+test('a tracked train, readable only with its owner session, keeps the site-wide preview image', async ({ page }) => {
+  // Anonymous, as a chat app unfurls it: the login prompt, never a card.
+  await page.goto(`/train/by-id/${process.env.E2E_TRACKING_ID ?? '1'}`);
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute('content', /\/opengraph-image\.png$/);
+});
 
 test('a station page names its canonical URL and describes itself as structured data', async ({ page }) => {
   await page.goto(`/stations/${CRS}?utm_source=x`);

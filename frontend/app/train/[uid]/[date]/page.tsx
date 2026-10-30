@@ -1,7 +1,7 @@
 import { Stack, Title, Text, Group } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
-import { getPublicTrainByUidAndDate, getMyTrackedTrains, ApiNotFoundError } from '@/lib/api';
+import { getPublicTrainByUidAndDate, getMyTrackedTrains, getPreviewTrain, ApiNotFoundError } from '@/lib/api';
 import { ShareButton } from '@/components/ShareButton';
 import { TrainJourneyPanel } from '@/components/TrainJourneyPanel';
 import { TrackThisTrainButton } from '@/components/TrackThisTrainButton';
@@ -17,7 +17,8 @@ import { ProvisionalTimetableNote } from '@/components/ProvisionalTimetableNote'
 import type { PublicTrainState, TrainJourneyState, TrackedTrainListItem } from '@/lib/types';
 import { delayLabel } from '@/lib/serviceStatus';
 import { cancellationSummary, trainCancellation } from '@/lib/cancellation';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
+import { trainPreviewCard, trainPreviewImage } from '@/lib/trainPreview';
 import { trainIdentifiers, trainName } from '@/lib/trainName';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -227,8 +228,18 @@ export async function generateMetadata({
   const title = publicTrainName(train) ?? `${serviceHeading(train)} ${uid}`;
   const description = trainStatusSummary(toJourneyState(train));
 
-  // One train on one day: worth following, not worth indexing.
-  return pageMetadata(title, description, { noindex: true });
+  // One train on one day: worth following, not worth indexing. Its preview
+  // image is its own (`card.png`), its URL versioned by what the card
+  // shows. Read through the image route's own shared, minute-cached entry
+  // (`getPreviewTrain`), so the version and the image come from the same
+  // data; an outage leaves the URL unversioned rather than failing the
+  // page's metadata.
+  const preview = await getPreviewTrain(uid, date).catch(() => null);
+  const card = preview === null ? null : trainPreviewCard(preview, Date.now());
+  return pageMetadata(title, description, {
+    noindex: true,
+    image: trainPreviewImage(uid, date, card, previewImageAlt(title)),
+  });
 }
 
 /** `/train/[uid]/[date]` -- the PUBLIC page for a real-world train,

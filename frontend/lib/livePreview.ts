@@ -3,9 +3,9 @@ import type { PreviewImage } from './pageMetadata';
 import type { SeverityGroup } from './severity';
 
 /** Link-preview cards that show live data (an incident, a line, a
- * station): what they have in common. Each page maps its own data to a
- * `StatusPreviewCard` (`lib/incidentPreview.ts`, `lib/linePreview.ts`,
- * `lib/stationPreview.ts`), `renderStatusPreviewImage` draws it, and the
+ * station, a train): what they have in common. Each page maps its own data
+ * to a `StatusPreviewCard` (`lib/incidentPreview.ts`, `lib/linePreview.ts`,
+ * `lib/stationPreview.ts`, `lib/trainPreview.ts`), `renderStatusPreviewImage` draws it, and the
  * page lists the image itself with a `?v=` digest of what it shows.
  *
  * Chat apps cache a preview image by URL, often for hours, and some never
@@ -33,12 +33,16 @@ export const LIVE_PREVIEW_CACHE_CONTROL = `public, max-age=${LIVE_PREVIEW_REVALI
  * at `cardTitleFontSize`); a longer one may be clamped. */
 export const TITLE_FITS_LENGTH = 90;
 
+/** A band's colour: a severity group's (`StatusBadge`), or a delay's
+ * (`DelayBadge`'s orange late and teal early, for a train card). */
+export type PreviewBandTone = SeverityGroup | 'late' | 'early';
+
 /** What `renderStatusPreviewImage` draws. */
 export interface StatusPreviewCard {
   /** The coloured band, in the severity pill's colours: `label` carries
    * the state in words, the colour only repeats it. `aside` is its time
    * ("Updated Fri 30 Oct, 13:58", "As of 14:03"). */
-  band: { tone: SeverityGroup; label: string; aside: string };
+  band: { tone: PreviewBandTone; label: string; aside: string };
   /** The page's subject, clamped to three lines. */
   title: string;
   /** The first fact, a little larger: where an incident is, what is wrong

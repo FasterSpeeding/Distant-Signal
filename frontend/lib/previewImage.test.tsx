@@ -18,6 +18,14 @@ import {
 import { linePreviewCard } from './linePreview';
 import type { StatusPreviewCard } from './livePreview';
 import { stationPreviewCard } from './stationPreview';
+import { trainPreviewCard } from './trainPreview';
+import {
+  CANCELLED_TRAIN,
+  DELAYED_TRAIN,
+  ON_TIME_TRAIN,
+  PLANNED_TRAIN,
+  TRAIN_PREVIEW_NOW,
+} from '@/test/trainPreviewFixtures';
 import type { IncidentDetail, LineStatus, LineStatusReport, SampleStats } from './types';
 
 describe('previewTitleFromMetadata', () => {
@@ -172,7 +180,9 @@ describe('the routes with their own preview', () => {
 /** Sample live cards a reviewer can look at as PNGs
  * (`test/fixtures/preview-cards/`): three incidents (a live disruption, a
  * cleared one with no lines left, and upcoming planned work with a very
- * long summary and more lines than fit), a disrupted line and a station.
+ * long summary and more lines than fit), a disrupted line, a station, and
+ * four made-up trains (`test/trainPreviewFixtures.ts`: on time, late,
+ * cancelled, and tomorrow's, not yet running).
  * Fixed `now`, so they render the same every time. Regenerate with
  * `UPDATE_PREVIEW_CARDS=1 npx vitest run lib/previewImage.test.tsx`. */
 const PREVIEW_NOW = Date.parse('2026-10-30T14:00:00Z');
@@ -272,7 +282,7 @@ function previewLineReport(id: string, name: string, statuses: LineStatus[]): Li
     computedAt: '2026-10-30T14:03:00Z',
   };
 }
-/** Every sample card: the incidents, a disrupted line and a station. */
+/** Every sample card: the incidents, a disrupted line, a station and the trains. */
 const PREVIEW_CARDS: [name: string, card: StatusPreviewCard][] = [
   ...INCIDENT_PREVIEWS.map(([name, incident]): [string, StatusPreviewCard] => [
     `incident-${name}`,
@@ -316,6 +326,10 @@ const PREVIEW_CARDS: [name: string, card: StatusPreviewCard][] = [
       PREVIEW_NOW,
     ),
   ],
+  ['train-on-time', trainPreviewCard(ON_TIME_TRAIN, TRAIN_PREVIEW_NOW)],
+  ['train-delayed', trainPreviewCard(DELAYED_TRAIN, TRAIN_PREVIEW_NOW)],
+  ['train-cancelled', trainPreviewCard(CANCELLED_TRAIN, TRAIN_PREVIEW_NOW)],
+  ['train-not-yet-running', trainPreviewCard(PLANNED_TRAIN, TRAIN_PREVIEW_NOW)],
 ];
 const PREVIEW_FIXTURES = 'test/fixtures/preview-cards';
 
@@ -393,10 +407,20 @@ describe('the incident band colours', () => {
     return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
   };
 
-  it.each(Object.entries(STATUS_BAND_COLORS))('%s is the light StatusBadge pair, at 4.5:1 or more', (tone, pair) => {
-    const token = (part: string) =>
-      palette(new RegExp(`--ds-status-badge-${tone}-${part}:\\s*([^;]+);`).exec(light)![1]!.trim()).toLowerCase();
-    expect(pair).toEqual({ fill: token('fill'), text: token('text') });
+  /** A delay band takes `DelayBadge`'s hue: the light pill's own text colour. */
+  const DELAY_HUES: Record<string, string> = { late: 'orange', early: 'teal' };
+
+  it.each(Object.entries(STATUS_BAND_COLORS))('%s is the light badge pair, at 4.5:1 or more', (tone, pair) => {
+    const value = (name: string) => palette(new RegExp(`${name}:\\s*([^;]+);`).exec(light)![1]!.trim()).toLowerCase();
+    const hue = DELAY_HUES[tone];
+    if (hue) {
+      expect(pair).toEqual({ fill: value(`--mantine-color-${hue}-light-color`), text: '#ffffff' });
+    } else {
+      expect(pair).toEqual({
+        fill: value(`--ds-status-badge-${tone}-fill`),
+        text: value(`--ds-status-badge-${tone}-text`),
+      });
+    }
     const [hi, lo] = [luminance(pair.fill), luminance(pair.text)].sort((a, b) => b - a);
     expect((hi! + 0.05) / (lo! + 0.05)).toBeGreaterThanOrEqual(4.5);
   });
@@ -407,6 +431,7 @@ describe('the live preview routes', () => {
     ['app/incidents/[id]/card.png/route.tsx', 'getPreviewIncident('],
     ['app/lines/[id]/card.png/route.tsx', 'getPreviewLineStatus('],
     ['app/stations/[crs]/card.png/route.tsx', 'getPreviewStopPointDisruption('],
+    ['app/train/[uid]/[date]/card.png/route.tsx', 'getPreviewTrain('],
   ];
 
   it.each(ROUTES)('%s draws from preview reads only, never from the request', (route, read) => {
@@ -421,5 +446,21 @@ describe('the live preview routes', () => {
     expect(source).toContain('LIVE_PREVIEW_CACHE_CONTROL');
     // Its page lists it, not a file-convention image that would win over it.
     expect(existsSync(route.replace('card.png/route.tsx', 'opengraph-image.tsx'))).toBe(false);
+    const page = readFileSync(route.replace('card.png/route.tsx', 'page.tsx'), 'utf8');
+    expect(page).toMatch(/image: \w+PreviewImage\(/);
+    expect(page).not.toContain('OWN_PREVIEW_IMAGE');
+  });
+
+  it('gives a session-only tracked-train page no card: it keeps the site-wide image', () => {
+    // `/train/by-id/{trackingId}` is one person's subscription (a custom
+    // name, tickets), readable only with their session; its public form is
+    // `/train/{uid}/{date}`, which it redirects to once matched. A chat app
+    // unfurls anonymously, so a card here could only ever show the login
+    // prompt, and must never show what the owner sees.
+    const dir = 'app/train/by-id/[trackingId]';
+    expect(existsSync(join(dir, 'card.png'))).toBe(false);
+    expect(existsSync(join(dir, 'opengraph-image.tsx'))).toBe(false);
+    const page = readFileSync(join(dir, 'page.tsx'), 'utf8');
+    expect(page).not.toMatch(/PreviewImage|OWN_PREVIEW_IMAGE|getPreview/);
   });
 });
