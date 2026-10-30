@@ -1,5 +1,12 @@
 # Transit networks in the trip planner: Metrolink, London Trams and after
 
+> **Status note, 2026-10-30.** §3.3's London counts come from the BODS
+> London GTFS, which merges TfL's engineering-work files with their base
+> files, so London Trams (998 weekday trips) and the Underground (9,814)
+> are inflated. §12's `london-trams` network and §13.2's DLR are
+> superseded by one `tfl` network from TfL's own timetables. See
+> [the TfL transit design](2026-10-30-tfl-transit-design.md), §16.
+
 Design, 2026-10-24. Status: **accepted**. Work log DS-162 (a subtask of
 DS-153). The user accepted every proposed default of
 [§16](#16-open-questions-for-the-user) on 2026-10-24; the decisions are
