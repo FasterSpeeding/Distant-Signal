@@ -60,7 +60,7 @@ function locationCode(
   return null;
 }
 
-function codeList(
+export function codeList(
   raw: string | undefined,
   { allowStops, allowGroups = false, max }: { allowStops: boolean; allowGroups?: boolean; max: number },
 ): string[] {
@@ -74,14 +74,15 @@ function codeList(
 
 /** Vias keep their order and may repeat, just not twice in a row; a
  * station's CRS or a bus stop's or ferry terminal's `tiploc:` code, as the
- * avoid lists, or a station group (`group:LON`). */
-function viaList(raw: string | undefined): string[] {
+ * avoid lists, or a station group (`group:LON`). At most `max`. Also the
+ * `/trains` boards' `calls_at` and `via` (`lib/trainStopFilters.ts`). */
+export function orderedCodeList(raw: string | undefined, max = MAX_VIAS): string[] {
   const vias: string[] = [];
   for (const part of (raw ?? '').split(',')) {
     const code = locationCode(part, true, true);
     if (code && vias[vias.length - 1] !== code) vias.push(code);
   }
-  return vias.slice(0, MAX_VIAS);
+  return vias.slice(0, max);
 }
 
 /** Reads a `/plan` URL back into the form's starting values. */
@@ -103,7 +104,7 @@ export function parsePlanSearchParams(raw: RawSearchParams): PlanFormInitial {
   if (results === 'fastest' || results === 'options') initial.results = results;
   const waypoints = codeList(first(raw.waypoints), { allowStops: true, allowGroups: true, max: 20 });
   if (waypoints.length > 0) initial.waypointCrs = waypoints;
-  const via = viaList(first(raw.via));
+  const via = orderedCodeList(first(raw.via));
   if (via.length > 0) initial.viaCrs = via;
   const avoid = codeList(first(raw.avoid), { allowStops: true, max: MAX_AVOIDED });
   if (avoid.length > 0) initial.avoidCrs = avoid;

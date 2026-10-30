@@ -1,6 +1,7 @@
 'use client';
 
-import { Accordion, AccordionControl, AccordionItem, AccordionPanel, NativeSelect, Stack, Text } from '@mantine/core';
+import { NativeSelect, Stack } from '@mantine/core';
+import { AdvancedOptionsDisclosure, STOP_LIST_FIELDS } from './AdvancedOptionsDisclosure';
 import { StationListPicker } from './StationListPicker';
 import { searchPlannerLocations } from '@/lib/suggestions';
 import { withGroupSuggestions } from '@/lib/stationGroups';
@@ -13,16 +14,6 @@ import {
   countAdvancedOptions,
   type TripPlanAdvancedOptions,
 } from '@/lib/tripPlan';
-
-/** Flush, chrome-free disclosure, as `StationAccessibilitySection.tsx`'s
- * and `WorkingTimetable.tsx`'s. */
-const DISCLOSURE_STYLES = {
-  item: { border: 'none', backgroundColor: 'transparent' },
-  control: { padding: 0, paddingBlock: 'var(--mantine-spacing-xs)' },
-  chevron: { marginInlineEnd: 'var(--mantine-spacing-xs)' },
-  panel: { paddingInlineStart: 0 },
-  content: { paddingInline: 0 },
-} as const;
 
 export type AdvancedOptionErrors = Partial<Record<'viaCrs' | 'avoidCrs' | 'avoidStopCrs' | 'avoidChangeCrs', string>>;
 
@@ -121,11 +112,10 @@ const MAX_CHANGES_OPTIONS = [
  * `avoidStop`, `avoidChange`, `maxChanges`; docs/api-changelog.md,
  * 2026-09-29 and 2026-10-06).
  *
- * Collapsed by default, as a flush `Accordion` like the station page's
- * disclosures (a real `aria-expanded` button). Its control says how many
- * options are set ("2 set"), and a dimmed line under it lists them, so a
- * restored or shared search never hides a constraint. The parent controls
- * whether it is open, so it can open it on an error inside.
+ * Collapsed by default (`AdvancedOptionsDisclosure`, shared with the
+ * `/trains` boards' `TrainsAdvancedOptions`, as are the three station
+ * lists' wording, `STOP_LIST_FIELDS`). The parent controls whether it is
+ * open, so it can open it on an error inside.
  *
  * Every list, vias included, takes bus stops and ferry terminals (`tiploc:`
  * codes) as well as stations, like From and To: the API normalizes `via`
@@ -149,110 +139,78 @@ export function PlanTripAdvancedOptions({
   onOpenedChange: (opened: boolean) => void;
   results: 'fastest' | 'options';
 }) {
-  const count = countAdvancedOptions(options);
-  const problems = Object.keys(errors).length;
-  const summary = advancedOptionsSummary(options, names);
-  const status = [count > 0 ? `${count} set` : null, problems > 0 ? `${problems} to fix` : null]
-    .filter(Boolean)
-    .join(', ');
-
   return (
-    <Accordion
-      chevronPosition="left"
-      keepMounted={false}
-      styles={DISCLOSURE_STYLES}
-      value={opened ? 'advanced' : null}
-      onChange={(value) => onOpenedChange(value === 'advanced')}
+    <AdvancedOptionsDisclosure
+      count={countAdvancedOptions(options)}
+      problems={Object.keys(errors).length}
+      summary={advancedOptionsSummary(options, names)}
+      opened={opened}
+      onOpenedChange={onOpenedChange}
     >
-      <AccordionItem value="advanced">
-        <AccordionControl>
-          Advanced options
-          {status && (
-            <Text span size="sm" c={problems > 0 ? 'var(--ds-color-error-text)' : 'dimmed'} ml={6}>
-              ({status})
-            </Text>
-          )}
-        </AccordionControl>
-        {!opened && summary && (
-          <Text size="xs" c="dimmed" pb="xs">
-            {summary}
-          </Text>
-        )}
-        <AccordionPanel>
-          <Stack gap="lg">
-            <StationListPicker
-              label="Pass through (in order)"
-              description={
-                'Every route goes through these stations, in this order, whether or not the train stops there. Unlike "Call at", you don\'t need to stop. A group such as "Any of the London Terminals" is passed through any one of its stations.'
-              }
-              values={options.viaCrs ?? []}
-              onChange={(viaCrs) => onChange({ ...options, viaCrs })}
-              names={names}
-              onNames={onNames}
-              search={searchVias}
-              max={MAX_VIAS}
-              ordered
-              allowStops
-              allowGroups
-              error={errors.viaCrs}
-              itemNoun="pass-through station"
-            />
-            <StationListPicker
-              label="Avoid completely"
-              description="Never stop at or travel through these."
-              values={options.avoidCrs ?? []}
-              onChange={(avoidCrs) => onChange({ ...options, avoidCrs })}
-              names={names}
-              onNames={onNames}
-              search={searchPlannerLocations}
-              max={MAX_AVOIDED}
-              allowStops
-              error={errors.avoidCrs}
-              itemNoun="avoided station"
-            />
-            <StationListPicker
-              label="Don't stop at"
-              description="Trains may run through these, but never stop there."
-              values={options.avoidStopCrs ?? []}
-              onChange={(avoidStopCrs) => onChange({ ...options, avoidStopCrs })}
-              names={names}
-              onNames={onNames}
-              search={searchPlannerLocations}
-              max={MAX_AVOIDED}
-              allowStops
-              error={errors.avoidStopCrs}
-              itemNoun="no-stop station"
-            />
-            <StationListPicker
-              label="Don't change at"
-              description="Never get on, get off or change here; staying on a train that stops there is fine."
-              values={options.avoidChangeCrs ?? []}
-              onChange={(avoidChangeCrs) => onChange({ ...options, avoidChangeCrs })}
-              names={names}
-              onNames={onNames}
-              search={searchPlannerLocations}
-              max={MAX_AVOIDED}
-              allowStops
-              error={errors.avoidChangeCrs}
-              itemNoun="no-change station"
-            />
-            <NativeSelect
-              label="Most changes"
-              description={
-                results === 'options'
-                  ? 'Compare options never shows a route with more changes than this.'
-                  : 'Fastest always shows the fastest route, and says if it needs more changes than this. Compare options never exceeds it.'
-              }
-              data={MAX_CHANGES_OPTIONS}
-              value={options.maxChanges === undefined ? '' : String(options.maxChanges)}
-              onChange={(event) => {
-                const value = event.currentTarget.value;
-                onChange({ ...options, maxChanges: value === '' ? undefined : Number(value) });
-              }}
-            />
-          </Stack>
-        </AccordionPanel>
-      </AccordionItem>
-    </Accordion>
+      <Stack gap="lg">
+        <StationListPicker
+          {...STOP_LIST_FIELDS.passThrough}
+          values={options.viaCrs ?? []}
+          onChange={(viaCrs) => onChange({ ...options, viaCrs })}
+          names={names}
+          onNames={onNames}
+          search={searchVias}
+          max={MAX_VIAS}
+          ordered
+          allowStops
+          allowGroups
+          error={errors.viaCrs}
+        />
+        <StationListPicker
+          {...STOP_LIST_FIELDS.avoid}
+          values={options.avoidCrs ?? []}
+          onChange={(avoidCrs) => onChange({ ...options, avoidCrs })}
+          names={names}
+          onNames={onNames}
+          search={searchPlannerLocations}
+          max={MAX_AVOIDED}
+          allowStops
+          error={errors.avoidCrs}
+        />
+        <StationListPicker
+          {...STOP_LIST_FIELDS.avoidStop}
+          values={options.avoidStopCrs ?? []}
+          onChange={(avoidStopCrs) => onChange({ ...options, avoidStopCrs })}
+          names={names}
+          onNames={onNames}
+          search={searchPlannerLocations}
+          max={MAX_AVOIDED}
+          allowStops
+          error={errors.avoidStopCrs}
+        />
+        <StationListPicker
+          label="Don't change at"
+          description="Never get on, get off or change here; staying on a train that stops there is fine."
+          values={options.avoidChangeCrs ?? []}
+          onChange={(avoidChangeCrs) => onChange({ ...options, avoidChangeCrs })}
+          names={names}
+          onNames={onNames}
+          search={searchPlannerLocations}
+          max={MAX_AVOIDED}
+          allowStops
+          error={errors.avoidChangeCrs}
+          itemNoun="no-change station"
+        />
+        <NativeSelect
+          label="Most changes"
+          description={
+            results === 'options'
+              ? 'Compare options never shows a route with more changes than this.'
+              : 'Fastest always shows the fastest route, and says if it needs more changes than this. Compare options never exceeds it.'
+          }
+          data={MAX_CHANGES_OPTIONS}
+          value={options.maxChanges === undefined ? '' : String(options.maxChanges)}
+          onChange={(event) => {
+            const value = event.currentTarget.value;
+            onChange({ ...options, maxChanges: value === '' ? undefined : Number(value) });
+          }}
+        />
+      </Stack>
+    </AdvancedOptionsDisclosure>
   );
 }

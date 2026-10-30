@@ -109,6 +109,20 @@ describe('TrainsPage', () => {
     expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('WAT');
   });
 
+  it('restores the advanced options from the query string on the between-stations view', async () => {
+    renderWithMantine(
+      await TrainsPage({ searchParams: searchParams({ from: 'MAN', to: 'WAT', avoid: 'bhm', calls_at: 'rdg' }) }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
+    expect(screen.getByRole('button', { name: 'Advanced options (2 set)' })).toBeInTheDocument();
+    expect(screen.getByText('Call at RDG · Avoid BHM')).toBeInTheDocument();
+  });
+
+  it('offers no advanced options on the headcode view', async () => {
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({ headcode: '1s00' }) }));
+    expect(screen.queryByRole('button', { name: /Advanced options/ })).not.toBeInTheDocument();
+  });
+
   it('opens on the arrivals board for ?board=arrivals', async () => {
     renderWithMantine(await TrainsPage({ searchParams: searchParams({ station: 'MAN', board: 'arrivals' }) }));
     expect(screen.getByRole('radio', { name: 'Arrivals' })).toBeChecked();

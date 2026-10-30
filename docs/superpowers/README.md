@@ -48,7 +48,7 @@ column names what was found, not everything the spec proposed. Where a
 spec's counterpart lives outside this repository (the distant-signal-mcp
 server), only this repository's side was checked.
 
-177 specs: 119 implemented, 6 partly, 4 not implemented, 7 superseded, 41 research / review.
+178 specs: 119 implemented, 6 partly, 5 not implemented, 7 superseded, 41 research / review.
 
 | Spec | Status | Evidence / note |
 |---|---|---|
@@ -230,8 +230,9 @@ server), only this repository's side was checked.
 | [2026-10-14-corpus-nlc-xml-format-design](specs/2026-10-14-corpus-nlc-xml-format-design.md) | implemented | `crates/schedule-ingest/src/{corpus,corpus_xml,corpus_formats}.rs`; the NLC XML snapshot loads beside the JSON extract (`scheduleFeed.corpus.xml`, `formatPrecedence: json` by default); `DistantSignalCorpusFormatDrift`. JSON stays the precedence; using the XML feed in production waits on the Rail Data Marketplace subscription (DS-16) |
 | [2026-10-14-ds-mcp-delegated-access-design](specs/2026-10-14-ds-mcp-delegated-access-design.md) | partly | Phase 1 (save, list, read and delete own journeys through scoped grants) is live and switched on in production since 2026-10-15: `d3b6c369`, ds-mcp `91353fc`, [the operator guide](../connected-apps.md). Not yet: phase 2 (dashboards, alerts, "Saved by assistant" in the journeys UI, cap tuning; DS-8) and phase 3 (group reads behind a per-group opt-in; DS-9). Open follow-ups: the end-to-end log check (DS-5) and the share-link items (DS-10) |
 | [2026-10-24-nottingham-net-design](specs/2026-10-24-nottingham-net-design.md) | implemented, off | Nottingham NET as the second transit network (DS-160): NET is in no BODS feed, so TNDS East Midlands TransXChange over FTP with a Traveline login; the TXC adapter (`adapter/txc.rs`, `ftp.rs`), `networks/net.toml`, `ds:ingest:transit-net`, `pollerTransitNet`, values `pollerTransitSchedule.networks.net`. Every switch off; needs the TNDS login before rollout ([the runbook](../transit-networks.md)) |
-| [2026-10-24-transit-trip-planning-design](specs/2026-10-24-transit-trip-planning-design.md) | partly implemented | Accepted 2026-10-24 (DS-162; Q1 to Q12 decided as proposed). Metrolink phases M1 to M3 built (DS-164), behind `api.tripPlanTransitNetworks` and a `transit=true` opt-in, off by default; M4 is a runbook and a measurement script (docs/transit-networks.md, "Trip planning"). London Trams (LT1 to LT3) not started. |
+| [2026-10-24-transit-trip-planning-design](specs/2026-10-24-transit-trip-planning-design.md) | partly implemented | Accepted 2026-10-24 (DS-162; Q1 to Q12 decided as proposed). Metrolink phases M1 to M3 built (DS-164), behind `api.tripPlanTransitNetworks` and a `transit=true` opt-in, off by default; M4 is a runbook and a measurement script (docs/transit-networks.md, "Trip planning"). London Trams (LT1 to LT3) not started; superseded for London by [the TfL transit design](specs/2026-10-30-tfl-transit-design.md). |
 | [2026-10-24-trips-plan-max-changes-12-design](specs/2026-10-24-trips-plan-max-changes-12-design.md) | implemented | DS-85: `/Trips/plan` `maxChanges` 0-12 (was 0-6), default 4 (was 2, stepping down to 2 where the options search-size guard needs it); measured on prod's timetable |
+| [2026-10-30-tfl-transit-design](specs/2026-10-30-tfl-transit-design.md) | not implemented | TfL's Underground, DLR and London Trams as one `tfl` transit network from TfL's Journey Planner TransXChange (DS-212): the narrowest-active-file override rule, line modes, status from `tfl-<line>` rows, `/transit/tfl`, scheduled times on `/tfl/stops/{id}`, and the planner (P4). Phases P1 to P4 not started. Corrects the planning spec's BODS London counts (§16) |
 
 ## Plans
 

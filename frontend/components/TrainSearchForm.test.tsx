@@ -1805,3 +1805,130 @@ describe('TrainSearchForm: live fields', () => {
     expect(row).toHaveTextContent('From London Euston');
   });
 });
+
+describe('TrainSearchForm advanced options', () => {
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  /** Opens the Filters panel (once live) and then Advanced options. */
+  async function openAdvanced() {
+    openFiltersIfCompact();
+    fireEvent.click(screen.getByRole('button', { name: /^Advanced options/ }));
+    await screen.findByRole('combobox', { name: 'Call at (in order)' });
+  }
+
+  function addTyped(label: string, code: string) {
+    const input = screen.getByRole('combobox', { name: label });
+    fireEvent.change(input, { target: { value: code } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+  }
+
+  it("offers the planner's four station lists on the station view, collapsed, scoped to after the station", async () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+    await awaitMountSettled();
+    openFiltersIfCompact();
+    expect(screen.getByRole('button', { name: 'Advanced options' })).toHaveAttribute('aria-expanded', 'false');
+    await openAdvanced();
+    for (const label of ['Call at (in order)', 'Pass through (in order)', 'Avoid completely', "Don't stop at"]) {
+      expect(screen.getByRole('combobox', { name: label })).toBeInTheDocument();
+    }
+    // The planner's change options mean nothing for one train.
+    expect(screen.queryByRole('combobox', { name: "Don't change at" })).not.toBeInTheDocument();
+    expect(screen.getByText("They look at the train's route after MAN.")).toBeInTheDocument();
+  });
+
+  it('sends a station added to Call at with the departures search, and keeps it in the URL', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState(null, '', '/trains?station=MAN');
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+    await awaitMountSettled();
+    await openAdvanced();
+    addTyped('Call at (in order)', 'rdg');
+    await waitFor(() =>
+      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&calls_at=RDG&across_midnight=true'),
+    );
+    await waitFor(() => expect(window.location.search).toBe('?station=MAN&calls_at=RDG'));
+  });
+
+  it('restores every list from the URL, sends them, and names them while collapsed', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <TrainSearchForm
+        view="between"
+        initialStation="MAN"
+        initialStopsAt="WAT"
+        initialStopFilters={{ callsAt: ['RDG', 'group:LON'], via: ['OXF'], avoid: ['BHM'], avoidStop: ['CRE'] }}
+      />,
+    );
+    await awaitMountSettled();
+    expect(searchCallUrl(fetchMock)).toBe(
+      '/api/trains/search?station=MAN&stops_at=WAT&calls_at=RDG%2Cgroup%3ALON&via=OXF&avoid=BHM&avoid_stop=CRE&across_midnight=true',
+    );
+    openFiltersIfCompact();
+    expect(screen.getByRole('button', { name: 'Advanced options (4 set)' })).toBeInTheDocument();
+    expect(
+      screen.getByText("Call at RDG, group:LON · Pass through OXF · Avoid BHM · Don't stop at CRE"),
+    ).toBeInTheDocument();
+  });
+
+  it('scopes the lists to before the station on the arrivals board, and sends them there', async () => {
+    const base = mockFetchByUrl();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/trains/arrivals'))
+        return Promise.resolve(new Response(JSON.stringify({ results: [], nextCursor: null }), { status: 200 }));
+      return base(input);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <TrainSearchForm
+        initialStation="MAN"
+        initialBoard="arrivals"
+        initialStopFilters={{ ...noFilters, via: ['OXF'] }}
+      />,
+    );
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map((args) => String(args[0]))).toContain('/api/trains/arrivals?station=MAN&via=OXF'),
+    );
+    await openAdvanced();
+    expect(screen.getByText("They look at the train's route before it reaches MAN.")).toBeInTheDocument();
+  });
+
+  it('refuses to search on a list that cannot be met, and says why on the field', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <TrainSearchForm
+        view="between"
+        initialStation="MAN"
+        initialStopsAt="WAT"
+        initialStopFilters={{ ...noFilters, avoid: ['WAT'] }}
+      />,
+    );
+    openFiltersIfCompact();
+    expect(screen.getByRole('button', { name: 'Advanced options (1 set, 1 to fix)' })).toBeInTheDocument();
+    await openAdvanced();
+    expect(screen.getByText("WAT is where you get off, so it can't be avoided.")).toBeInTheDocument();
+    expect(searchCallUrls(fetchMock)).toHaveLength(0);
+    // Removing it searches.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove WAT from avoided stations' }));
+    await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(1));
+  });
+
+  it('clears the lists with the other filters', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopFilters={{ ...noFilters, avoid: ['BHM'] }} />);
+    await awaitMountSettled();
+    expect(searchCallUrl(fetchMock)).toContain('avoid=BHM');
+    openFiltersIfCompact();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&across_midnight=true'));
+  });
+});
+
+const noFilters = { callsAt: [], via: [], avoid: [], avoidStop: [] };

@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useMemo, useState, type SubmitEvent } from 'react';
+import { useEffect, useId, useMemo, useState, type SubmitEvent } from 'react';
 import {
   Button,
   Checkbox,
@@ -42,6 +42,19 @@ import {
   type TrainSearchResults as TrainSearchResultsState,
 } from '@/lib/trainSearch';
 import { trackFeature } from '@/lib/usageAnalytics';
+import { TrainsAdvancedOptions } from './TrainsAdvancedOptions';
+import {
+  NO_STOP_FILTERS,
+  countStopFilters,
+  parseStopFilterParams,
+  setStopFilterParams,
+  stopFilterEntries,
+  stopFilterErrors,
+  type TrainStopFilters,
+} from '@/lib/trainStopFilters';
+import { getStationNames } from '@/lib/suggestions';
+import { groupLabels, useStationGroups } from '@/lib/stationGroups';
+import { isGroupCode } from '@/lib/stationLabel';
 
 const TRAIN_NOUN: ListNoun = { one: 'train', other: 'trains' };
 
@@ -109,7 +122,12 @@ const CRS_PATTERN = STATION_CODE_PATTERN;
  * after the date's midnight; between two stations, an earliest/latest
  * arrival at the second; on a station's board, "Starts at" (the train's
  * first station); and Operator, "any of" the operators picked, a code
- * that is not on the page's list dropped (`parseOperatorParam`).
+ * that is not on the page's list dropped (`parseOperatorParam`). Under
+ * them, "Advanced options" (`TrainsAdvancedOptions`): the planner's Call
+ * at, Pass through, Avoid completely and Don't stop at, applied to the
+ * part of the train ridden (after the station, before it on the arrivals
+ * board, or between the two stations), sent and kept in the URL as
+ * `calls_at`, `via`, `avoid` and `avoid_stop`.
  *
  * The rows are the timetable, each a link to the train's page. Only in the
  * ticket flow (`attachTicketId`, from the Journeys page) does a row carry
@@ -135,6 +153,7 @@ export function TrainSearchForm({
   initialArrivalFromDayOffset: initialArrivalFromDayOffsetProp = '',
   initialArrivalToDayOffset: initialArrivalToDayOffsetProp = '',
   initialOperator: initialOperatorProp = '',
+  initialStopFilters: initialStopFiltersProp = NO_STOP_FILTERS,
   seedFromUrl = true,
   attachTicketId,
   operatorNames,
@@ -166,6 +185,9 @@ export function TrainSearchForm({
   initialArrivalToDayOffset?: string | undefined;
   /** `?operator=`, comma-separated ATOC codes. */
   initialOperator?: string | undefined;
+  /** `?calls_at=`, `?via=`, `?avoid=` and `?avoid_stop=`
+   * (`parseStopFilterParams`). */
+  initialStopFilters?: TrainStopFilters | undefined;
   /** `false` when the view was switched to on the page, so the address
    * bar (just cleared) seeds nothing. */
   seedFromUrl?: boolean | undefined;
@@ -228,6 +250,33 @@ export function TrainSearchForm({
   const [toTime, setToTime] = useState(initialTo);
   const [arrivalFrom, setArrivalFrom] = useState(initialArrivalFrom);
   const [arrivalTo, setArrivalTo] = useState(initialArrivalTo);
+  const [stopFilters, setStopFilters] = useState<TrainStopFilters>(() =>
+    urlParams ? parseStopFilterParams(urlParams) : initialStopFiltersProp,
+  );
+  const [advancedOpened, setAdvancedOpened] = useState(false);
+  // Code -> name for the advanced options' rows: filled as stations are
+  // picked, and once on mount for codes restored from the URL.
+  const [stopNames, setStopNames] = useState<Map<string, string>>(new Map());
+  const addStopNames = (found: Map<string, string>) => setStopNames((current) => new Map([...current, ...found]));
+  useEffect(() => {
+    const restored = [
+      ...stopFilters.callsAt,
+      ...stopFilters.via,
+      ...stopFilters.avoid,
+      ...stopFilters.avoidStop,
+    ].filter((code) => !isGroupCode(code));
+    if (restored.length === 0) return;
+    let cancelled = false;
+    void getStationNames(restored).then((found) => {
+      if (!cancelled) addStopNames(found);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the restored filters are read on mount only
+  }, []);
+  const stopGroups = useStationGroups([...stopFilters.callsAt, ...stopFilters.via].some(isGroupCode));
+  const stopLabels = useMemo(() => new Map([...groupLabels(stopGroups), ...stopNames]), [stopGroups, stopNames]);
   /** Which of the four time filters are currently HALF-entered -- an hour
    * segment filled in with the minutes left blank, or vice versa. A native
    * `<input type="time">` reports a half-entered time as `''`, exactly like
@@ -275,7 +324,17 @@ export function TrainSearchForm({
     !incompleteTimes.from &&
     !incompleteTimes.to &&
     (!between || (!incompleteTimes.arrivalFrom && !incompleteTimes.arrivalTo));
+  const stopErrors = stopFilterErrors(stopFilters, {
+    stations: between
+      ? [
+          [stationCrs, 'where you get on'],
+          [stopsAt, 'where you get off'],
+        ]
+      : [[stationCrs, 'the station on this board']],
+    names: stopLabels,
+  });
   const filtersValid =
+    Object.keys(stopErrors).length === 0 &&
     stationValid &&
     originValid &&
     stopsAtValid &&
@@ -338,6 +397,7 @@ export function TrainSearchForm({
       if (toNextDay) params.set('to_day_offset', '1');
     }
     if (operators.length > 0) params.set('operator', operators.join(','));
+    for (const [param, value] of stopFilterEntries(stopFilters)) params.set(param, value);
     return params;
   }
 
@@ -383,6 +443,7 @@ export function TrainSearchForm({
       }
     }
     if (operators.length > 0) state.operator = operators.join(',');
+    for (const [param, value] of stopFilterEntries(stopFilters)) state[param] = value;
     return state;
   }
 
@@ -396,6 +457,12 @@ export function TrainSearchForm({
     const superseded = () => signal.aborted;
     // Usage counts (DS-190): which view searched, then what came back.
     trackFeature('trains', between ? 'between' : arrivals ? 'station_arrivals' : 'station_departures');
+    // Which advanced options it used: their kinds, never the stations.
+    for (const param of setStopFilterParams(
+      parseStopFilterParams(new URL(requested, 'http://localhost').searchParams),
+    )) {
+      trackFeature('trains_filters', param);
+    }
     try {
       const response = await fetch(requested, { signal });
       if (superseded()) return;
@@ -441,6 +508,8 @@ export function TrainSearchForm({
 
   function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
+    // A problem in the advanced options shows on its field: open them.
+    if (Object.keys(stopErrors).length > 0) setAdvancedOpened(true);
     if (filtersValid) setLive(true);
   }
 
@@ -631,6 +700,23 @@ export function TrainSearchForm({
           </Stack>
         </Group>
       )}
+      <TrainsAdvancedOptions
+        filters={stopFilters}
+        onChange={setStopFilters}
+        names={stopLabels}
+        onNames={addStopNames}
+        errors={stopErrors}
+        opened={advancedOpened}
+        onOpenedChange={setAdvancedOpened}
+        comboboxProps={inPanel ? { withinPortal: false } : undefined}
+        scope={
+          between
+            ? `They look at the train's route between ${stationDisplay} and ${stopsAtDisplay}.`
+            : arrivals
+              ? `They look at the train's route before it reaches ${stationDisplay}.`
+              : `They look at the train's route after ${stationDisplay}.`
+        }
+      />
     </>
   );
 
@@ -641,7 +727,8 @@ export function TrainSearchForm({
     (toTime.trim() ? 1 : 0) +
     (between && arrivalFrom.trim() ? 1 : 0) +
     (between && arrivalTo.trim() ? 1 : 0) +
-    (operators.length > 0 ? 1 : 0);
+    (operators.length > 0 ? 1 : 0) +
+    countStopFilters(stopFilters);
 
   function clearPanelFilters() {
     setDateValue(null);
@@ -656,6 +743,7 @@ export function TrainSearchForm({
     setArrivalFromNextDay(false);
     setArrivalToNextDay(false);
     setIncompleteTimes({ from: false, to: false, arrivalFrom: false, arrivalTo: false });
+    setStopFilters(NO_STOP_FILTERS);
   }
 
   // Known only once the last page is in: the api has no total.

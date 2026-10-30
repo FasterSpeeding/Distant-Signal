@@ -870,6 +870,44 @@ VALUES ('2099-01-05', 'W62001', 'train', '2Z42', 'CC', 'P')
 ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------
+-- The /trains advanced options (trains.spec.ts, DS-210), at stations
+-- nothing else uses, on the seed's 2099-01-05: W62003 leaves ZGA at 10:00,
+-- calls at ZGB (arrives 10:20, leaves 10:22), runs through ZGJ without
+-- stopping (a passing point) and terminates at ZGC at 10:50. Made-up codes
+-- and TIPLOCs in `stanox_crs` only, as the /plan fixture above.
+-- ---------------------------------------------------------------------
+INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence)
+VALUES
+  ('E2EADV-ZGA', 'ZGA', 'E2EADVA', 'Fixture Lane', 1),
+  ('E2EADV-ZGB', 'ZGB', 'E2EADVB', 'Fixture Bridge', 1),
+  ('E2EADV-ZGJ', 'ZGJ', 'E2EADVJ', 'Fixture Junction', 1),
+  ('E2EADV-ZGC', 'ZGC', 'E2EADVC', 'Fixture Cross', 1)
+ON CONFLICT (stanox) DO NOTHING;
+
+INSERT INTO schedule_calling_points_full
+  (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure,
+   public_arrival, public_departure, day_offset, can_board, can_alight)
+VALUES
+  ('2099-01-05', 'W62003', 0, 'E2EADVA', 'origin', NULL, '10:00', NULL, '10:00', 0, TRUE, FALSE),
+  ('2099-01-05', 'W62003', 1, 'E2EADVB', 'intermediate', '10:20', '10:22', '10:20', '10:22', 0, TRUE, TRUE),
+  ('2099-01-05', 'W62003', 2, 'E2EADVJ', 'intermediate', NULL, NULL, NULL, NULL, 0, TRUE, TRUE),
+  ('2099-01-05', 'W62003', 3, 'E2EADVC', 'terminate', '10:50', NULL, '10:50', NULL, 0, FALSE, TRUE)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO schedule_destination_departures
+  (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs,
+   day_offset, public_departure, calling_point_arrival, destination_arrival,
+   public_destination_arrival, operator_atoc)
+VALUES
+  ('2099-01-05', 'ZGC', '10:00', 'W62003', 'ZGA', 'ZGA', 0, '10:00', NULL, '10:50', '10:50', 'CC'),
+  ('2099-01-05', 'ZGC', '10:22', 'W62003', 'ZGB', 'ZGA', 0, '10:22', '10:20', '10:50', '10:50', 'CC')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO schedule_services (service_date, uid, mode, operator_atoc, stp)
+VALUES ('2099-01-05', 'W62003', 'train', 'CC', 'P')
+ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
 -- Two TfL stops for the /tfl/stops/{id} page (DS-136, tfl-stop.spec.ts and
 -- the `tfl-stop` visual baseline). The api asks TFL_BASE_URL for their
 -- arrivals; the frontend-e2e job points it at scripts/tfl-arrivals-stub.py,

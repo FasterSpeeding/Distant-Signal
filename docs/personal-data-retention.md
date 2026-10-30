@@ -120,8 +120,11 @@ for one user; account deletion leaves them.
 ## Application logs
 
 The api's and the frontend's container logs (requests, errors) can hold an
-IP address or a user id. Loki keeps DS application logs for **up to 7 days**
-(Ranma-Config). The privacy page says so; keep it in step if that changes.
+IP address or a user id. Loki keeps DS application logs for **up to 31 days**
+(Ranma-Config's `{namespace="distant-signal"}` retention rule; previously
+they fell under Loki's global default of a year). DS-MCP's own logs (the
+`ds-mcp` namespace) have the same 31-day rule.
+The privacy page says so; keep it in step if that changes.
 
 ## Schedule feed SFTP server logs
 
@@ -136,9 +139,13 @@ Loki keeps these lines in three tiers (Ranma-Config `logging.yaml`, Alloy's
 
 | Lines | Retention | Why |
 |---|---|---|
-| Connections that never authenticate (scanners, the kubelet's probe), and everything else in the container's log | 7 days (Loki's default) | No reason to keep strangers' addresses |
+| Connections that never authenticate (scanners), and everything else in the container's log without an audit label | 31 days (the distant-signal namespace rule) | No reason to keep strangers' addresses |
 | Failed logins with a username, and defender bans (`audit="sftp-security"`) | 90 days | Long enough to see slow brute force and investigate an incident reported weeks later |
 | Successful logins, uploads and file commands, and schedule-ingest's `schedule_ingest::audit` decision lines (`audit="sftp-delivery"`) | 400 days | A year of deliveries plus a month for an annual supplier review or a dispute; in practice only the supplier's own addresses |
+
+Not stored at all: Alloy drops the kubelet's liveness-probe connections and
+"failed to accept" lines from the pod network (10.42.0.0/16), and SFTPGo's
+event-manager debug reloads, before they reach Loki.
 
 The schedule-ingest decision line and the `schedule_feed_ingests` /
 `corpus_deliveries` rows hold file names, sizes and hashes only, no personal
