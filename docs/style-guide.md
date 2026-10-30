@@ -418,10 +418,11 @@ used, rather than as a literal in a component.
   The bare arm is cropped to `signalMarkBounds` (the shape's own extent,
   raised fishtail tip included), never a hand-picked box. Re-save
   `public/opengraph-image.png` whenever the template or the mark changes.
-- **Live link previews** (`lib/livePreview.ts`): an incident, a line and
-  a station have a card drawn from live data (`renderStatusPreviewImage`,
-  mapped by `lib/incidentPreview.ts`, `lib/linePreview.ts` and
-  `lib/stationPreview.ts`, served from `{page}/card.png`). A band in the
+- **Live link previews** (`lib/livePreview.ts`): an incident, a line, a
+  station and a train (`/train/{uid}/{date}`) have a card drawn from live
+  data (`renderStatusPreviewImage`, mapped by `lib/incidentPreview.ts`,
+  `lib/linePreview.ts`, `lib/stationPreview.ts` and `lib/trainPreview.ts`,
+  served from `{page}/card.png`). A band in the
   severity pill's colours names the state in words ("Minor delays",
   "Disruption in progress", "Cleared") with its time ("As of ...",
   "Updated ..."); below it the wordmark, the title clamped to three lines,
@@ -435,6 +436,14 @@ used, rather than as a literal in a component.
   `lib/api.ts` (anonymous, no client IP, shared for a minute) and
   regenerate the PNG at most once a minute. No departures on a station
   card: they go stale in minutes and a chat app shows the card for hours.
+  A train card's band is its state ("On time", "12 min late" in the late
+  badge's orange, "Cancelled", "Terminates at X" in red, "Planned"); the
+  lead says where it last called, or why it was cancelled, or its
+  timetable end to end; then the next stop or the origin's platform, and
+  the operator and headcode. Live only on its day: a future train, or one
+  whose day is over, gets a static card under its date. No progress
+  strip. A tracked train's `/train/by-id/...` page needs its owner's
+  session, so it has no card and keeps the site-wide image.
   Sample cards: `frontend/test/fixtures/preview-cards/`.
 - **Preferences** (`app/account/preferences/page.tsx`): open to everyone,
   never a redirect. Each section is a `PreferencesSection` card.

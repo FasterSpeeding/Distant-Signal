@@ -1,9 +1,8 @@
 import { ImageResponse } from 'next/og';
 import type { Metadata } from 'next';
 import { type MarkBox, signalMarkBounds, signalMarkSvg } from './brand';
-import { type StatusPreviewCard, TITLE_FITS_LENGTH } from './livePreview';
+import { type PreviewBandTone, type StatusPreviewCard, TITLE_FITS_LENGTH } from './livePreview';
 import { SITE_NAME } from './pageMetadata';
-import type { SeverityGroup } from './severity';
 
 /** The link-preview (Open Graph) image template (round 2, item 9): the
  * page's title on the brand background, under the wordmark. A route opts in
@@ -133,13 +132,18 @@ export function renderPreviewImage(title: string | null): ImageResponse {
 /** The light scheme's `StatusBadge` pairs (`--ds-status-badge-<group>-fill`
  * and `-text` in app/globals.css, resolved to hex: the image renderer has
  * no CSS variables). `previewImage.test.tsx` checks them against the CSS,
- * so the band can't drift from the pills, which clear 4.5:1 and APCA Lc 75. */
-export const STATUS_BAND_COLORS: Record<SeverityGroup, { fill: string; text: string }> = {
+ * so the band can't drift from the pills, which clear 4.5:1 and APCA Lc 75.
+ * A train's delay takes `DelayBadge`'s hue instead: the light pill's own
+ * text colour (`--mantine-color-<hue>-light-color`) as the fill, under
+ * white, 6.5:1 or more. */
+export const STATUS_BAND_COLORS: Record<PreviewBandTone, { fill: string; text: string }> = {
   good: { fill: '#287f39', text: '#ffffff' },
   informational: { fill: '#495057', text: '#ffffff' },
   planned: { fill: '#1864ab', text: '#ffffff' },
   mild: { fill: '#fcc419', text: '#000000' },
   severe: { fill: '#c92a2a', text: '#ffffff' },
+  late: { fill: '#a5370b', text: '#ffffff' },
+  early: { fill: '#076b4c', text: '#ffffff' },
 };
 
 /** Titles step down so three lines fit; past that the title is clamped. */
@@ -188,7 +192,8 @@ const SINGLE_LINE = {
   textOverflow: 'ellipsis',
 } as const;
 
-/** A live link preview (an incident, a line, a station; `lib/livePreview.ts`):
+/** A live link preview (an incident, a line, a station, a train;
+ * `lib/livePreview.ts`):
  * the state as a coloured band with the words on it and its time, then the
  * brand template's wordmark, the title, a lead line, line chips and the
  * other facts. The mapper leaves out what it has nothing to say for, so

@@ -1131,6 +1131,16 @@ export async function getPreviewStopPointDisruption(crs: string): Promise<LineSt
   return previewJson(`${baseUrl()}/StopPoint/${encodeURIComponent(crs)}/Disruption`, LIVE_PREVIEW_REVALIDATE_SECONDS);
 }
 
+/** `GET /Train/by-uid/{uid}/{date}`, as a preview read (above): the train card.
+ * The route is public and reads only the shared train rows, never anyone's
+ * subscription, so one answer suits every requester. */
+export async function getPreviewTrain(uid: string, date: string): Promise<PublicTrainState> {
+  return previewJson(
+    `${baseUrl()}/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}`,
+    LIVE_PREVIEW_REVALIDATE_SECONDS,
+  );
+}
+
 /** `GET /public/lines`, a preview read kept for an hour (above): the public catalogue,
  * to name a line that has no status row yet. */
 export async function getPreviewLines(): Promise<LineSummary[]> {
