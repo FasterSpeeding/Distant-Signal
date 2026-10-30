@@ -10,7 +10,7 @@ import { TransitDisruptions } from '@/components/TransitDisruptions';
 import { TransitStatusBadge } from '@/components/TransitStatusBadge';
 import { getPreferences, getTransitLine, getTransitNetwork } from '@/lib/api';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
-import { lineColour, orNotFound, TRANSIT_ID } from '@/lib/transit';
+import { lineColour, orNotFound, TRANSIT_ID, transitStopHref } from '@/lib/transit';
 import type { Preferences } from '@/lib/types';
 
 interface Params {
@@ -46,6 +46,9 @@ export default async function TransitLinePage({ params }: Params) {
     load(network, line),
     getPreferences().catch(() => NO_PREFERENCES),
   ]);
+  const stopNames = Object.fromEntries(
+    lineDetail.directions.flatMap((direction) => direction.stations.map((station) => [station.id, station.name])),
+  );
   return (
     <Stack p="lg" gap="lg">
       <Stack gap={4}>
@@ -69,7 +72,12 @@ export default async function TransitLinePage({ params }: Params) {
         </ButtonLink>
       </Group>
 
-      <TransitDisruptions situations={lineDetail.situations} empty="Nothing is affecting this line right now." />
+      <TransitDisruptions
+        situations={lineDetail.situations}
+        empty="Nothing is affecting this line right now."
+        network={network}
+        stopNames={stopNames}
+      />
 
       <SimpleGrid cols={{ base: 1, sm: lineDetail.directions.length > 1 ? 2 : 1 }} spacing="lg">
         {lineDetail.directions.map((direction) => (
@@ -84,7 +92,7 @@ export default async function TransitLinePage({ params }: Params) {
             <Stack component="ol" gap={4} className="ds-plain-list">
               {direction.stations.map((station) => (
                 <li key={station.id}>
-                  <TextLink href={`/transit/${network}/stops/${station.id}`}>{station.name}</TextLink>
+                  <TextLink href={transitStopHref(network, station.id)}>{station.name}</TextLink>
                 </li>
               ))}
             </Stack>

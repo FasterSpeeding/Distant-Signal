@@ -205,6 +205,15 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   // answers King's Cross with a board and Russell Square with a 503).
   ['/tfl/stops/940GZZLUKSX', '/tfl/stops/940GZZLUKSX'],
   ['/tfl/stops/940GZZLURSQ (TfL unavailable)', '/tfl/stops/940GZZLURSQ'],
+  // The seed's Metrolink pages: the network's disruptions link the stops
+  // they name, the line lists its stops, the timetable's row headers are
+  // stop links.
+  ['/transit/metrolink', '/transit/metrolink'],
+  ['/transit/metrolink/lines/blue', '/transit/metrolink/lines/blue'],
+  [
+    '/transit/metrolink/lines/blue/timetable',
+    '/transit/metrolink/lines/blue/timetable?date=2026-09-17&direction=outbound&from=07:00',
+  ],
   ['/incidents', '/incidents'],
   [`/incidents/${REAL_INCIDENT_ID}`, `/incidents/${REAL_INCIDENT_ID}`],
   ['/trains', '/trains'],
