@@ -535,7 +535,7 @@ impl Profile {
             .filter(|(_, t)| usable(t))
             .min_by_key(|(index, t)| (Reverse(weight(t)), *index))
             .map(|(_, t)| t.clone());
-        call.or_else(|| self.last_alight.clone().filter(|t| usable(t)))
+        call.or_else(|| self.last_alight.clone().filter(usable))
     }
 }
 
