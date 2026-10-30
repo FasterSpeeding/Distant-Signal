@@ -137,8 +137,13 @@ export function journeyListItemStatusGroup(item: JourneyListItem): LegStatusGrou
     windowSearched: false,
     kind: item.kind ?? 'train',
     untrackedStatus: item.untrackedStatus ?? null,
+    // Whether a train is picked is the leg's own fact, read from the
+    // train's resolution: the api blanks `trainSubscriptionId` (the
+    // owner's subscription) on a followed or group-shared row, which
+    // still carries the train the owner picked (DS-199). A picked train's
+    // subscription always has a `resolutionStatus`.
     trackedTrainState:
-      item.trainSubscriptionId === null
+      item.resolutionStatus === null
         ? null
         : ({
             status: item.status,

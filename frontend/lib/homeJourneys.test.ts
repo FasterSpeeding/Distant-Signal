@@ -4,6 +4,8 @@ import {
   homeDetailReads,
   homeJourneyStatusGroup,
   isLoneTrain,
+  isSharedNotFollowed,
+  sharedHomeJourneys,
   TRAVEL_ARRIVAL_GRACE_MINUTES,
   journeyPhase,
   legEndMs,
@@ -513,5 +515,50 @@ describe('homeJourneyStatusGroup', () => {
   it("falls back to the list row's status when not read in full", () => {
     const detail = twoLegs(1, { status: 'en_route', delayMinutes: 5 });
     expect(homeJourneyStatusGroup({ item: journeyListItem(detail), detail: null, departure: null })).toBe('delayed');
+  });
+});
+
+describe('shared journeys (DS-199)', () => {
+  const now = at('2026-09-17T10:00:00Z');
+  const sharedVia = [
+    { groupId: 'g1', groupName: 'Family', addedByName: 'Olive', addedByTag: null, addedAt: '2026-09-16T08:00:00Z' },
+  ];
+  const followedFrom = {
+    via: 'group' as const,
+    ownerName: 'Olive',
+    ownerTag: null,
+    groupId: 'g1',
+    groupName: 'Family',
+    followedAt: '2026-09-16T08:00:00Z',
+  };
+
+  it('tells a shared journey the caller does not follow from their own and the ones they follow', () => {
+    const item = journeyListItem(twoLegs(1));
+    expect(isSharedNotFollowed(item)).toBe(false);
+    expect(isSharedNotFollowed({ ...item, sharedVia })).toBe(true);
+    expect(isSharedNotFollowed({ ...item, sharedVia, followedFrom })).toBe(false);
+    expect(isSharedNotFollowed({ ...item, followedFrom })).toBe(false);
+  });
+
+  it('lists the ones under way first, then the ones to come soonest first, and leaves past ones out', () => {
+    const underWay = twoLegs(1);
+    const past = journeyDetail(2, [untrackedLeg(1, 'Home', 'Euston', '2026-09-17T07:00:00Z', '2026-09-17T07:30:00Z')]);
+    const later = journeyDetail(3, [untrackedLeg(1, 'Euston', 'Home', '2026-09-17T17:00:00Z', '2026-09-17T17:30:00Z')]);
+    const nextWeek = journeyListItem(twoLegs(4), undefined, {
+      firstServiceDate: '2026-09-24',
+      serviceDate: '2026-09-24',
+    });
+    const details = new Map([
+      [1, underWay],
+      [2, past],
+      [3, later],
+    ]);
+    const items = [nextWeek, journeyListItem(later), journeyListItem(past), journeyListItem(underWay)].map((item) => ({
+      ...item,
+      sharedVia,
+    }));
+    const listed = sharedHomeJourneys(items, details, now);
+    expect(ids(listed)).toEqual(['j1', 'j3', 'j4']);
+    expect(listed[1]?.departure).toBe('2026-09-17T17:00:00Z');
   });
 });

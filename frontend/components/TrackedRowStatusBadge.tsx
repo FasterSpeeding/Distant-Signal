@@ -135,6 +135,14 @@ export function JourneyStatusGroupBadge({
   return <StateBadge tone={TONE[group]}>{LABEL[group]}</StateBadge>;
 }
 
+/** A journey shared with the viewer, not followed, with a train leg the
+ * owner hasn't picked a train for yet (DS-199): gray, since there is
+ * nothing for the viewer to do, where the owner sees the grape "Needs a
+ * train picked". */
+export function NoTrainPickedYetBadge() {
+  return <StateBadge tone="neutral">No train picked yet</StateBadge>;
+}
+
 /** The one status badge for a journey or a tracked train, wherever it is
  * listed or headed (`lib/trackedRowStatus.ts` does the classifying). The
  * same status reads the same either way: the journey rollup's words and
@@ -185,6 +193,8 @@ export function TrackedRowStatusBadge({ status }: { status: TrackedRowStatus }) 
       return <StateBadge tone="neutral">No report received</StateBadge>;
     case 'noTrainPicked':
       return <StateBadge tone="neutral">No train picked</StateBadge>;
+    case 'noTrainPickedYet':
+      return <NoTrainPickedYetBadge />;
     case 'good':
     case 'delayed':
       return delay ?? <JourneyStatusGroupBadge group={kind} />;

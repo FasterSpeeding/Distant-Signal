@@ -469,6 +469,14 @@ used, rather than as a literal in a component.
   two under way at once, the soonest arriving is current and the rest are
   rows under "Also in progress". Upcoming rows are the Journeys page's row
   shape: name, preview line, "Departs 18:00" when known, status badge.
+  Journeys other members shared into the caller's groups that they don't
+  follow are someone else's travel: never the current journey, and listed
+  after the caller's own under an h3 "Shared with you" (under way, then
+  soonest first, three then "N more shared journeys are on the Journeys
+  page."), each row's dimmed line saying "Shared by Olive in Family". One
+  the caller follows sits among their own, as "Shared by Olive". With
+  shared ones but none of their own, the empty line reads "No upcoming
+  journeys of your own."
   A train leg ends at its actual arrival at the traveller's stop (or
   `completed`), else its live estimate (timetable plus the current
   delay), else the timetable plus `TRAVEL_ARRIVAL_GRACE_MINUTES` (30) when
@@ -698,6 +706,10 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
   lone and shared trains go in the same two lists. Past rows say
   "Completed" (gray, with its final delay), "No report received", "No
   train picked". Cancelled and part cancelled stay red there.
+- "Needs a train picked" (grape) asks only someone who can pick one: the
+  owner or a follower. On a journey shared with the viewer that they don't
+  follow, the same state is "No train picked yet" (gray). A shared row
+  always shows the owner's train when one is picked.
 - Severity labels are TfL's own Title Case names; unknown codes read
   "Unknown" in gray (`lib/severity.ts`).
 

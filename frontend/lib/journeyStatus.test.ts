@@ -327,4 +327,29 @@ describe('legStatusGroup: untracked legs and tracking phases', () => {
     ).toBe('noTimetable');
     expect(journeyListItemStatusGroup(row({ kind: 'train' }))).toBe('unmatched');
   });
+
+  // DS-199: a shared or followed row has the owner's subscription id
+  // blanked, but still carries the train the owner picked.
+  it('a shared row with no subscription id but a picked train reads by that train', () => {
+    const row: JourneyListItem = {
+      id: 1,
+      customName: null,
+      createdAt: '2026-10-20T00:00:00Z',
+      legId: 1,
+      originCrs: 'KGX',
+      destinationCrs: 'EDB',
+      serviceDate: '2026-10-21',
+      originName: null,
+      destinationName: null,
+      matchMode: 'manual',
+      trainSubscriptionId: null,
+      resolutionStatus: 'resolved',
+      status: 'en_route',
+      delayMinutes: 7,
+      kind: 'train',
+      sharedVia: [],
+    };
+    expect(journeyListItemStatusGroup(row)).toBe('delayed');
+    expect(journeyListItemStatusGroup({ ...row, resolutionStatus: null, status: null })).toBe('unmatched');
+  });
 });

@@ -6,6 +6,7 @@ import JourneysPage from './page';
 import * as api from '@/lib/api';
 import type { TrackedTrainListItem, TicketListItem, SharedGroupTrain, JourneyListItem, SharedVia } from '@/lib/types';
 import { journeyDetail, journeyListItem } from '@/test/journeyFixtures';
+import { cardOf } from '@/test/clickableCard';
 import { byVisibleText, visibleText } from '@/test/routeText';
 
 vi.mock('@/lib/api');
@@ -490,6 +491,47 @@ describe('JourneysPage', () => {
       expect(screen.getByText('From Family')).toBeInTheDocument();
       expect(screen.getByText('From Commute Club')).toBeInTheDocument();
       expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
+    });
+
+    // DS-199: the api blanks the owner's `trainSubscriptionId` on a shared
+    // or followed row, and the row used to read as having no train. The
+    // owner's train is in its resolution and status; "Needs a train
+    // picked" asks only the owner or a follower.
+    it("shows the owner's train on a shared journey, and asks only the owner or a follower to pick one", async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      const followedFrom = {
+        via: 'group',
+        ownerName: 'Sam',
+        ownerTag: null,
+        groupId: 'group-1',
+        groupName: 'Family',
+        followedAt: '2026-08-30T08:00:00Z',
+      } as const;
+      const open = { matchMode: 'unmatched', resolutionStatus: null, status: null, travelled: false } as const;
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        sharedJourney(701, [via()], {
+          customName: 'Shared with a train',
+          resolutionStatus: 'resolved',
+          status: 'en_route',
+          delayMinutes: 0,
+          travelled: false,
+        }),
+        sharedJourney(702, [via()], { ...open, customName: 'Shared, no train yet' }),
+        { ...journeyListItem(journeyDetail(703, [], 'Followed, no train yet')), ...open, followedFrom },
+        { ...journeyListItem(journeyDetail(704, [], 'Mine, no train yet')), ...open },
+      ]);
+
+      renderWithMantine(await JourneysPage());
+
+      const upcoming = screen.getByRole('region', { name: 'Upcoming' });
+      const rowOf = (name: string) => cardOf(within(upcoming).getByRole('link', { name }));
+      expect(within(rowOf('Shared with a train')).getByText('On time')).toBeInTheDocument();
+      expect(within(rowOf('Shared with a train')).queryByText('Needs a train picked')).not.toBeInTheDocument();
+      expect(within(rowOf('Shared, no train yet')).getByText('No train picked yet')).toBeInTheDocument();
+      expect(within(rowOf('Shared, no train yet')).queryByText('Needs a train picked')).not.toBeInTheDocument();
+      expect(within(rowOf('Followed, no train yet')).getByText('Needs a train picked')).toBeInTheDocument();
+      expect(within(rowOf('Mine, no train yet')).getByText('Needs a train picked')).toBeInTheDocument();
     });
 
     it('offers to follow a shared journey through its group', async () => {
@@ -1049,6 +1091,7 @@ describe('JourneysPage', () => {
           legCount: 2,
           matchMode: 'auto',
           trainSubscriptionId: 295,
+          resolutionStatus: 'resolved',
           status: 'en_route',
           delayMinutes: 0,
         }),
@@ -1093,7 +1136,13 @@ describe('JourneysPage', () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getMyJourneys).mockResolvedValue([
-        journey({ matchMode: 'auto', trainSubscriptionId: 295, status: 'en_route', delayMinutes: 22 }),
+        journey({
+          matchMode: 'auto',
+          trainSubscriptionId: 295,
+          resolutionStatus: 'resolved',
+          status: 'en_route',
+          delayMinutes: 22,
+        }),
       ]);
 
       renderWithMantine(await JourneysPage());
@@ -1106,7 +1155,13 @@ describe('JourneysPage', () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 7, delayMinutes: 6, journeyIds: [] })]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getMyJourneys).mockResolvedValue([
-        journey({ matchMode: 'auto', trainSubscriptionId: 295, status: 'en_route', delayMinutes: 6 }),
+        journey({
+          matchMode: 'auto',
+          trainSubscriptionId: 295,
+          resolutionStatus: 'resolved',
+          status: 'en_route',
+          delayMinutes: 6,
+        }),
       ]);
 
       renderWithMantine(await JourneysPage());
@@ -1137,6 +1192,7 @@ describe('JourneysPage', () => {
             legCount: 2,
             matchMode: 'auto',
             trainSubscriptionId: 296,
+            resolutionStatus: 'resolved',
             status: 'cancelled',
           }),
         ]);
@@ -1355,7 +1411,13 @@ describe('JourneysPage', () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 295 })]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getMyJourneys).mockResolvedValue([
-        journey({ matchMode: 'auto', trainSubscriptionId: 295, status: 'en_route', delayMinutes: 0 }),
+        journey({
+          matchMode: 'auto',
+          trainSubscriptionId: 295,
+          resolutionStatus: 'resolved',
+          status: 'en_route',
+          delayMinutes: 0,
+        }),
       ]);
 
       renderWithMantine(await JourneysPage());

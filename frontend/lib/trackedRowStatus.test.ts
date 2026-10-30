@@ -5,6 +5,7 @@ import {
   journeyRowStatus,
   trackedTrainRowStatus,
   type TrackedTrainRowInput,
+  viewerCanPickTrain,
 } from './trackedRowStatus';
 import type { GroupJourney, JourneyListItem, ListCancellation } from './types';
 
@@ -207,6 +208,35 @@ describe('journey-only and train-only states', () => {
       kind: 'noTrainPicked',
       finished: true,
     });
+  });
+
+  // DS-199: picking a train is the owner's, or a follower's, to do.
+  it('asks only the owner or a follower to pick a train; anyone else reads "No train picked yet"', () => {
+    const open = { matchMode: 'unmatched' as const, trainSubscriptionId: null, status: null, resolutionStatus: null };
+    const sharedVia = [
+      { groupId: 'g1', groupName: 'Family', addedByName: 'Sam', addedByTag: null, addedAt: '2026-10-01T00:00:00Z' },
+    ];
+    const followedFrom = {
+      via: 'group' as const,
+      ownerName: 'Sam',
+      ownerTag: null,
+      groupId: 'g1',
+      groupName: 'Family',
+      followedAt: '2026-10-01T00:00:00Z',
+    };
+    expect(viewerCanPickTrain(journey(open))).toBe(true);
+    expect(viewerCanPickTrain(journey({ ...open, sharedVia }))).toBe(false);
+    expect(viewerCanPickTrain(journey({ ...open, sharedVia, followedFrom }))).toBe(true);
+    expect(journeyRowStatus(journey(open), TODAY).kind).toBe('unmatched');
+    expect(journeyRowStatus(journey({ ...open, followedFrom }), TODAY).kind).toBe('unmatched');
+    expect(journeyRowStatus(journey({ ...open, sharedVia }), TODAY)).toMatchObject({
+      kind: 'noTrainPickedYet',
+      finished: false,
+    });
+    // Past, it says what anyone would: none was picked.
+    expect(journeyRowStatus(journey({ ...open, sharedVia, serviceDate: PAST }), TODAY).kind).toBe('noTrainPicked');
+    // A shared journey whose owner picked a train reads by that train.
+    expect(journeyRowStatus(journey({ sharedVia, trainSubscriptionId: null }), TODAY).kind).toBe('good');
   });
 
   it('a journey of untracked legs only is finished once they are done', () => {
