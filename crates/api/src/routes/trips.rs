@@ -3107,6 +3107,7 @@ mod tests {
 mod db_tests {
     mod live_in_search;
     mod tfl_access;
+    mod tfl_access_times;
 
     use axum::body::Body;
     use axum::http::Request;
