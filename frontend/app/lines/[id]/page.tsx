@@ -24,7 +24,8 @@ import type { CustomLineDetail, LineDefinitionSummary, LineGroupRef, LineStatusR
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
 import { LineTrainsResults } from './LineTrainsResults';
-import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
+import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
+import { linePreviewImage } from '@/lib/linePreview';
 import { ButtonLink } from '@/components/ButtonLink';
 import { StateBadge } from '@/components/StateBadge';
 
@@ -230,21 +231,27 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     if (name === undefined) {
       notFound();
     }
-    return lineMetadata(id, name);
+    return lineMetadata(id, name, null);
   }
 
-  return lineMetadata(id, statusResult.report.name);
+  return lineMetadata(id, statusResult.report.name, statusResult.report);
 }
 
 /** The line page's metadata. The description is evergreen, what the page
  * offers rather than the current status (which used to be quoted, went
  * stale in search snippets and repeated itself when the reason was the
- * status). A TfL line has no trains panel (see the page component). */
-function lineMetadata(id: string, name: string): Metadata {
+ * status). A TfL line has no trains panel (see the page component). The
+ * live status is in the preview image instead (`card.png`), whose URL is
+ * versioned by it (`linePreviewImage`): drawn from the report this
+ * function already has, so it costs no fetch. */
+function lineMetadata(id: string, name: string, report: LineStatusReport | null): Metadata {
   const description = id.startsWith('tfl-')
     ? `Live status, disruption and recent trends for ${name}.`
     : `Live status, disruption, today's trains and recent trends for ${name}.`;
-  return pageMetadata(name, description, { ...OWN_PREVIEW_IMAGE, path: `/lines/${id}` });
+  return pageMetadata(name, description, {
+    path: `/lines/${id}`,
+    image: linePreviewImage(id, name, report, previewImageAlt(name)),
+  });
 }
 
 export default async function LineDetailPage({
