@@ -259,6 +259,81 @@ impl Arrival {
             self.row.train_uid.as_str(),
         )
     }
+
+    /// The raw row, the station and the arrival fields, for `render_rows`.
+    fn render_parts(
+        self,
+        service_date: chrono::NaiveDate,
+        station: &str,
+    ) -> (Value, String, serde_json::Map<String, Value>) {
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "arrival".to_string(),
+            json!(self.time.format("%H:%M").to_string()),
+        );
+        extra.insert("arrivalDayOffset".to_string(), json!(self.day_offset));
+        extra.insert("terminates".to_string(), json!(self.terminates));
+        if self.terminates {
+            // The row read is the train's first call, not a departure from
+            // `station`: there is none, so no `dayOffset` either.
+            extra.insert("scheduled".to_string(), Value::Null);
+            extra.insert("publicDeparture".to_string(), Value::Null);
+            extra.insert("workingDeparture".to_string(), Value::Null);
+        } else {
+            let (_, day_offset) = self.row.shown_departure();
+            extra.insert("dayOffset".to_string(), json!(day_offset));
+        }
+        (self.row.raw_json(service_date), station.to_string(), extra)
+    }
+}
+
+/// What `GET /public/trains/arrivals` keeps of a station's arrivals.
+struct ArrivalsFilter<'a> {
+    /// The window, train-day minutes, inclusive.
+    from_minutes: i32,
+    to_minutes: Option<i32>,
+    /// Only trains starting here.
+    origin: Option<&'a str>,
+    /// Only trains run by one of these.
+    operators: Option<&'a [String]>,
+    /// Only rows after this `(minute, uid)` (a cursor).
+    after: Option<(i32, &'a str)>,
+}
+
+impl ArrivalsFilter<'_> {
+    fn keeps(&self, arrival: &Arrival) -> bool {
+        let key = arrival.key();
+        key.0 >= self.from_minutes
+            && self.to_minutes.is_none_or(|to| key.0 <= to)
+            && self
+                .origin
+                .is_none_or(|origin| arrival.row.true_origin_crs.as_deref() == Some(origin))
+            && self.operators.is_none_or(|codes| {
+                arrival
+                    .row
+                    .operator_atoc
+                    .as_ref()
+                    .is_some_and(|code| codes.contains(code))
+            })
+            && self.after.is_none_or(|after| key > after)
+    }
+
+    /// The first `limit` arrivals kept, in order, and the cursor after the
+    /// last of them when more follow.
+    fn page(&self, arrivals: Vec<Arrival>, limit: usize) -> (Vec<Arrival>, Option<String>) {
+        let mut page: Vec<Arrival> = arrivals
+            .into_iter()
+            .filter(|arrival| self.keeps(arrival))
+            .take(limit.saturating_add(1))
+            .collect();
+        let has_more = page.len() > limit;
+        page.truncate(limit);
+        let next_cursor = has_more.then(|| page.last()).flatten().map(|arrival| {
+            let (minute, uid) = arrival.key();
+            encode_arrivals_cursor(minute, uid)
+        });
+        (page, next_cursor)
+    }
 }
 
 /// Every arrival at `station` on `service_date`: each call there with an
@@ -447,8 +522,6 @@ pub(super) async fn get_trains_arrivals(
         offsets,
         default_from,
     );
-    let from_minutes = window.from.minutes();
-    let to_minutes = window.to.map(WindowBound::minutes);
 
     let arrivals = station_arrivals(&app.database, service_date, &station)
         .await
@@ -460,62 +533,17 @@ pub(super) async fn get_trains_arrivals(
     {
         return Err(unpublished(service_date, today));
     }
-    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-    let mut page: Vec<Arrival> = arrivals
-        .into_iter()
-        .filter(|arrival| {
-            let (minute, uid) = arrival.key();
-            minute >= from_minutes
-                && to_minutes.is_none_or(|to| minute <= to)
-                && origin
-                    .as_deref()
-                    .is_none_or(|origin| arrival.row.true_origin_crs.as_deref() == Some(origin))
-                && operators.as_deref().is_none_or(|codes| {
-                    arrival
-                        .row
-                        .operator_atoc
-                        .as_ref()
-                        .is_some_and(|code| codes.contains(code))
-                })
-                && after.as_ref().is_none_or(|(after_minute, after_uid)| {
-                    (minute, uid) > (*after_minute, after_uid.as_str())
-                })
-        })
-        .take(limit.saturating_add(1))
-        .collect();
-    let has_more = page.len() > limit;
-    page.truncate(limit);
-    let next_cursor = if has_more {
-        page.last().map(|arrival| {
-            let (minute, uid) = arrival.key();
-            encode_arrivals_cursor(minute, uid)
-        })
-    } else {
-        None
+    let filter = ArrivalsFilter {
+        from_minutes: window.from.minutes(),
+        to_minutes: window.to.map(WindowBound::minutes),
+        origin: origin.as_deref(),
+        operators: operators.as_deref(),
+        after: after.as_ref().map(|(minute, uid)| (*minute, uid.as_str())),
     };
-
+    let (page, next_cursor) = filter.page(arrivals, usize::try_from(limit).unwrap_or(usize::MAX));
     let rows = page
         .into_iter()
-        .map(|arrival| {
-            let mut extra = serde_json::Map::new();
-            extra.insert(
-                "arrival".to_string(),
-                json!(arrival.time.format("%H:%M").to_string()),
-            );
-            extra.insert("arrivalDayOffset".to_string(), json!(arrival.day_offset));
-            extra.insert("terminates".to_string(), json!(arrival.terminates));
-            if arrival.terminates {
-                // The row read is the train's first call, not a departure
-                // from `station`: there is none, so no `dayOffset` either.
-                extra.insert("scheduled".to_string(), Value::Null);
-                extra.insert("publicDeparture".to_string(), Value::Null);
-                extra.insert("workingDeparture".to_string(), Value::Null);
-            } else {
-                let (_, day_offset) = arrival.row.shown_departure();
-                extra.insert("dayOffset".to_string(), json!(day_offset));
-            }
-            (arrival.row.raw_json(service_date), station.clone(), extra)
-        })
+        .map(|arrival| arrival.render_parts(service_date, &station))
         .collect();
     let results = render_rows(&app, service_date, rows).await?;
     let mut body = json!({
