@@ -1998,6 +1998,17 @@ export interface TripPlanAccessLeg {
   basis: TripPlanAccessBasis;
   /** Along the line for a ride, in a straight line for a walk. */
   distanceMetres: number;
+  /** Where the ride changes trains between two branches of its line
+   * (Acton Town, for Uxbridge to Heathrow); its minutes include the
+   * change. Absent for a ride on one train. */
+  changeAt?: TflStop;
+  /** Where the ride is boarded, when that is another stop area of the
+   * plan's own stop's station (Paddington (H&C Line) for Paddington); its
+   * minutes include the walk to it. Absent until the api sends it (DS-191). */
+  boardStop?: TflStop;
+  /** Where the ride is left, when that is another stop area of the
+   * station; its minutes include the walk from it. */
+  alightStop?: TflStop;
 }
 
 /** One station a TfL stop end can be left for or reached from. */
@@ -2009,6 +2020,13 @@ export interface TripPlanAccessCandidate {
   line?: string;
   stationStop?: TflStop;
   distanceMetres: number;
+  /** Stops ridden to the far end, for a ride measured along the line's
+   * routes; absent for an estimate or a walk. */
+  stopCount?: number;
+  /** As on `TripPlanAccessLeg`. */
+  changeAt?: TflStop;
+  boardStop?: TflStop;
+  alightStop?: TflStop;
 }
 
 /** A TfL stop From or To and its candidates, quickest first. */

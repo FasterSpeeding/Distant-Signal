@@ -81,6 +81,25 @@ export function tripPlanStopNames(response: TripPlanResponse): Map<string, strin
   return names;
 }
 
+/** How many stops an access ride (DS-135) rides, from the candidate it was
+ * planned from: the leg itself doesn't carry it, the response's top-level
+ * `access` does. Matched by the station at the leg's rail end and its
+ * mode, preferring the same line. `undefined` for a walk, a ride straight
+ * from stop to stop, or one measured without the line's routes. */
+export function accessLegStopCount(leg: TripPlanLeg, access: TripPlanResponse['access']): number | undefined {
+  if (leg.kind !== 'transfer' || !leg.access || !access) return undefined;
+  const [stopAccess, crs] =
+    leg.access.end === 'origin'
+      ? [access.origin, leg.destinationCrs]
+      : leg.access.end === 'destination'
+        ? [access.destination, leg.originCrs]
+        : [null, null];
+  if (!stopAccess || !crs) return undefined;
+  const matches = stopAccess.candidates.filter((candidate) => candidate.crs === crs && candidate.mode === leg.mode);
+  const candidate = matches.find((c) => (c.line ?? null) === (leg.line ?? null)) ?? matches[0];
+  return candidate?.stopCount;
+}
+
 export interface TripPlanQuery {
   originCrs: string;
   destinationCrs: string;

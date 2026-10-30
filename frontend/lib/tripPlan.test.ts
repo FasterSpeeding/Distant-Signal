@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
+  accessLegStopCount,
   buildTripPlanQuery,
   collectTripPlanStationCodes,
   countAdvancedOptions,
@@ -534,5 +535,48 @@ describe('tram legs in the plan', () => {
     const names = tripPlanStopNames(plan);
     expect(names.get('9400ZZMAPIC')).toBe('Piccadilly (Metrolink)');
     expect(names.get('9400ZZMAVIC')).toBe('Victoria (Metrolink)');
+  });
+});
+
+describe('accessLegStopCount', () => {
+  const stop = { id: '940GZZLUUXB', name: 'Uxbridge', modes: ['tube'], lines: [] };
+  const leg = (end: 'origin' | 'destination' | 'both'): TripPlanLeg => ({
+    kind: 'transfer',
+    mode: 'TUBE',
+    originCrs: end === 'destination' ? 'HXX' : null,
+    destinationCrs: end === 'origin' ? 'HOH' : null,
+    minutes: 30,
+    line: 'Metropolitan',
+    access: { end, basis: 'line', distanceMetres: 11_400 },
+  });
+  const candidates = [
+    {
+      crs: 'HOH',
+      mode: 'TUBE',
+      minutes: 35,
+      basis: 'line' as const,
+      line: 'Piccadilly',
+      distanceMetres: 1,
+      stopCount: 9,
+    },
+    {
+      crs: 'HOH',
+      mode: 'TUBE',
+      minutes: 30,
+      basis: 'line' as const,
+      line: 'Metropolitan',
+      distanceMetres: 1,
+      stopCount: 7,
+    },
+  ];
+
+  it("reads the stop count off the matching candidate, preferring the leg's line", () => {
+    expect(accessLegStopCount(leg('origin'), { origin: { stop, candidates }, destination: null })).toBe(7);
+  });
+
+  it('has none for a ride straight between two stops, or without the access lists', () => {
+    expect(accessLegStopCount(leg('both'), { origin: { stop, candidates }, destination: null })).toBeUndefined();
+    expect(accessLegStopCount(leg('origin'), undefined)).toBeUndefined();
+    expect(accessLegStopCount(leg('destination'), { origin: { stop, candidates }, destination: null })).toBeUndefined();
   });
 });

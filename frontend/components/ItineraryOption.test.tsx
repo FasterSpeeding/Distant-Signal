@@ -2,7 +2,7 @@ import { screen, fireEvent } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithMantine } from '@/test/render';
 import { ItineraryOption } from './ItineraryOption';
-import type { TripPlanItinerary, TripPlanLeg } from '@/lib/types';
+import type { TripPlanAccessLeg, TripPlanItinerary, TripPlanLeg, TripPlanResponse } from '@/lib/types';
 import { byVisibleText } from '@/test/routeText';
 import {
   RAIL_TRAM_RAIL,
@@ -337,6 +337,103 @@ describe('ItineraryOption: station groups (2026-10-07)', () => {
     expect(screen.getByText('Estimated time for about 11.4 km along the line')).toBeInTheDocument();
     // The itinerary has a train, so it can be chosen.
     expect(screen.getByRole('radio')).not.toBeDisabled();
+  });
+
+  // Uxbridge to Heathrow rides two branches of the Piccadilly: the change
+  // at Acton Town is part of the route, in the radio's name too, so it
+  // never reads as one train. The stop count comes from the candidate.
+  describe('an access ride with a change or another stop area (DS-191)', () => {
+    const tube = (id: string, name: string) => ({
+      id,
+      name,
+      modes: ['tube'],
+      lines: [{ id: 'piccadilly', name: 'Piccadilly' }],
+    });
+    const uxbridge = tube('940GZZLUUXB', 'Uxbridge');
+    const heathrow = tube('940GZZLUHR4', 'Heathrow Terminal 4');
+    const actonTown = tube('940GZZLUACT', 'Acton Town');
+
+    function renderAccess(access: TripPlanAccessLeg, stopAccess?: TripPlanResponse['access'], line = 'Piccadilly') {
+      renderWithMantine(
+        <ItineraryOption
+          itinerary={{
+            legs: [
+              { ...(trainItinerary.legs[0] as TrainLeg), destinationCrs: 'HXX' },
+              {
+                kind: 'transfer',
+                mode: 'TUBE',
+                originCrs: 'HXX',
+                destinationCrs: null,
+                minutes: 45,
+                line,
+                originStop: uxbridge,
+                destinationStop: heathrow,
+                access,
+              },
+            ],
+            changeCount: 0,
+            totalDurationMinutes: 95,
+          }}
+          selected={false}
+          onSelect={vi.fn()}
+          stationNames={new Map([['HXX', 'Heathrow Terminals 2 & 3']])}
+          stopAccess={stopAccess}
+        />,
+      );
+    }
+
+    it("says where the ride changes trains, in the route and the radio's accessible name", () => {
+      renderAccess({ end: 'destination', basis: 'line', distanceMetres: 20_100, changeAt: actonTown });
+      expect(
+        screen.getByText(
+          byVisibleText(/Tube \(Piccadilly line\) .* to Heathrow Terminal 4 \(Tube\), change at Acton Town, 45 min/),
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: /change at Acton Town/ })).toBeInTheDocument();
+    });
+
+    it('reads as one train without a change', () => {
+      renderAccess({ end: 'destination', basis: 'line', distanceMetres: 20_100 });
+      expect(screen.queryByText(/change at/)).not.toBeInTheDocument();
+    });
+
+    it("counts the stops from the leg's candidate", () => {
+      renderAccess(
+        { end: 'destination', basis: 'line', distanceMetres: 20_100, changeAt: actonTown },
+        {
+          origin: null,
+          destination: {
+            stop: heathrow,
+            candidates: [
+              { crs: 'HXX', mode: 'WALK', minutes: 30, basis: 'walk', distanceMetres: 2_000 },
+              {
+                crs: 'HXX',
+                mode: 'TUBE',
+                minutes: 45,
+                basis: 'line',
+                line: 'Piccadilly',
+                distanceMetres: 20_100,
+                stopCount: 17,
+                changeAt: actonTown,
+              },
+            ],
+          },
+        },
+      );
+      expect(screen.getByText('Estimated time for about 20.1 km along the line, 17 stops')).toBeInTheDocument();
+    });
+
+    it('names another stop area it boards or leaves at', () => {
+      renderAccess({
+        end: 'destination',
+        basis: 'line',
+        distanceMetres: 5_000,
+        boardStop: tube('940GZZLUPAH', 'Paddington (H&C Line)'),
+        alightStop: tube('940GZZLUBNK', 'Bank'),
+      });
+      expect(screen.getByText('Board at Paddington (H&C Line). Leave at Bank.')).toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: /Board at Paddington \(H&C Line\)/ })).toBeInTheDocument();
+    });
   });
 
   it('says a walk to a nearby station is an estimate', () => {

@@ -435,6 +435,7 @@ export function PlanTripFlow({
                         (stop) => stop.segment === segmentIndex,
                       )}
                       groups={groups}
+                      stopAccess={plan.access}
                     />
                   </div>
                 ))}
