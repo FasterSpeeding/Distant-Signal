@@ -214,6 +214,26 @@ impl ParsedStopFilters {
         Ok(())
     }
 
+    /// A `400` for a train's end, `name` (`origin`, or `terminates_at`)
+    /// at `code`, that the avoid lists rule out: where they look at the
+    /// same rows (`origin` on the arrivals board, `terminates_at` on the
+    /// departures board), a train cannot both start or end there and
+    /// avoid it. A group is checked by its stations.
+    pub(super) fn check_end(&self, name: &str, code: &str) -> Result<(), (StatusCode, String)> {
+        let listed = |choices: &[StationChoice]| {
+            choices
+                .iter()
+                .any(|choice| choice.codes.iter().any(|c| c == code))
+        };
+        if listed(&self.avoid) || listed(&self.avoid_stop) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("{name}: '{code}' is also in avoid or avoid_stop; a train cannot do both"),
+            ));
+        }
+        Ok(())
+    }
+
     /// The lists as TIPLOC sets. A code with no TIPLOC is a `400`, except
     /// a group member, which is skipped (a group is one entry; it is a
     /// `400` only when none of its stations is known).
@@ -573,6 +593,17 @@ mod tests {
             message,
             "previously_calls_at: 'SWI' is also in avoid or avoid_stop; a train cannot do both"
         );
+    }
+
+    #[test]
+    fn an_end_station_in_an_avoid_list_is_a_400() {
+        let filters = parsed("", "", "SWI", "group:LON");
+        assert_eq!(
+            error(filters.check_end("terminates_at", "SWI")),
+            "terminates_at: 'SWI' is also in avoid or avoid_stop; a train cannot do both"
+        );
+        assert!(error(filters.check_end("origin", "PAD")).starts_with("origin: 'PAD'"));
+        assert!(filters.check_end("origin", "RDG").is_ok());
     }
 
     #[test]

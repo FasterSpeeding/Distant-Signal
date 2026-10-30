@@ -369,7 +369,7 @@ describe('TrainSearchForm', () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(
-      <TrainSearchForm initialStation="man" initialStopFilters={{ ...noFilters, previouslyCallsAt: ['EUS'] }} />,
+      <TrainSearchForm initialStation="man" initialStopFilters={{ ...noFilters, startsAt: ['EUS'] }} />,
     );
 
     fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '09:00' } });
@@ -378,7 +378,7 @@ describe('TrainSearchForm', () => {
 
     await waitFor(() =>
       expect(searchCallUrl(fetchMock)).toBe(
-        '/api/trains/search?station=MAN&from=09%3A00&to=12%3A00&previously_calls_at=EUS&across_midnight=true',
+        '/api/trains/search?station=MAN&from=09%3A00&to=12%3A00&origin=EUS&across_midnight=true',
       ),
     );
   });
@@ -1477,7 +1477,7 @@ describe('TrainSearchForm', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(
-      <TrainSearchForm initialStation="man" initialStopFilters={{ ...noFilters, previouslyCallsAt: ['EUS'] }} />,
+      <TrainSearchForm initialStation="man" initialStopFilters={{ ...noFilters, startsAt: ['EUS'] }} />,
     );
 
     fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '09:00' } });
@@ -1490,7 +1490,7 @@ describe('TrainSearchForm', () => {
     // filters (the changes land before or after the mount search; either
     // way the rows on screen are from the search that has them).
     expect(searchCallUrl(fetchMock)).toBe(
-      '/api/trains/search?station=MAN&from=09%3A00&to=12%3A00&previously_calls_at=EUS&after=CURSOR1&across_midnight=true',
+      '/api/trains/search?station=MAN&from=09%3A00&to=12%3A00&origin=EUS&after=CURSOR1&across_midnight=true',
     );
   });
 
@@ -1641,7 +1641,7 @@ describe('TrainSearchForm', () => {
       const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);
       renderWithMantine(
-        <TrainSearchForm initialStation="MAN" initialStopFilters={{ ...noFilters, previouslyCallsAt: ['EUS'] }} />,
+        <TrainSearchForm initialStation="MAN" initialStopFilters={{ ...noFilters, startsAt: ['EUS'] }} />,
       );
 
       // Mount's own search does not write to the URL (it came from it).
@@ -1657,10 +1657,7 @@ describe('TrainSearchForm', () => {
       // dates) on every search. Replace, not push, so /trains stays one
       // history entry. Params the form doesn't own (`ticketId`) are kept.
       // The URL says it in the timetable's words: `time`, not the API's `from`.
-      // An old link's `origin` gives way to `previously_calls_at`.
-      await waitFor(() =>
-        expect(window.location.search).toBe('?station=MAN&ticketId=7&time=09%3A00&previously_calls_at=EUS'),
-      );
+      await waitFor(() => expect(window.location.search).toBe('?station=MAN&origin=EUS&ticketId=7&time=09%3A00'));
       expect(replaceState).toHaveBeenCalledTimes(1);
       expect(replaceMock).not.toHaveBeenCalled();
       expect(pushMock).not.toHaveBeenCalled();
@@ -1718,14 +1715,14 @@ describe('TrainSearchForm', () => {
       renderWithMantine(
         <TrainSearchForm
           initialStation="MAN"
-          initialStopFilters={{ ...noFilters, previouslyCallsAt: ['EUS'] }}
+          initialStopFilters={{ ...noFilters, startsAt: ['EUS'] }}
           initialFrom="09:00"
         />,
       );
 
       await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(1));
       expect(searchCallUrls(fetchMock)[0]).toBe(
-        '/api/trains/search?station=MAN&from=09%3A00&previously_calls_at=EUS&across_midnight=true',
+        '/api/trains/search?station=MAN&from=09%3A00&origin=EUS&across_midnight=true',
       );
       expect(await screen.findByRole('link', { name: rowName('08:22', 'WAT') })).toBeInTheDocument();
       // The mount effect itself must not touch the URL -- only an explicit
@@ -2013,10 +2010,74 @@ describe('TrainSearchForm advanced options', () => {
     expect(searchCallUrls(fetchMock)).toHaveLength(0);
   });
 
-  it('has no Starts at field any more', async () => {
+  it('keeps Starts at in Advanced options, off the main form', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm />);
     expect(screen.queryByRole('combobox', { name: /Starts at/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^Advanced options/ }));
+    expect(await screen.findByRole('combobox', { name: 'Starts at' })).toBeInTheDocument();
+  });
+
+  it('sends Starts at as origin and Terminates at as terminates_at, and keeps them in the URL', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState(null, '', '/trains?station=MAN');
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+    await awaitMountSettled();
+    await openAdvanced();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Starts at' }), { target: { value: 'eus' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Terminates at' }), { target: { value: 'wat' } });
+    await waitFor(() =>
+      expect(searchCallUrl(fetchMock)).toBe(
+        '/api/trains/search?station=MAN&origin=EUS&terminates_at=WAT&across_midnight=true',
+      ),
+    );
+    await waitFor(() => expect(window.location.search).toBe('?station=MAN&origin=EUS&terminates_at=WAT'));
+  });
+
+  it('refuses a half-typed Starts at, and a Terminates at the departures board avoids', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <TrainSearchForm
+        initialStation="MAN"
+        initialStopFilters={{ ...noFilters, startsAt: ['EU'], terminatesAt: ['WAT'], avoidStop: ['WAT'] }}
+      />,
+    );
+    openFiltersIfCompact();
+    expect(screen.getByRole('button', { name: 'Advanced options (3 set, 2 to fix)' })).toBeInTheDocument();
+    await openAdvanced();
+    expect(screen.getByText('Must be a 3-letter station code')).toBeInTheDocument();
+    expect(
+      screen.getByText('WAT is also in "Avoid completely" or "Don\'t stop at": a train can\'t both end there and not.'),
+    ).toBeInTheDocument();
+    expect(searchCallUrls(fetchMock)).toHaveLength(0);
+  });
+
+  it('keeps Starts at and Terminates at on the arrivals board', async () => {
+    const base = mockFetchByUrl();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/trains/arrivals'))
+        return Promise.resolve(new Response(JSON.stringify({ results: [], nextCursor: null }), { status: 200 }));
+      return base(input);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <TrainSearchForm
+        initialStation="MAN"
+        initialBoard="arrivals"
+        initialStopFilters={{ ...noFilters, startsAt: ['EUS'], terminatesAt: ['MAN'] }}
+      />,
+    );
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map((args) => String(args[0]))).toContain(
+        '/api/trains/arrivals?station=MAN&origin=EUS&terminates_at=MAN',
+      ),
+    );
+    await openAdvanced();
+    expect(screen.getByRole('combobox', { name: 'Starts at' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Terminates at' })).toBeInTheDocument();
   });
 
   it('refuses to search on a list that cannot be met, and says why on the field', async () => {
@@ -2052,4 +2113,13 @@ describe('TrainSearchForm advanced options', () => {
   });
 });
 
-const noFilters = { callsAt: [], via: [], avoid: [], avoidStop: [], previouslyCallsAt: [], previouslyStopsAt: [] };
+const noFilters = {
+  callsAt: [],
+  via: [],
+  avoid: [],
+  avoidStop: [],
+  previouslyCallsAt: [],
+  previouslyStopsAt: [],
+  startsAt: [],
+  terminatesAt: [],
+};

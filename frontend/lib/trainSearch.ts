@@ -47,9 +47,8 @@ export type StationBoard = 'departures' | 'arrivals';
  * two stations, `arrival_from`/`arrival_to` (and their day offsets) for
  * the arrival at `to`; `operator`; and the advanced options,
  * `previously_calls_at`, `previously_stops_at`, `calls_at`, `via`,
- * `avoid` and `avoid_stop` (`lib/trainStopFilters.ts`). `origin`, the
- * removed "Starts at", is still owned, so the address bar trades it for
- * `previously_calls_at` the first time a search changes it. */
+ * `avoid` and `avoid_stop`, and `origin` and `terminates_at` ("Starts at"
+ * and "Terminates at"; `lib/trainStopFilters.ts`). */
 export const TRAIN_URL_PARAMS = [
   'station',
   'board',
@@ -74,6 +73,7 @@ export const TRAIN_URL_PARAMS = [
   'avoid_stop',
   'previously_calls_at',
   'previously_stops_at',
+  'terminates_at',
 ] as const;
 
 /** A 3-letter station code. */

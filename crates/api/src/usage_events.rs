@@ -318,6 +318,8 @@ pub const FEATURE_STEPS: &[(&str, &[&str])] = &[
             "avoid_stop",
             "previously_calls_at",
             "previously_stops_at",
+            "origin",
+            "terminates_at",
         ],
     ),
     // The planner's "Compare options": a search with it on, and an option

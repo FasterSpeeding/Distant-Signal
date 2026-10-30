@@ -122,17 +122,16 @@ const CRS_PATTERN = STATION_CODE_PATTERN;
  * after the date's midnight; between two stations, an earliest/latest
  * arrival at the second; and Operator, "any of" the operators picked, a
  * code that is not on the page's list dropped (`parseOperatorParam`).
- * Under them, "Advanced options" (`TrainsAdvancedOptions`): Previously
- * calls at and Previously stops at, where the train has been before the
- * station (before the first of two), its origin counted or not, sent and
- * kept in the URL as `previously_calls_at` and `previously_stops_at`;
- * then the planner's Call at, Pass through, Avoid completely and Don't
- * stop at, applied to the part of the train ridden (after the station,
- * before it on the arrivals board, or between the two stations), as
- * `calls_at`, `via`, `avoid` and `avoid_stop`. The two "Previously" lists
- * replaced the station board's "Starts at" (`origin`): an old link's
- * `origin=X` opens as Previously calls at X (`parseStopFilterParams`),
- * and the address bar trades `origin` for it at the first change.
+ * Under them, "Advanced options" (`TrainsAdvancedOptions`): Starts at,
+ * Previously calls at and Previously stops at, about the route before the
+ * station (before the first of two), sent and kept in the URL as
+ * `origin`, `previously_calls_at` and `previously_stops_at`; then
+ * Terminates at (`terminates_at`) and the planner's Call at, Pass
+ * through, Avoid completely and Don't stop at, applied to the part of the
+ * train ridden (after the station, before it on the arrivals board, or
+ * between the two stations), as `calls_at`, `via`, `avoid` and
+ * `avoid_stop`. Starts at moved there from the main form under the same
+ * `origin`, so an old link keeps its meaning.
  *
  * The rows are the timetable, each a link to the train's page. Only in the
  * ticket flow (`attachTicketId`, from the Journeys page) does a row carry
@@ -252,7 +251,7 @@ export function TrainSearchForm({
   const [arrivalFrom, setArrivalFrom] = useState(initialArrivalFrom);
   const [arrivalTo, setArrivalTo] = useState(initialArrivalTo);
   const [stopFilters, setStopFilters] = useState<TrainStopFilters>(() =>
-    urlParams ? parseStopFilterParams(urlParams, { legacyOrigin: !between }) : initialStopFiltersProp,
+    urlParams ? parseStopFilterParams(urlParams) : initialStopFiltersProp,
   );
   const [advancedOpened, setAdvancedOpened] = useState(false);
   // Code -> name for the advanced options' rows: filled as stations are
@@ -261,6 +260,8 @@ export function TrainSearchForm({
   const addStopNames = (found: Map<string, string>) => setStopNames((current) => new Map([...current, ...found]));
   useEffect(() => {
     const restored = [
+      ...stopFilters.startsAt,
+      ...stopFilters.terminatesAt,
       ...stopFilters.previouslyCallsAt,
       ...stopFilters.previouslyStopsAt,
       ...stopFilters.callsAt,
@@ -342,6 +343,7 @@ export function TrainSearchForm({
       : [[stationCrs, 'the station on this board']],
     names: stopLabels,
     arrivals,
+    between,
   });
   const filtersValid =
     Object.keys(stopErrors).length === 0 &&

@@ -23,6 +23,8 @@ describe('parseStopFilterParams', () => {
       avoidStop: ['OXF'],
       previouslyCallsAt: [],
       previouslyStopsAt: [],
+      startsAt: [],
+      terminatesAt: [],
     });
   });
 
@@ -33,19 +35,16 @@ describe('parseStopFilterParams', () => {
     expect(parsed.previouslyStopsAt).toEqual(['CRE', 'AAA', 'BBB']);
   });
 
-  it("reads an old link's origin (the removed Starts at) as Previously calls at, on the station view only", () => {
-    const old = new URLSearchParams('station=MAN&origin=eus');
-    expect(parseStopFilterParams(old, { legacyOrigin: true }).previouslyCallsAt).toEqual(['EUS']);
-    // Between two stations "Starts at" never applied.
-    expect(parseStopFilterParams(old).previouslyCallsAt).toEqual([]);
-    // A previously_calls_at of its own wins; a malformed origin is dropped.
-    expect(
-      parseStopFilterParams(new URLSearchParams('origin=EUS&previously_calls_at=CRE'), { legacyOrigin: true })
-        .previouslyCallsAt,
-    ).toEqual(['CRE']);
-    expect(parseStopFilterParams(new URLSearchParams('origin=EUSX'), { legacyOrigin: true }).previouslyCallsAt).toEqual(
-      [],
-    );
+  it('reads Starts at from origin, so an old link keeps its exact meaning, and Terminates at', () => {
+    const old = parseStopFilterParams(new URLSearchParams('station=MAN&origin=eus&terminates_at=wat'));
+    expect(old.startsAt).toEqual(['EUS']);
+    expect(old.terminatesAt).toEqual(['WAT']);
+    // Not a superset: Previously calls at stays empty.
+    expect(old.previouslyCallsAt).toEqual([]);
+    // One station code each; anything else is dropped.
+    const bad = parseStopFilterParams(new URLSearchParams('origin=EUSX&terminates_at=group:LON'));
+    expect(bad.startsAt).toEqual([]);
+    expect(bad.terminatesAt).toEqual([]);
   });
 
   it('drops what it cannot read and cuts each list to its cap', () => {
@@ -74,6 +73,8 @@ describe('stopFilterEntries', () => {
       avoidStop: ['OXF'],
       previouslyCallsAt: ['EUS'],
       previouslyStopsAt: ['CRE', 'group:LON'],
+      startsAt: ['EUS'],
+      terminatesAt: ['WAT'],
     });
     const entries = stopFilterEntries(set);
     expect(entries).toEqual([
@@ -81,6 +82,8 @@ describe('stopFilterEntries', () => {
       ['avoid_stop', 'OXF'],
       ['previously_calls_at', 'EUS'],
       ['previously_stops_at', 'CRE,group:LON'],
+      ['origin', 'EUS'],
+      ['terminates_at', 'WAT'],
     ]);
     expect(parseStopFilterParams(new URLSearchParams(entries))).toEqual(set);
   });
@@ -93,6 +96,10 @@ describe('stopFilterEntries', () => {
       'previously_calls_at',
       'previously_stops_at',
     ]);
+    expect(setStopFilterParams(filters({ startsAt: ['EUS'], terminatesAt: ['WAT'] }))).toEqual([
+      'origin',
+      'terminates_at',
+    ]);
   });
 
   it('are /trains URL params, so switching view clears them', () => {
@@ -104,6 +111,7 @@ describe('stopFilterEntries', () => {
       'previously_calls_at',
       'previously_stops_at',
       'origin',
+      'terminates_at',
     ]) {
       expect(TRAIN_URL_PARAMS).toContain(param);
     }
@@ -126,6 +134,9 @@ describe('stopFiltersSummary', () => {
     expect(
       stopFiltersSummary(filters({ previouslyCallsAt: ['SWI'], previouslyStopsAt: ['DID'], via: ['BHM'] }), names),
     ).toBe('Previously calls at Swindon · Previously stops at DID · Pass through BHM');
+    expect(stopFiltersSummary(filters({ startsAt: ['SWI'], terminatesAt: ['OXF'], callsAt: ['DID'] }), names)).toBe(
+      'Starts at Swindon · Terminates at OXF · Call at DID',
+    );
   });
 });
 
@@ -181,6 +192,32 @@ describe('stopFilterErrors', () => {
     expect(stopFilterErrors(set, { ...between, arrivals: true }).previouslyStopsAt).toBe(
       'SWI is also in "Avoid completely" or "Don\'t stop at": a train can\'t both stop there and not.',
     );
+  });
+
+  it('takes Starts at and Terminates at as station codes, the station searched included', () => {
+    expect(stopFilterErrors(filters({ startsAt: ['RDG'], terminatesAt: ['PAD'] }), between)).toEqual({});
+    expect(stopFilterErrors(filters({ startsAt: ['RD'], terminatesAt: ['pa'] }), between)).toEqual({
+      startsAt: 'Must be a 3-letter station code',
+      terminatesAt: 'Must be a 3-letter station code',
+    });
+  });
+
+  it('refuses an end of the train the avoid lists rule out, where they look at it', () => {
+    const departures = {
+      stations: [['RDG', 'the station on this board'] as [string, string]],
+      names: new Map<string, string>(),
+    };
+    const set = filters({ startsAt: ['SWI'], terminatesAt: ['OXF'], avoid: ['SWI'], avoidStop: ['OXF'] });
+    // Departures: the lists look on to the end of the train.
+    expect(stopFilterErrors(set, departures)).toEqual({
+      terminatesAt: 'OXF is also in "Avoid completely" or "Don\'t stop at": a train can\'t both end there and not.',
+    });
+    // Arrivals: they look back to where it starts.
+    expect(stopFilterErrors(set, { ...departures, arrivals: true })).toEqual({
+      startsAt: 'SWI is also in "Avoid completely" or "Don\'t stop at": a train can\'t both start there and not.',
+    });
+    // Between two stations: neither end is ridden.
+    expect(stopFilterErrors(set, { ...between, between: true })).toEqual({});
   });
 
   it('refuses the same station twice in a row', () => {

@@ -2,6 +2,7 @@
 
 import { Stack, Text, type ComboboxProps } from '@mantine/core';
 import { AdvancedOptionsDisclosure, STOP_LIST_FIELDS } from './AdvancedOptionsDisclosure';
+import { StationField } from './StationField';
 import { StationListPicker } from './StationListPicker';
 import { searchPlannerLocations } from '@/lib/suggestions';
 import { withGroupSuggestions } from '@/lib/stationGroups';
@@ -29,16 +30,20 @@ const searchWithGroups = withGroupSuggestions(searchPlannerLocations);
  * form, opens the list here. `scope` says which part of the train they
  * look at, which depends on the board.
  *
- * First, under `earlierScope`, the two lists for finding one particular
+ * First, under `earlierScope`, the options for finding one particular
  * train by where it has already been (DS-213; never in the planner):
+ * Starts at (`origin`, one station, exactly where it starts), then
  * Previously calls at (`previously_calls_at`, where it starts counts) and
  * Previously stops at (`previously_stops_at`, it doesn't). They look at
  * the route before the station, the rest after it, so they get their own
- * line. On the arrivals board (`arrivals`) every list looks before the
- * station: there is one line, and "Previously calls at", which would mean
- * just what "Call at" does, is left out, unless it holds stations (a link
- * from the departures board, or an old "Starts at" link), so a filter in
- * force is never hidden. */
+ * line. The "after" group opens with Terminates at (`terminates_at`, one
+ * station, exactly where it ends), Starts at's counterpart.
+ *
+ * On the arrivals board (`arrivals`) every list looks before the station:
+ * there is one line, and "Previously calls at", which would mean just
+ * what "Call at" does, is left out unless it holds stations (a link from
+ * the departures board), so a filter in force is never hidden. Starts at
+ * and Terminates at mean the same on every board, so they stay. */
 export function TrainsAdvancedOptions({
   filters,
   onChange,
@@ -82,6 +87,15 @@ export function TrainsAdvancedOptions({
         <Text size="sm" c="dimmed">
           {arrivals ? scope : earlierScope}
         </Text>
+        <StationField
+          label="Starts at"
+          placeholder="e.g. Paddington or PAD"
+          description="Only trains that start their journey at this station."
+          value={filters.startsAt[0] ?? ''}
+          onChange={(value) => onChange({ ...filters, startsAt: value.trim() ? [value] : [] })}
+          comboboxProps={comboboxProps}
+          error={errors.startsAt}
+        />
         {(!arrivals || filters.previouslyCallsAt.length > 0) && (
           <StationListPicker
             label="Previously calls at (in order)"
@@ -129,6 +143,15 @@ export function TrainsAdvancedOptions({
             {scope}
           </Text>
         )}
+        <StationField
+          label="Terminates at"
+          placeholder="e.g. Paddington or PAD"
+          description="Only trains that end their journey at this station."
+          value={filters.terminatesAt[0] ?? ''}
+          onChange={(value) => onChange({ ...filters, terminatesAt: value.trim() ? [value] : [] })}
+          comboboxProps={comboboxProps}
+          error={errors.terminatesAt}
+        />
         <StationListPicker
           label="Call at (in order)"
           description='The train must stop at each of these, in this order. A group such as "Any of the London Terminals" means a stop at any one of its stations.'

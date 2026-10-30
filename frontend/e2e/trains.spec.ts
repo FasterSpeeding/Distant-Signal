@@ -141,12 +141,21 @@ test.describe('/trains advanced options', () => {
     await expect(page.getByRole('link', { name: /^10:50 from ZGA\b/ })).toBeVisible();
   });
 
-  test('an old "Starts at" link opens as "Previously calls at"', async ({ page }) => {
+  test('"Starts at" and "Terminates at" match the ends of the train exactly; an old link keeps "Starts at"', async ({
+    page,
+  }) => {
     await page.goto(`/trains?station=ZGB&date=${DATE}&origin=ZGA`);
     await expect(page.getByRole('link', { name: /^10:22 to ZGC\b/ })).toBeVisible();
     await page.getByRole('button', { name: /^Filters/ }).click();
     await expect(page.getByRole('button', { name: /^Advanced options ?\(1 set\)$/ })).toBeVisible();
-    await expect(page.getByText(/^Previously calls at (ZGA|Fixture Lane)$/)).toBeVisible();
+    await expect(page.getByText(/^Starts at (ZGA|Fixture Lane)$/)).toBeVisible();
+    // ZGB is a stop, not where the train starts.
+    await page.goto(`/trains?station=ZGB&date=${DATE}&origin=ZGB`);
+    await expect(page.getByText(NONE)).toBeVisible();
+    await page.goto(`/trains?from=ZGA&to=ZGB&date=${DATE}&terminates_at=ZGC`);
+    await expect(page.getByRole('link', { name: /^10:00 to ZGC\b/ })).toBeVisible();
+    await page.goto(`/trains?from=ZGA&to=ZGB&date=${DATE}&terminates_at=ZGB`);
+    await expect(page.getByText(NONE)).toBeVisible();
   });
 
   test('between two stations, "Pass through" counts a pass and "Call at" does not', async ({ page }) => {

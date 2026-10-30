@@ -121,7 +121,7 @@ export default async function TrainsPage({ searchParams }: { searchParams: Promi
           initialArrivalFromDayOffset: first('arrival_from_day_offset'),
           initialArrivalToDayOffset: first('arrival_to_day_offset'),
           initialOperator: first('operator'),
-          initialStopFilters: parseStopFilterParams(params, { legacyOrigin: !between }),
+          initialStopFilters: parseStopFilterParams(params),
           attachTicketId,
           operatorNames,
           unnamedOperatorCodes,

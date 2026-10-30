@@ -134,7 +134,7 @@ describe('TrainsPage', () => {
     expect(screen.getByRole('textbox', { name: 'Headcode or UID' })).toHaveValue('1S00');
   });
 
-  it("pre-fills the station from the query string, and an old link's Starts at as Previously calls at", async () => {
+  it("pre-fills the station and an old link's Starts at, now in Advanced options, shown by name", async () => {
     vi.mocked(fetch).mockImplementation(
       stationNamesFetch({ MAN: 'Manchester Piccadilly', EUS: 'London Euston', WAT: 'London Waterloo' }, (url) =>
         url.startsWith('/api/trains/search')
@@ -152,19 +152,16 @@ describe('TrainsPage', () => {
     await waitFor(() =>
       expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('Manchester Piccadilly (MAN)'),
     );
-    // The removed "Starts at" (`origin`) searches as Previously calls at,
-    // which counts where the train starts.
+    // `origin` is still "Starts at", exactly, now in Advanced options.
     const searched = () => vi.mocked(fetch).mock.calls.map((args) => String(args[0]));
-    await waitFor(() =>
-      expect(searched()).toContain('/api/trains/search?station=MAN&previously_calls_at=EUS&across_midnight=true'),
-    );
-    expect(searched().some((url) => url.includes('origin='))).toBe(false);
+    await waitFor(() => expect(searched()).toContain('/api/trains/search?station=MAN&origin=EUS&across_midnight=true'));
     // A URL with a station opens on the compact bar: the rest is in Filters,
     // the option named while Advanced options is collapsed.
     fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
-    expect(screen.queryByRole('combobox', { name: /Starts at/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Advanced options (1 set)' })).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText('Previously calls at London Euston')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Starts at London Euston')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Advanced options/ }));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Starts at' })).toHaveValue('London Euston (EUS)'));
     vi.mocked(fetch).mockImplementation(async () => new Response('[]', { status: 200 }));
   });
 

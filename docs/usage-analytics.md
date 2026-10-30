@@ -76,7 +76,7 @@ it. Its own rate-limit budget: `API_RATE_LIMIT_EVENTS_PER_MINUTE` (60) and
 |---|---|---|
 | `trains` | `station_departures`, `station_arrivals`, `between`, `headcode`, `uid` | A `/trains` search runs in that view (a UID opens its train's page, so it has no outcome) |
 | `trains` | `results`, `no_results`, `failed` | What the search found (an unpublished date is `no_results`) |
-| `trains_filters` | `calls_at`, `via`, `avoid`, `avoid_stop`, `previously_calls_at`, `previously_stops_at` | A `/trains` search with that advanced option set, one per option (never which stations) |
+| `trains_filters` | `calls_at`, `via`, `avoid`, `avoid_stop`, `previously_calls_at`, `previously_stops_at`, `origin`, `terminates_at` | A `/trains` search with that advanced option set, one per option (never which stations; `origin` is Starts at) |
 | `compare_options` | `searched` | A trip plan with "Compare options" on |
 | `compare_options` | `alternative_selected`, `alternative_saved` | An option other than the fastest chosen, then saved as a journey |
 | `shared_journeys` | `shown`, `opened` | Home's "Shared with you" list shown, and a journey in it opened |
