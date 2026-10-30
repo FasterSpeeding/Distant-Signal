@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { stopPageHref, transitNetworkName, transitStopPlaceName } from './transitStops';
+import { stopPageHref, transitNetworkName, transitStopHref, transitStopPlaceName } from './transitStops';
 
 describe('stopPageHref', () => {
   it("links a Metrolink station to its transit stop page, and a TfL stop to TfL's", () => {
@@ -20,5 +20,15 @@ describe('transit stop names', () => {
     expect(transitStopPlaceName('Piccadilly', transitNetworkName('metrolink'))).toBe('Piccadilly (Metrolink)');
     expect(transitNetworkName('elsewhere')).toBe('tram');
     expect(transitNetworkName('elsewhere', 'Elsewhere Trams')).toBe('Elsewhere Trams');
+  });
+});
+
+describe('transitStopHref', () => {
+  it("is the network's stop page, named by the station id", () => {
+    expect(transitStopHref('metrolink', '9400ZZMAPIC')).toBe('/transit/metrolink/stops/9400ZZMAPIC');
+  });
+
+  it('encodes each segment', () => {
+    expect(transitStopHref('metrolink', 'A/B?C')).toBe('/transit/metrolink/stops/A%2FB%3FC');
   });
 });
