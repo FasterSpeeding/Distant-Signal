@@ -547,6 +547,7 @@ mod tests {
             itineraries: vec![PlannedItinerary {
                 legs,
                 change_count: 0,
+                access_change_count: 0,
                 total_duration_minutes: 0,
                 exceeds_recommended_changes: None,
                 departure_min: 0,

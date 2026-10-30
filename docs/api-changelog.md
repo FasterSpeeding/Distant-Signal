@@ -3,6 +3,22 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-30: `accessChangeCount`, changes within `TfL` access legs
+
+Additive. `changeCount` is unchanged: it still counts changes between
+National Rail trains only, and `maxChanges`, `exceedsRecommendedChanges`
+and the `fewestChanges` label still use it (DS-205;
+`crates/api/src/data/trip_planning_itinerary.rs`).
+
+- `GET /Trips/plan`: every `segments[s].itineraries[j]` and every
+  `journeys[j]` gains `accessChangeCount`, the number of changes made
+  within `TfL` access legs: one per leg whose `access` has `changeAt`.
+  It is `0` when there are none, including for a plan with no `TfL` stop
+  end. Uxbridge (`940GZZLUUXB`) to Heathrow Terminals 2 & 3
+  (`940GZZLUHRC`) is one Piccadilly line leg that changes at Acton Town:
+  `changeCount` 0, `accessChangeCount` 1. A client that wants every
+  change adds the two; DS-MCP can show it as "1 change (on the Tube)".
+
 ## 2026-10-30: `results=options` adds alternative routes, with `labels`
 
 Additive. DS-MCP can keep reading the itineraries as before; the list may
