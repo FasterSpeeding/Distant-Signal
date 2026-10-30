@@ -150,7 +150,7 @@ test.describe('Plan a journey', () => {
     await page.clock.setFixedTime(new Date('2026-09-17T06:00:00Z'));
     await page.goto(`/plan?${query}`);
     await expect(page.getByRole('radio', { name: 'Compare options' })).toBeChecked();
-    await expect(page.getByRole('button', { name: 'Advanced options (5 set)' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Advanced options ?\(5 set\)$/ })).toBeVisible();
     await page.getByRole('button', { name: 'Find routes' }).click();
 
     await expect.poll(() => sent.length).toBe(1);
