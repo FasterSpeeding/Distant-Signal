@@ -48,8 +48,8 @@ export type StationBoard = 'departures' | 'arrivals';
  * the arrival at `to`; `operator`; and the advanced options,
  * `previously_calls_at`, `previously_stops_at`, `calls_at`, `via`,
  * `avoid` and `avoid_stop` (`lib/trainStopFilters.ts`). `origin`, the
- * removed "Starts at", is still owned, so the address bar drops it once
- * an old link's search runs (it reads as `previously_calls_at`). */
+ * removed "Starts at", is still owned, so the address bar trades it for
+ * `previously_calls_at` the first time a search changes it. */
 export const TRAIN_URL_PARAMS = [
   'station',
   'board',

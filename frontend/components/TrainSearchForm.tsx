@@ -132,7 +132,7 @@ const CRS_PATTERN = STATION_CODE_PATTERN;
  * `calls_at`, `via`, `avoid` and `avoid_stop`. The two "Previously" lists
  * replaced the station board's "Starts at" (`origin`): an old link's
  * `origin=X` opens as Previously calls at X (`parseStopFilterParams`),
- * and the address bar drops `origin` once the search runs.
+ * and the address bar trades `origin` for it at the first change.
  *
  * The rows are the timetable, each a link to the train's page. Only in the
  * ticket flow (`attachTicketId`, from the Journeys page) does a row carry
