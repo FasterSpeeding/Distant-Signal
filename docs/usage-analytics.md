@@ -26,7 +26,12 @@ with fixed labels (`crates/api/src/usage_events.rs`, `FeatureEvent`):
 Page loads backed by the api (TfL stop pages, transit networks, lines,
 stations) are already counted by route template in
 `distant_signal_http_requests_total{endpoint}` (exported as
-`exported_endpoint`). The chat runs in the browser against the user's own
+`exported_endpoint`). So are the Trains section's timetable reads
+(`/public/trains/search`, `/public/trains/arrivals`,
+`/public/trains/by-headcode`), with their status, so they get no feature
+counter of their own: a read has no outcome beyond its status that the
+handler sees and the browser does not, and phase 2 counts which view was
+used and whether it found anything. The chat runs in the browser against the user's own
 Anthropic key, so the api cannot see it; phase 2 counts it when opted in.
 
 Every series is registered at 0 at startup. Lawful basis: legitimate
@@ -56,7 +61,7 @@ it. Its own rate-limit budget: `API_RATE_LIMIT_EVENTS_PER_MINUTE` (60) and
 | `page_view` | none | A page is shown; `route_template` is Next's template (`/lines/[id]`), never the real path |
 | `display_mode` | `mode`: `standalone`, `browser` | Once per page load |
 | `feature` | `feature`, `step` (below) | A client-visible step of a core feature |
-| `empty_state` | `kind`: `train_search_no_results`, `station_search_no_results`, `departures_none`, `journeys_none`, `groups_none`, `line_trains_none` | A list or search comes back empty |
+| `empty_state` | `kind`: `trains_station_board_none`, `trains_between_none`, `trains_headcode_none`, `station_search_no_results`, `departures_none`, `journeys_none`, `groups_none`, `line_trains_none` | A list or search comes back empty |
 | `api_error` | `status`: `4xx`, `5xx`, `network` | A call from the browser to the api fails |
 | `error_boundary` | `digest` (optional) | The error page is shown; Next's digest only, never the message or stack |
 | `offline_shown` | none (`route_template` `/offline`) | The offline page was shown; sent on the next page load |
@@ -65,7 +70,21 @@ it. Its own rate-limit budget: `API_RATE_LIMIT_EVENTS_PER_MINUTE` (60) and
 (`searched`, `results`, `no_route`, `failed`, `saved_journey`), `share_link`
 (`created`, `copied`), `notifications` (`prompted`, `granted`, `denied`,
 `subscribed`, `failed`), `group_join` (`joined`, `failed`), `chat`
-(`opened`, `message_sent`), `connected_app` (`enabled`, `revoked`).
+(`opened`, `message_sent`), `connected_app` (`enabled`, `revoked`), and:
+
+| `feature` | `step` | Sent when |
+|---|---|---|
+| `trains` | `station_departures`, `station_arrivals`, `between`, `headcode`, `uid` | A `/trains` search runs in that view (a UID opens its train's page, so it has no outcome) |
+| `trains` | `results`, `no_results`, `failed` | What the search found (an unpublished date is `no_results`) |
+| `compare_options` | `searched` | A trip plan with "Compare options" on |
+| `compare_options` | `alternative_selected`, `alternative_saved` | An option other than the fastest chosen, then saved as a journey |
+| `shared_journeys` | `shown`, `opened` | Home's "Shared with you" list shown, and a journey in it opened |
+| `leg_stops` | `earlier_expanded`, `later_expanded` | A journey leg's collapsed "Earlier stops" or "Later stops" opened |
+| `journey_start` | `plan`, `known`, `untracked` | `/plan`'s way in to a new journey shown, on arrival and on each switch |
+
+An event from before the nav knows the session (a page's own effects can
+run first on a full load) waits for it, and is sent only if the session
+says opted in.
 
 Nothing names a station, line, train, journey or group.
 
@@ -87,7 +106,7 @@ Mirrored into Prometheus:
 
 - `distant_signal_api_usage_events_total{event, signed_in}`
 - `distant_signal_api_usage_page_views_total{route}` (one series per route
-  template, about 55)
+  template, 54)
 - `distant_signal_api_usage_events_dropped_total{reason}`: `privacy_signal`,
   `not_opted_in`, `invalid`, `error`
 

@@ -85,6 +85,24 @@ describe('opt-in gating', () => {
     expect(beacon).not.toHaveBeenCalled();
   });
 
+  it('holds events from before the session is known, and sends them only once it says opted in', async () => {
+    writeDeviceOptIn(true);
+    trackEmptyState('journeys_none');
+    expect(beacon).not.toHaveBeenCalled();
+    setAnalyticsSession(false, false);
+    expect(await sentJson()).toEqual([
+      { name: 'empty_state', route_template: '/lines/[id]', props: { kind: 'journeys_none' } },
+    ]);
+
+    resetAnalyticsForTests();
+    beacon.mockClear();
+    setCurrentRoute('/lines/[id]');
+    trackEmptyState('journeys_none');
+    setAnalyticsSession(true, false);
+    setAccountOptIn(true);
+    expect(beacon).not.toHaveBeenCalled();
+  });
+
   it('treats any stored value but "true" as off', () => {
     setAnalyticsSession(false, false);
     localStorage.setItem(ANALYTICS_OPT_IN_STORAGE_KEY, 'yes');

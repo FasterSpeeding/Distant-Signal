@@ -120,7 +120,7 @@ export function TrainSearchResults({
     return (
       <Text size="sm" c="dimmed">
         No scheduled trains match those filters right now.
-        <TrackEmptyState kind="train_search_no_results" />
+        <TrackEmptyState kind={view === 'between' ? 'trains_between_none' : 'trains_station_board_none'} />
       </Text>
     );
   }

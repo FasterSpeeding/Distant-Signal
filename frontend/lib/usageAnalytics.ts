@@ -20,6 +20,7 @@
 
 import {
   apiErrorStatusFor,
+  routeTemplateFor,
   type EmptyStateKind,
   type EventName,
   type Feature,
@@ -48,6 +49,13 @@ interface AnalyticsState {
 }
 
 const state: AnalyticsState = { signedIn: null, accountOptIn: false, route: null };
+
+/** Events from before the tracker knew the session: a page's own effects
+ * can run before the nav's (streamed in behind `<Suspense>`) on a full
+ * load, so an empty state or a "shown" there would otherwise be lost. Sent
+ * once the session is known and opted in, else dropped. Bounded. */
+const MAX_PENDING_EVENTS = 20;
+let pendingEvents: UsageEventBody[] = [];
 const listeners = new Set<() => void>();
 let version = 0;
 
@@ -108,6 +116,9 @@ export function setAnalyticsSession(signedIn: boolean, accountOptIn: boolean) {
   if (state.signedIn === signedIn && state.accountOptIn === accountOptIn) return;
   state.signedIn = signedIn;
   state.accountOptIn = accountOptIn;
+  const queued = pendingEvents;
+  pendingEvents = [];
+  if (analyticsEnabled()) for (const body of queued) deliver(body);
   notify();
 }
 
@@ -169,12 +180,19 @@ function deliver(body: UsageEventBody) {
 }
 
 /** Sends one event if the visitor has opted in, on `route` (by default the
- * current page). Does nothing otherwise, or before the page is known. */
+ * current page). Does nothing otherwise. Before the session is known, the
+ * event waits for it (`pendingEvents`). */
 export function track(name: EventName, props?: Record<string, string>, route?: RouteTemplate) {
-  if (!analyticsEnabled()) return;
-  const routeTemplate = route ?? state.route;
-  if (routeTemplate === null) return;
-  deliver(props ? { name, route_template: routeTemplate, props } : { name, route_template: routeTemplate });
+  if (typeof window === 'undefined' || privacySignalSet()) return;
+  const routeTemplate = route ?? state.route ?? routeTemplateFor(window.location.pathname);
+  const body: UsageEventBody = props
+    ? { name, route_template: routeTemplate, props }
+    : { name, route_template: routeTemplate };
+  if (state.signedIn === null) {
+    if (pendingEvents.length < MAX_PENDING_EVENTS) pendingEvents.push(body);
+    return;
+  }
+  if (analyticsEnabled()) deliver(body);
 }
 
 /** A feature step (`feature` event), e.g. `trackFeature('plan', 'results')`. */
@@ -241,6 +259,7 @@ export function resetAnalyticsForTests() {
   state.signedIn = null;
   state.accountOptIn = false;
   state.route = null;
+  pendingEvents = [];
   listeners.clear();
   version = 0;
 }

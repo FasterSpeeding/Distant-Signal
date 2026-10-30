@@ -212,6 +212,7 @@ export function JourneyTimeline({
         </TableThead>
         {legRange && legRange.start > 0 && first && (
           <LegStopsDisclosure
+            part="earlier"
             label={`Earlier stops from ${journeyStopLabel(first, 0, total, endpointNames)} (${legRange.start})`}
             colSpan={colSpan}
             hint={positionHint(0, legRange.start - 1)}
@@ -222,6 +223,7 @@ export function JourneyTimeline({
         <TableTbody>{legRange ? rows(legRange.start, legRange.end) : rows(0, total - 1)}</TableTbody>
         {legRange && legRange.end < total - 1 && last && (
           <LegStopsDisclosure
+            part="later"
             label={`Later stops to ${journeyStopLabel(last, total - 1, total, endpointNames)} (${total - 1 - legRange.end})`}
             colSpan={colSpan}
             hint={positionHint(legRange.end + 1, total - 1)}

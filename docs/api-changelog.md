@@ -87,6 +87,8 @@ Additive. DS-MCP needs no change and should not call the new routes (DS-190;
 - No other response changes. The api now also counts some outcomes
   (tracking a train, planning a trip, share links, push subscriptions,
   group joins, connected apps) in Prometheus, with no identifiers.
+  The new Trains reads (`/public/trains/arrivals`, `/by-headcode`) get no
+  counter of their own: the request metrics already count them by route.
 
 ## 2026-10-30: Tube rides change trains when quicker, and use a station's other stops
 

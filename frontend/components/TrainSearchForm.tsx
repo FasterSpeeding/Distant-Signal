@@ -41,6 +41,7 @@ import {
   type StationBoard,
   type TrainSearchResults as TrainSearchResultsState,
 } from '@/lib/trainSearch';
+import { trackFeature } from '@/lib/usageAnalytics';
 
 const TRAIN_NOUN: ListNoun = { one: 'train', other: 'trains' };
 
@@ -393,20 +394,25 @@ export function TrainSearchForm({
     const submittedDateValue = new URL(requested, 'http://localhost').searchParams.get('date');
     // A function, not `signal.aborted` inline: it changes across the awaits.
     const superseded = () => signal.aborted;
+    // Usage counts (DS-190): which view searched, then what came back.
+    trackFeature('trains', between ? 'between' : arrivals ? 'station_arrivals' : 'station_departures');
     try {
       const response = await fetch(requested, { signal });
       if (superseded()) return;
       if (response.status === 404) {
+        trackFeature('trains', 'no_results');
         setResults('unpublished');
         setUnpublishedDate(submittedDateValue);
         return;
       }
       if (!response.ok) {
+        trackFeature('trains', 'failed');
         setResults('error');
         return;
       }
       const body = (await response.json()) as TrainSearchPage | TrainArrivalsPage;
       if (superseded()) return;
+      trackFeature('trains', body.results.length > 0 ? 'results' : 'no_results');
       setResults({
         rows: body.results,
         nextCursor: body.nextCursor,
@@ -415,7 +421,9 @@ export function TrainSearchForm({
         provisional: body.provisional === true,
       });
     } catch {
-      if (!superseded()) setResults('error');
+      if (superseded()) return;
+      trackFeature('trains', 'failed');
+      setResults('error');
     }
   });
 

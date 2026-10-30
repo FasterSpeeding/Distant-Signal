@@ -224,7 +224,6 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/incidents/[id]",
     "/journeys",
     "/journeys/[id]",
-    "/journeys/new",
     "/journeys/shared/[token]",
     "/journeys/templates",
     "/journeys/templates/[id]",
@@ -292,11 +291,41 @@ pub const FEATURE_STEPS: &[(&str, &[&str])] = &[
     ("group_join", &["joined", "failed"]),
     ("chat", &["opened", "message_sent"]),
     ("connected_app", &["enabled", "revoked"]),
+    // `/trains`: a search run in one of its views (the step names the
+    // view), then what came back. A UID opens its train's page, so it has
+    // no outcome of its own here.
+    (
+        "trains",
+        &[
+            "station_departures",
+            "station_arrivals",
+            "between",
+            "headcode",
+            "uid",
+            "results",
+            "no_results",
+            "failed",
+        ],
+    ),
+    // The planner's "Compare options": a search with it on, and an option
+    // other than the fastest chosen, then saved as a journey.
+    (
+        "compare_options",
+        &["searched", "alternative_selected", "alternative_saved"],
+    ),
+    // Home's "Shared with you" list: shown, and one of its journeys opened.
+    ("shared_journeys", &["shown", "opened"]),
+    // A journey leg's collapsed "Earlier stops" or "Later stops" opened.
+    ("leg_stops", &["earlier_expanded", "later_expanded"]),
+    // `/plan`'s way in to a new journey, each time one is shown.
+    ("journey_start", &["plan", "known", "untracked"]),
 ];
 
 /// Empty or no-result states the web app reports (`empty_state`'s `kind`).
 pub const EMPTY_STATE_KINDS: &[&str] = &[
-    "train_search_no_results",
+    "trains_station_board_none",
+    "trains_between_none",
+    "trains_headcode_none",
     "station_search_no_results",
     "departures_none",
     "journeys_none",
@@ -319,6 +348,11 @@ const FEATURES: &[&str] = &[
     "group_join",
     "chat",
     "connected_app",
+    "trains",
+    "compare_options",
+    "shared_journeys",
+    "leg_stops",
+    "journey_start",
 ];
 
 /// The event names and their properties.
@@ -556,6 +590,8 @@ mod tests {
             body("page_view", "/stations/KGX", &[]),
             // Unknown template.
             body("page_view", "/admin", &[]),
+            // A page that is gone: `/journeys/new` redirects to `/plan`.
+            body("page_view", "/journeys/new", &[]),
             // Properties on an event that takes none.
             body("page_view", "/", &[("line", "northern")]),
             // Unknown property.
@@ -576,6 +612,11 @@ mod tests {
                 "feature",
                 "/plan",
                 &[("feature", "nope"), ("step", "results")],
+            ),
+            body(
+                "feature",
+                "/trains",
+                &[("feature", "trains"), ("step", "shown")],
             ),
             // Free text where a digest goes.
             body("error_boundary", "/", &[("digest", "TypeError: x is null")]),

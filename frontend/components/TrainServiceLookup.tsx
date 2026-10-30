@@ -7,6 +7,7 @@ import { DatePickerInput } from '@/components/LazyDateFields';
 import { LoadingText } from './LoadingText';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import { ServiceRow, ServiceRowList } from './ServiceRow';
+import { TrackEmptyState } from './TrackEmptyState';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { searchDateBounds, searchDateDescription } from '@/lib/searchDates';
@@ -15,6 +16,7 @@ import { trainIdentifiers } from '@/lib/trainName';
 import { HEADCODE_PATTERN, TRAIN_URL_PARAMS, UID_PATTERN } from '@/lib/trainSearch';
 import type { TrainHeadcodePage, TrainSearchDates, TrainSearchResult } from '@/lib/types';
 import { paramValue, useInitialSearchParams } from '@/lib/useInitialSearchParams';
+import { trackFeature } from '@/lib/usageAnalytics';
 import { replaceUrlParams } from '@/lib/useUrlFilterSync';
 
 type Lookup =
@@ -33,9 +35,28 @@ function codeKind(raw: string): 'headcode' | 'uid' | null {
   return null;
 }
 
+/** Counts a finished headcode lookup's outcome (DS-190). Never throws,
+ * whatever the response held: counting must not break the lookup. */
+function trackLookup(result: Lookup | null) {
+  if (result === null) return;
+  if (result.state === 'error') trackFeature('trains', 'failed');
+  else if (result.state === 'unpublished') trackFeature('trains', 'no_results');
+  else if (result.state === 'done') {
+    trackFeature('trains', Array.isArray(result.rows) && result.rows.length > 0 ? 'results' : 'no_results');
+  }
+}
+
 /** `GET /public/trains/by-headcode` for `headcode` on `date`, as the
- * results' state, or `null` once `signal` has aborted it. */
+ * results' state, or `null` once `signal` has aborted it. The search and
+ * its outcome are counted for a visitor who opted in. */
 async function fetchHeadcode(headcode: string, date: string, signal: AbortSignal): Promise<Lookup | null> {
+  trackFeature('trains', 'headcode');
+  const result = await requestHeadcode(headcode, date, signal);
+  trackLookup(result);
+  return result;
+}
+
+async function requestHeadcode(headcode: string, date: string, signal: AbortSignal): Promise<Lookup | null> {
   try {
     const response = await fetch(`/api/trains/by-headcode?${new URLSearchParams({ headcode, date }).toString()}`, {
       signal,
@@ -119,6 +140,7 @@ export function TrainServiceLookup({
     const date = rawDate ?? today;
     const found = codeKind(value);
     if (found === 'uid') {
+      trackFeature('trains', 'uid');
       router.push(`/train/${encodeURIComponent(value)}/${date}`);
       return;
     }
@@ -229,6 +251,7 @@ function HeadcodeResults({
         return (
           <Text size="sm" c="dimmed" role="status">
             No train runs as {lookup.headcode} on that day.
+            <TrackEmptyState kind="trains_headcode_none" />
           </Text>
         );
       }

@@ -36,7 +36,6 @@ export const ROUTE_TEMPLATES = [
   '/incidents/[id]',
   '/journeys',
   '/journeys/[id]',
-  '/journeys/new',
   '/journeys/shared/[token]',
   '/journeys/templates',
   '/journeys/templates/[id]',
@@ -86,6 +85,18 @@ export const FEATURE_STEPS = {
   group_join: ['joined', 'failed'],
   chat: ['opened', 'message_sent'],
   connected_app: ['enabled', 'revoked'],
+  /** `/trains`: a search in one of its views (the step names the view),
+   * then what came back. A UID opens its train's page instead. */
+  trains: ['station_departures', 'station_arrivals', 'between', 'headcode', 'uid', 'results', 'no_results', 'failed'],
+  /** The planner's "Compare options": a search with it on, an option other
+   * than the fastest chosen, and that saved as a journey. */
+  compare_options: ['searched', 'alternative_selected', 'alternative_saved'],
+  /** Home's "Shared with you": shown, and a journey in it opened. */
+  shared_journeys: ['shown', 'opened'],
+  /** A journey leg's collapsed "Earlier stops"/"Later stops" opened. */
+  leg_stops: ['earlier_expanded', 'later_expanded'],
+  /** `/plan`'s way in to a new journey, each time one is shown. */
+  journey_start: ['plan', 'known', 'untracked'],
 } as const;
 
 export const FEATURES = [
@@ -96,6 +107,11 @@ export const FEATURES = [
   'group_join',
   'chat',
   'connected_app',
+  'trains',
+  'compare_options',
+  'shared_journeys',
+  'leg_stops',
+  'journey_start',
 ] as const;
 
 export type Feature = keyof typeof FEATURE_STEPS;
@@ -103,7 +119,9 @@ export type FeatureStep<F extends Feature> = (typeof FEATURE_STEPS)[F][number];
 
 /** Empty or no-result states (`empty_state`'s `kind`). */
 export const EMPTY_STATE_KINDS = [
-  'train_search_no_results',
+  'trains_station_board_none',
+  'trains_between_none',
+  'trains_headcode_none',
   'station_search_no_results',
   'departures_none',
   'journeys_none',
@@ -160,8 +178,8 @@ function isDynamic(segment: string): boolean {
 }
 
 /** Whether `a` is more specific than `b`: at the first segment where one
- * is static and the other dynamic, the static one wins (`/journeys/new`
- * over `/journeys/[id]`), as Next's own router decides. */
+ * is static and the other dynamic, the static one wins (`/groups/new`
+ * over `/groups/[id]`), as Next's own router decides. */
 function moreSpecific(a: CompiledTemplate, b: CompiledTemplate): boolean {
   for (let i = 0; i < a.segments.length; i++) {
     const aDynamic = isDynamic(a.segments[i] ?? '');

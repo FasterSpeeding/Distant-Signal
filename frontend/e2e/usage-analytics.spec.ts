@@ -103,6 +103,36 @@ test.describe('opt-in usage counts', () => {
     expect(events.length).toBe(before);
   });
 
+  test('a Trains search counts its view and outcome, never the train', async ({ page }) => {
+    // The seed's W62001 runs as 2Z42 on 2099-01-05 (e2e/trains.spec.ts).
+    await recordBeaconBodies(page);
+    await page.addInitScript(() => window.localStorage.setItem('ds-analytics-opt-in', 'true'));
+    await page.goto('/trains?headcode=2Z42&date=2099-01-05', { waitUntil: 'networkidle' });
+    await expect(page.getByRole('link', { name: /^10:00 to ZFC\b/ })).toBeVisible();
+    await expect
+      .poll(() => beaconBodies(page))
+      .toEqual(
+        expect.arrayContaining([
+          { name: 'feature', route_template: '/trains', props: { feature: 'trains', step: 'headcode' } },
+          { name: 'feature', route_template: '/trains', props: { feature: 'trains', step: 'results' } },
+        ]),
+      );
+
+    await page.goto('/trains?headcode=9Z99&date=2099-01-05', { waitUntil: 'networkidle' });
+    await expect(page.getByText('No train runs as 9Z99 on that day.')).toBeVisible();
+    await expect
+      .poll(() => beaconBodies(page))
+      .toEqual(
+        expect.arrayContaining([
+          { name: 'feature', route_template: '/trains', props: { feature: 'trains', step: 'no_results' } },
+          { name: 'empty_state', route_template: '/trains', props: { kind: 'trains_headcode_none' } },
+        ]),
+      );
+    const sent = JSON.stringify(await beaconBodies(page));
+    expect(sent).not.toContain('9Z99');
+    expect(sent).not.toContain('2099');
+  });
+
   test('a browser that sends Global Privacy Control sends nothing, even when opted in', async ({ page }) => {
     await page.addInitScript(() => {
       Object.defineProperty(Navigator.prototype, 'globalPrivacyControl', { get: () => true, configurable: true });

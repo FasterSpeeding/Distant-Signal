@@ -2,6 +2,7 @@
 
 import { useId, useState, type ReactNode } from 'react';
 import { AccordionChevron, Button, Group, TableTbody, TableTd, TableTr, Text } from '@mantine/core';
+import { trackFeature } from '@/lib/usageAnalytics';
 
 /** One collapsed part of a journey leg's calling points in
  * `JourneyTimeline`: the train's stops before the traveller boards, or
@@ -18,13 +19,19 @@ import { AccordionChevron, Button, Group, TableTbody, TableTd, TableTr, Text } f
  *
  * `hint` is a short line shown beside the control while the train is in
  * this part of the route (before the traveller boards, or after they get
- * off), so they can see where it is without opening it. */
+ * off), so they can see where it is without opening it.
+ *
+ * Opening it is counted, by `part` only, for a visitor who opted in to
+ * usage counts (DS-190). */
 export function LegStopsDisclosure({
+  part,
   label,
   colSpan,
   hint,
   children,
 }: {
+  /** Which side of the leg this holds. */
+  part: 'earlier' | 'later';
   label: string;
   colSpan: number;
   hint?: string | null | undefined;
@@ -43,7 +50,10 @@ export function LegStopsDisclosure({
                 size="compact-sm"
                 aria-expanded={open}
                 aria-controls={id}
-                onClick={() => setOpen((value) => !value)}
+                onClick={() => {
+                  if (!open) trackFeature('leg_stops', part === 'earlier' ? 'earlier_expanded' : 'later_expanded');
+                  setOpen(!open);
+                }}
                 leftSection={
                   <AccordionChevron
                     size={14}
