@@ -58,12 +58,11 @@ describe('AppNavBar', () => {
     }
   });
 
-  it('has one Journeys entry, and no separate train search, new-journey or tracked-trains link', () => {
+  it('has one Journeys entry, and no new-journey or tracked-trains link', () => {
     for (const session of [loggedOut, loggedIn]) {
       const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} />);
       expect(screen.getByRole('link', { name: 'Journeys' })).toHaveAttribute('href', '/journeys');
       expect(barLinkNames()).not.toContain('Track');
-      expect(barLinkNames()).not.toContain('Trains');
       expect(barLinkNames()).not.toContain('Track a journey');
       expect(barLinkNames()).not.toContain('New journey');
       expect(barLinkNames()).not.toContain('My trains & tickets');
@@ -71,14 +70,31 @@ describe('AppNavBar', () => {
     }
   });
 
-  it.each(['/trains', '/journeys/new', '/track', '/journeys', '/journeys/42'])(
-    'marks Journeys current on %s',
+  it('has a Trains entry of its own, for the timetable', () => {
+    for (const session of [loggedOut, loggedIn]) {
+      const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} />);
+      expect(screen.getByRole('link', { name: 'Trains' })).toHaveAttribute('href', '/trains');
+      expect(barLinkNames()).not.toContain('Find a train');
+      unmount();
+    }
+  });
+
+  it.each(['/journeys/new', '/track', '/journeys', '/journeys/42', '/train/by-id/7'])(
+    'marks Journeys current on %s, and not Trains',
     (path) => {
       pathname = path;
       renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
       expect(screen.getByRole('link', { name: 'Journeys' })).toHaveAttribute('aria-current', 'page');
+      expect(screen.getByRole('link', { name: 'Trains' })).not.toHaveAttribute('aria-current');
     },
   );
+
+  it.each(['/trains', '/train/W12345/2026-09-17'])('marks Trains current on %s, and not Journeys', (path) => {
+    pathname = path;
+    renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
+    expect(screen.getByRole('link', { name: 'Trains' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Journeys' })).not.toHaveAttribute('aria-current');
+  });
 
   it('never advertises Groups in the bar itself', () => {
     // Logged out it has no useful landing state at all; logged in it

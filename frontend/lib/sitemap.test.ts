@@ -25,6 +25,11 @@ describe('sitemapPaths', () => {
     for (const path of [...STATIC_PATHS, '/transit', ...LEGAL_PATHS]) expect(paths).toContain(path);
   });
 
+  it('lists the Trains section, but never a search in it', () => {
+    expect(paths).toContain('/trains');
+    expect(isExcludedPath('/trains?station=RDG')).toBe(true);
+  });
+
   it('lists every line, with a timetable only for a National Rail catalogue line', () => {
     expect(paths).toContain('/lines/wcml-north');
     expect(paths).toContain('/lines/wcml-north/timetable');

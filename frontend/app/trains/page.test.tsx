@@ -70,13 +70,57 @@ describe('TrainsPage', () => {
   // own tests: those construct the component directly with props rather
   // than through this label, and its only `getByLabelText` uses are the
   // plain TextInput time fields, which have no listbox.
-  it('renders the title and the search form', async () => {
+  it('renders the title and the station view, departures first', async () => {
     renderWithMantine(await TrainsPage({ searchParams: searchParams({}) }));
-    expect(screen.getByRole('heading', { name: 'Find a train' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Trains' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Station' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Station' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Departures' })).toBeChecked();
+    expect(screen.getByText('Pick a station to see its departures.')).toBeInTheDocument();
   });
 
-  it('pre-fills the station, origin and stops_at from the query string, shown by name', async () => {
+  it('talks about timetables, never journeys or tracking, outside the ticket flow', async () => {
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({}) }));
+    expect(screen.getByText(/^Timetables for the whole network\./)).toBeInTheDocument();
+    expect(screen.queryByText(/journey|track/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /track/i })).not.toBeInTheDocument();
+  });
+
+  it('offers the three views, and switches to one without a reload', async () => {
+    window.history.replaceState(null, '', '/trains?station=MAN&ticketId=7');
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({ station: 'MAN', ticketId: '7' }) }));
+    for (const view of ['Station', 'Between stations', 'Headcode or UID']) {
+      expect(screen.getByRole('radio', { name: view })).toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByRole('radio', { name: 'Between stations' }));
+    expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('');
+    expect(screen.getByRole('combobox', { name: 'To' })).toBeInTheDocument();
+    // The station's params go; the ticket stays.
+    expect(window.location.search).toBe('?ticketId=7');
+    fireEvent.click(screen.getByRole('radio', { name: 'Headcode or UID' }));
+    expect(screen.getByRole('textbox', { name: 'Headcode or UID' })).toBeInTheDocument();
+    window.history.replaceState(null, '', '/');
+  });
+
+  it('opens on the between-stations view for ?from=&to=', async () => {
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({ from: 'man', to: 'wat' }) }));
+    expect(screen.getByRole('radio', { name: 'Between stations' })).toBeChecked();
+    expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('MAN');
+    expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('WAT');
+  });
+
+  it('opens on the arrivals board for ?board=arrivals', async () => {
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({ station: 'MAN', board: 'arrivals' }) }));
+    expect(screen.getByRole('radio', { name: 'Arrivals' })).toBeChecked();
+  });
+
+  it('opens on the headcode view for ?headcode=', async () => {
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({ headcode: '1s00' }) }));
+    expect(screen.getByRole('radio', { name: 'Headcode or UID' })).toBeChecked();
+    expect(screen.getByRole('textbox', { name: 'Headcode or UID' })).toHaveValue('1S00');
+  });
+
+  it('pre-fills the station and where the train starts from the query string, shown by name', async () => {
     vi.mocked(fetch).mockImplementation(
       stationNamesFetch({ MAN: 'Manchester Piccadilly', EUS: 'London Euston', WAT: 'London Waterloo' }, (url) =>
         url.startsWith('/api/trains/search')
@@ -86,7 +130,7 @@ describe('TrainsPage', () => {
     );
     renderWithMantine(
       await TrainsPage({
-        searchParams: searchParams({ station: 'man', origin: 'eus', stops_at: 'wat' }),
+        searchParams: searchParams({ station: 'man', origin: 'eus' }),
       }),
     );
     // The uppercased code at once, then the station's name.
@@ -97,20 +141,18 @@ describe('TrainsPage', () => {
     // A URL with a station opens on the compact bar: the rest is in Filters.
     fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
     await waitFor(() =>
-      expect(screen.getByRole('combobox', { name: 'Departing from (optional)' })).toHaveValue('London Euston (EUS)'),
+      expect(screen.getByRole('combobox', { name: 'Starts at (optional)' })).toHaveValue('London Euston (EUS)'),
     );
-    expect(screen.getByRole('combobox', { name: 'Stops at (optional)' })).toHaveValue('London Waterloo (WAT)');
     vi.mocked(fetch).mockImplementation(async () => new Response('[]', { status: 200 }));
   });
 
-  it('uses the first value when stops_at is repeated in the query string', async () => {
+  it('uses the first value when to is repeated in the query string', async () => {
     renderWithMantine(
       await TrainsPage({
-        searchParams: searchParams({ station: 'man', stops_at: ['rdg', 'oxf'] }),
+        searchParams: searchParams({ from: 'man', to: ['rdg', 'oxf'] }),
       }),
     );
-    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
-    expect(screen.getByRole('combobox', { name: 'Stops at (optional)' })).toHaveValue('RDG');
+    expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('RDG');
   });
 
   // Real, unmocked DatePickerInput (this file doesn't mock '@mantine/dates',
@@ -220,20 +262,25 @@ describe('TrainsPage', () => {
   // as absent rather than passed through as NaN.
   it('treats a non-numeric ticketId as absent', async () => {
     renderWithMantine(await TrainsPage({ searchParams: searchParams({ ticketId: 'nope' }) }));
-    expect(screen.getByRole('link', { name: 'Track it manually' })).toHaveAttribute('href', '/track');
+    expect(screen.queryByRole('link', { name: 'Track it manually' })).not.toBeInTheDocument();
     expect(screen.queryByText(/it'll be attached automatically once you track it/)).not.toBeInTheDocument();
   });
 });
 
 describe('metadata', () => {
-  it('titles the page after its own heading, suffixed with the site name', () => {
-    expect(metadata.title).toBe('Find a train');
+  const DESCRIPTION =
+    'Timetables for every station: departures, arrivals, trains between two stations, or one train by headcode or UID.';
+
+  it('titles the page after its own heading and nav label', () => {
+    expect(metadata.title).toBe('Trains');
   });
 
-  it('describes network-wide scheduled-train search rather than inheriting the generic site description', () => {
-    expect(metadata.description).toBe(
-      'Search UK trains by station and date, then open one for its live status or track it.',
-    );
+  it('describes the timetable rather than inheriting the generic site description', () => {
+    expect(metadata.description).toBe(DESCRIPTION);
+  });
+
+  it('names the bare /trains as its canonical URL', () => {
+    expect(metadata.alternates?.canonical).toBe('/trains');
   });
 
   it('mirrors the same title and description into openGraph and twitter', () => {
@@ -241,14 +288,14 @@ describe('metadata', () => {
     // mirror is asserted against literals rather than against
     // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: 'Find a train · Distant Signal',
-      description: 'Search UK trains by station and date, then open one for its live status or track it.',
+      title: 'Trains · Distant Signal',
+      description: DESCRIPTION,
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary_large_image',
-      title: 'Find a train · Distant Signal',
-      description: 'Search UK trains by station and date, then open one for its live status or track it.',
+      title: 'Trains · Distant Signal',
+      description: DESCRIPTION,
     });
   });
 

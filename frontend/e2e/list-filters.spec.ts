@@ -102,7 +102,7 @@ test.describe('/incidents', () => {
 test.describe('/trains', () => {
   test('shows the full form until the first search, then the compact bar', async ({ page }) => {
     await page.goto('/trains');
-    await expect(page.getByRole('combobox', { name: 'Departing from (optional)' })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Starts at (optional)' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Filters' })).toHaveCount(0);
 
     await page.getByRole('combobox', { name: 'Station' }).fill(REAL_STATION_CRS);
@@ -110,7 +110,7 @@ test.describe('/trains', () => {
     await page.getByRole('button', { name: 'Search' }).click();
 
     await expect(page.getByRole('button', { name: 'Filters' })).toBeVisible();
-    await expect(page.getByRole('combobox', { name: 'Departing from (optional)' })).toHaveCount(0);
+    await expect(page.getByRole('combobox', { name: 'Starts at (optional)' })).toHaveCount(0);
     await expect(page).toHaveURL(new RegExp(`[?&]station=${REAL_STATION_CRS}(&|$)`));
   });
 
@@ -126,7 +126,7 @@ test.describe('/trains', () => {
     });
     await page.getByRole('button', { name: 'Filters' }).click();
     const dialog = page.getByRole('dialog', { name: 'Filters' });
-    await dialog.getByRole('combobox', { name: 'Departing from (optional)' }).fill('pbo');
+    await dialog.getByRole('combobox', { name: 'Starts at (optional)' }).fill('pbo');
     await expect(page).toHaveURL(/[?&]origin=PBO(&|$)/);
     await expect.poll(() => searches.some((entry) => entry.includes('origin=PBO'))).toBe(true);
     expect(searches).not.toContain('RSC');
@@ -140,7 +140,7 @@ test.describe('/trains', () => {
   // The seed's ZFX trains on 2099-01-05 (e2e/fixtures/seed.sql): c2c at
   // 22:30 and at 00:30 after midnight, and one with no operator at 23:00.
   test('filters by operator, across midnight into the rest of the train day', async ({ page }) => {
-    await page.goto('/trains?station=ZFX&date=2099-01-05&from=22:00&to=01:30&operator=CC');
+    await page.goto('/trains?station=ZFX&date=2099-01-05&time=22:00&until=01:30&operator=CC');
     const evening = page.getByRole('list', { name: 'Trains' });
     await expect(evening.getByRole('link', { name: /^22:30 to / })).toBeVisible();
     const afterMidnight = page.getByRole('list', { name: 'After midnight, Tue 6 Jan' });

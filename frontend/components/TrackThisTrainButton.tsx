@@ -76,12 +76,17 @@ export function TrackThisTrainButton({
   date,
   attachTicketId,
   size = 'sm',
+  variant = 'filled',
   noun = 'train',
 }: {
   uid: string;
   date: string;
   attachTicketId?: number | undefined;
   size?: 'xs' | 'sm' | 'md';
+  /** `light` where tracking is a secondary action on the page (a train's
+   * own page, which is for its timetable first); `filled` (the default)
+   * where tracking is what the page is for. */
+  variant?: 'filled' | 'light';
   /** What the service is, for the button text ("Track this bus"). A bus or
    * ferry is tracked timetable-only: it is added to your list with its
    * scheduled times, but gets no live alerts. */
@@ -154,7 +159,13 @@ export function TrackThisTrainButton({
 
   return (
     <Stack gap="xs">
-      <Button size={size} onClick={handleClick} disabled={busy} leftSection={busy ? <ButtonSpinner /> : undefined}>
+      <Button
+        size={size}
+        variant={variant}
+        onClick={handleClick}
+        disabled={busy}
+        leftSection={busy ? <ButtonSpinner /> : undefined}
+      >
         {busy ? 'Tracking' : `Track this ${noun}`}
       </Button>
       {error && (
