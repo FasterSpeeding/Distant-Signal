@@ -1054,6 +1054,11 @@ pub struct CallingPointSearch<'a> {
     /// ATOC codes: the row's `operator_atoc` must be one of them. `None` is
     /// no filter; an empty slice matches nothing.
     pub operators: Option<&'a [String]>,
+    /// The advanced stop filters (2026-10-30): `calls_at`, `via`, `avoid`
+    /// and `avoid_stop` over the part of the train ridden. `None` is no
+    /// filter (and no extra read). See
+    /// [`search_schedule_calling_point_departures`].
+    pub stop_filter: Option<&'a crate::data::stop_filters::SearchStopFilter>,
     /// Also the PREVIOUS service date's trains still running after its
     /// midnight (2026-10-22): its `day_offset >= 1` rows whose departure,
     /// on `service_date`'s clock, falls inside the bounds. See
@@ -1372,6 +1377,7 @@ struct DateSearch<'a> {
     true_origin_crs: Option<&'a str>,
     stops_at: Option<&'a str>,
     operators: Option<&'a [String]>,
+    stop_filter: Option<&'a crate::data::stop_filters::SearchStopFilter>,
     depart_from: i32,
     depart_to: Option<i32>,
     arrive_from: Option<i32>,
@@ -1429,27 +1435,86 @@ async fn search_one_service_date(
         } else {
             &SAME_DAY_SEARCH_SQL
         };
-        let band: Vec<CallingPointRow> = sqlx::query_as(sql)
-            .bind(search.service_date)
-            .bind(search.station_crs)
-            .bind(search.depart_from)
-            .bind(search.true_origin_crs)
-            .bind(search.stops_at)
-            .bind(search.depart_to)
-            .bind(search.arrive_from)
-            .bind(search.arrive_to)
-            .bind(keyset.map(|c| c.scheduled))
-            .bind(keyset.map(|c| c.train_uid.as_str()))
-            .bind(wanted)
-            .bind(keyset.map(|c| c.day_offset))
-            .bind(range_start)
-            .bind(range_end)
-            .bind(search.operators)
-            .fetch_all(pool)
-            .await?;
-        rows.extend(band);
+        // With stop filters, the band is read in batches until enough rows
+        // pass them (or it runs out), each batch continuing after the last
+        // row read; without, one read of exactly what is wanted.
+        let mut position = keyset.cloned();
+        loop {
+            let wanted = search.fetch - rows.len() as i64;
+            if wanted <= 0 {
+                break;
+            }
+            let batch = if search.stop_filter.is_some() {
+                (wanted * 2).clamp(STOP_FILTER_MIN_BATCH, STOP_FILTER_MAX_BATCH)
+            } else {
+                wanted
+            };
+            let band: Vec<CallingPointRow> = sqlx::query_as(sql)
+                .bind(search.service_date)
+                .bind(search.station_crs)
+                .bind(search.depart_from)
+                .bind(search.true_origin_crs)
+                .bind(search.stops_at)
+                .bind(search.depart_to)
+                .bind(search.arrive_from)
+                .bind(search.arrive_to)
+                .bind(position.as_ref().map(|c| c.scheduled))
+                .bind(position.as_ref().map(|c| c.train_uid.as_str()))
+                .bind(batch)
+                .bind(position.as_ref().map(|c| c.day_offset))
+                .bind(range_start)
+                .bind(range_end)
+                .bind(search.operators)
+                .fetch_all(pool)
+                .await?;
+            let Some(filter) = search.stop_filter else {
+                rows.extend(band);
+                break;
+            };
+            let exhausted = (band.len() as i64) < batch;
+            position = band.last().map(|row| StreamKeyset {
+                day_offset: row.day_offset,
+                scheduled: row.scheduled,
+                train_uid: row.train_uid.clone(),
+            });
+            rows.extend(retain_stop_filtered(pool, search.service_date, filter, band).await?);
+            if exhausted {
+                break;
+            }
+        }
     }
     Ok(rows)
+}
+
+/// The batch [`search_one_service_date`] reads with stop filters set:
+/// twice the rows still wanted, within these bounds. Most filters keep
+/// most trains, so the first batch usually fills the page; a rare one
+/// reads a station's whole day in a few batches of the larger size.
+const STOP_FILTER_MIN_BATCH: i64 = 100;
+const STOP_FILTER_MAX_BATCH: i64 = 400;
+
+/// The rows of `band` whose train passes `filter`, in order: one read of
+/// every row's train's calling points (`schedule_calling_points_full`'s
+/// primary key), then [`crate::data::stop_filters::SearchStopFilter::accepts`].
+async fn retain_stop_filtered(
+    pool: &PgPool,
+    service_date: chrono::NaiveDate,
+    filter: &crate::data::stop_filters::SearchStopFilter,
+    band: Vec<CallingPointRow>,
+) -> Result<Vec<CallingPointRow>> {
+    let mut uids: Vec<String> = band.iter().map(|row| row.train_uid.clone()).collect();
+    uids.sort_unstable();
+    uids.dedup();
+    let calls = crate::data::stop_filters::fetch_calls(pool, service_date, &uids).await?;
+    Ok(band
+        .into_iter()
+        .filter(|row| {
+            let stop = row.stop_scheduled.zip(row.stop_day_offset);
+            calls
+                .get(&row.train_uid)
+                .is_some_and(|calls| filter.accepts(calls, row.scheduled, row.day_offset, stop))
+        })
+        .collect())
 }
 
 /// The calling-point-first train search's one read: a bounded index range
@@ -1672,6 +1737,7 @@ pub async fn search_schedule_calling_point_departures(
         arrive_from,
         arrive_to,
         operators,
+        stop_filter,
         across_midnight,
         after,
         limit,
@@ -1699,6 +1765,7 @@ pub async fn search_schedule_calling_point_departures(
                 true_origin_crs,
                 stops_at,
                 operators,
+                stop_filter,
                 depart_from: depart_from + shift,
                 depart_to: depart_to.map(|to| to + shift),
                 arrive_from: arrive_from.map(|from| from + shift),
@@ -6292,6 +6359,7 @@ mod schedule_destination_departures_query_tests {
                 arrive_from: arrive_from.map(minutes),
                 arrive_to: arrive_to.map(minutes),
                 operators: None,
+                stop_filter: None,
                 across_midnight: false,
                 after,
                 limit,

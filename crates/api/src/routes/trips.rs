@@ -62,7 +62,7 @@ const MAX_AVOIDED: usize = 8;
 /// docs/superpowers/specs/2026-10-06-trips-plan-via-and-max-changes-design.md.
 /// Three is what a ticket routing ("via X, Y and Z") needs in practice.
 /// An OR choice (`KGX|EUS`, `group:LON`) counts as ONE via.
-const MAX_VIAS: usize = 3;
+pub(crate) const MAX_VIAS: usize = 3;
 
 /// Cap on the stations one OR via stands for (2026-10-07), its groups
 /// expanded: room for the eighteen London Terminals (`group:LON`) and a few
@@ -2003,7 +2003,7 @@ fn apply_waypoint_choices(
 /// `avoid`'s read of the trains running through it is linear in the day's
 /// connections however many stations it names. `|` is a 400 (an avoid list
 /// already means "none of these").
-fn parse_station_list(
+pub(crate) fn parse_station_list(
     name: &str,
     raw: Option<&str>,
 ) -> Result<Vec<StationChoice>, (StatusCode, String)> {
@@ -2142,6 +2142,19 @@ fn check_avoid_conflicts(
 /// [`MAX_VIA_ALTERNATIVES`] stations, all the vias together at most
 /// [`MAX_VIA_STATIONS`].
 fn parse_vias(raw: Option<&str>) -> Result<Vec<StationChoice>, (StatusCode, String)> {
+    parse_ordered_choices("via", raw, MAX_VIAS)
+}
+
+/// [`parse_vias`] for any ordered list of OR choices named `name` on the
+/// wire, capped at `max` entries: also the `/trains` boards' `via` and
+/// `calls_at` (2026-10-30). Each entry holds at most
+/// [`MAX_VIA_ALTERNATIVES`] stations, all of them together at most
+/// [`MAX_VIA_STATIONS`], and no entry repeats the one before it.
+pub(crate) fn parse_ordered_choices(
+    name: &str,
+    raw: Option<&str>,
+    max: usize,
+) -> Result<Vec<StationChoice>, (StatusCode, String)> {
     let bad = |message: String| (StatusCode::BAD_REQUEST, message);
     let entries: Vec<&str> = raw
         .unwrap_or("")
@@ -2149,30 +2162,31 @@ fn parse_vias(raw: Option<&str>) -> Result<Vec<StationChoice>, (StatusCode, Stri
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect();
-    if entries.len() > MAX_VIAS {
+    if entries.len() > max {
         return Err(bad(format!(
-            "too many via stations: {} given, at most {MAX_VIAS} allowed",
+            "too many {name} stations: {} given, at most {max} allowed",
             entries.len()
         )));
     }
-    let vias = entries
+    let choices = entries
         .into_iter()
-        .map(|entry| station_groups::parse_choice("via", entry, true).map_err(bad))
+        .map(|entry| station_groups::parse_choice(name, entry, true).map_err(bad))
         .collect::<Result<Vec<_>, _>>()?;
-    if let Some(via) = vias
+    if let Some(choice) = choices
         .iter()
-        .find(|via| via.codes.len() > MAX_VIA_ALTERNATIVES)
+        .find(|choice| choice.codes.len() > MAX_VIA_ALTERNATIVES)
     {
         return Err(bad(format!(
-            "via: '{}' stands for {} stations, at most {MAX_VIA_ALTERNATIVES} allowed in one via",
-            via.label,
-            via.codes.len()
+            "{name}: '{}' stands for {} stations, at most {MAX_VIA_ALTERNATIVES} allowed in one {name}",
+            choice.label,
+            choice.codes.len()
         )));
     }
-    let total: usize = vias.iter().map(|via| via.codes.len()).sum();
+    let total: usize = choices.iter().map(|choice| choice.codes.len()).sum();
     if total > MAX_VIA_STATIONS {
         return Err(bad(format!(
-            "via: the vias stand for {total} stations together, at most {MAX_VIA_STATIONS} allowed"
+            "{name}: the {} stand for {total} stations together, at most {MAX_VIA_STATIONS} allowed",
+            if name == "via" { "vias" } else { "entries" }
         )));
     }
     // The same stations twice in a row, however written (`KGX|EUS,EUS|KGX`).
@@ -2180,13 +2194,13 @@ fn parse_vias(raw: Option<&str>) -> Result<Vec<StationChoice>, (StatusCode, Stri
         choice.codes.iter().cloned().collect()
     };
     let same = |a: &StationChoice, b: &StationChoice| set(a) == set(b);
-    if let Some([repeated, _]) = vias.windows(2).find(|pair| same(&pair[0], &pair[1])) {
+    if let Some([repeated, _]) = choices.windows(2).find(|pair| same(&pair[0], &pair[1])) {
         return Err(bad(format!(
-            "via: '{}' is given twice in a row; name it once",
+            "{name}: '{}' is given twice in a row; name it once",
             repeated.label
         )));
     }
-    Ok(vias)
+    Ok(choices)
 }
 
 /// A via that is the origin or the destination says nothing (every journey
