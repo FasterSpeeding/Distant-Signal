@@ -143,7 +143,9 @@ spec:
                   - trust-consumer
                   - trust-backlog-consumer
                   - full-coverage-consumer
+                  {{- if .Values.movementRelay.enabled }}
                   - movement-relay
+                  {{- end }}
                   {{- if include "distant-signal.ingestWriterStreamsOn" . }}
                   # The ingest-writer reads the ds:ingest:* streams (plan 3a.3);
                   # it gets REDIS_URL only while one of them is not off.

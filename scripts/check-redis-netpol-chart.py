@@ -11,8 +11,8 @@ with `networkPolicy.enabled`: darwin-relay (DS-152) shipped without its
 entry, and every XADD to ds:ingest:darwin was refused (ECONNREFUSED).
 
 For each render below (networkPolicy on, the ingest prerequisites of
-ci/ingest-prereqs.yaml, and either nothing else or every Redis client on),
-this checks:
+ci/ingest-prereqs.yaml, and nothing else, movement-relay off, or every
+Redis client on), this checks:
 
   - forward: every rendered pod template (Deployments, StatefulSets,
     DaemonSets, Jobs, CronJobs' jobTemplate) whose containers or init
@@ -132,6 +132,8 @@ EGRESS = sets(
 )
 RENDERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("ingest prerequisites", ()),
+    # Each optional client the prerequisites turn on, turned off again.
+    ("movement-relay off", sets("movementRelay.enabled=false")),
     ("every Redis client on", EVERYTHING),
     ("every Redis client on, egress on", (*EVERYTHING, *EGRESS)),
 )
