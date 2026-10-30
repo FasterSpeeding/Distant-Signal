@@ -29,7 +29,13 @@ import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { loadPinnedTramLines } from '@/lib/transit';
 import { mergeSharedCustomLines, type MergedSharedCustomLine } from '@/lib/sharedCustomLines';
-import { homeDetailReads, splitHomeJourneys } from '@/lib/homeJourneys';
+import {
+  homeDetailReads,
+  isSharedNotFollowed,
+  MAX_SHARED_JOURNEYS,
+  sharedHomeJourneys,
+  splitHomeJourneys,
+} from '@/lib/homeJourneys';
 import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { londonCalendarDay } from '@/lib/londonWallClock';
 import type { JourneyDetail, LineStatus, LineStatusReport, Preferences, TrackedTrainState } from '@/lib/types';
@@ -206,8 +212,13 @@ export default async function DashboardPage() {
     // the operators catalogue (the anonymous branch shows neither), and
     // per-user, so a failure is `null`: no journeys, and every train is
     // listed as one tracked on its own (`splitJourneyTrains` folds
-    // nothing then), so no train vanishes.
-    session.authenticated ? getMyJourneys({ includeFollowed: true }).catch(() => null) : Promise.resolve(null),
+    // nothing then), so no train vanishes. With the journeys shared into
+    // the caller's groups (DS-199), which "Shared with you" lists apart
+    // from their own (`isSharedNotFollowed`): the same rows, under the
+    // same cap, the Journeys page reads.
+    session.authenticated
+      ? getMyJourneys({ includeFollowed: true, includeShared: true }).catch(() => null)
+      : Promise.resolve(null),
   ]);
 
   // Hoisted above the anonymous/authenticated branch so both can read it:
@@ -297,12 +308,20 @@ export default async function DashboardPage() {
   // awaited below, so these reads overlap the pinned station and tram
   // reads. A failed read leaves that journey or train to its list row
   // (`splitHomeJourneys`).
+  //
+  // Journeys shared with the caller that they don't follow are someone
+  // else's travel: never the current journey, and listed under "Shared
+  // with you" (`sharedHomeJourneys`). Read in full by the same rule, under
+  // their own smaller cap, so they never take a read from the caller's own.
   const now = new Date();
-  const journeyItems = myJourneys ?? [];
+  const today = londonCalendarDay(now.toISOString());
+  const journeyItems = (myJourneys ?? []).filter((item) => !isSharedNotFollowed(item));
+  const sharedItems = (myJourneys ?? []).filter(isSharedNotFollowed);
   const { standalone: standaloneTrains } = splitJourneyTrains(myTrackedTrains ?? [], myJourneys);
-  const reads = homeDetailReads(journeyItems, standaloneTrains, londonCalendarDay(now.toISOString()));
+  const reads = homeDetailReads(journeyItems, standaloneTrains, today);
+  const sharedReads = homeDetailReads(sharedItems, [], today).journeyIds.slice(0, MAX_SHARED_JOURNEYS);
   const journeyDetailsPromise = Promise.all(
-    reads.journeyIds.map(async (id) => {
+    [...reads.journeyIds, ...sharedReads].map(async (id) => {
       const detail = await getJourney(id).catch(() => null);
       return detail === null ? null : ([id, detail] as const);
     }),
@@ -401,6 +420,7 @@ export default async function DashboardPage() {
     now,
     trainStates,
   );
+  const sharedWithYou = sharedHomeJourneys(sharedItems, journeyDetails, now);
 
   // Custom lines a fellow group member shared with the caller. One row per
   // line carrying every group it reached them through (the wire shape is
@@ -466,7 +486,7 @@ export default async function DashboardPage() {
           one of the two ways in to /plan (the nav has none, DS-194),
           so a new user with no journeys finds it here too. */}
       {current !== null && <CurrentJourneySection current={current} alsoInProgress={alsoInProgress} now={now} />}
-      <UpcomingJourneysSection upcoming={upcoming} loadFailed={myJourneys === null} />
+      <UpcomingJourneysSection upcoming={upcoming} shared={sharedWithYou} loadFailed={myJourneys === null} />
 
       {/* When ALL THREE pinned sections are empty, the live "Right now" module
           is the only thing on this page with real content -- it leads,

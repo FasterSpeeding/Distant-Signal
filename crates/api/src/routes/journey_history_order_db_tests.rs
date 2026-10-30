@@ -415,3 +415,69 @@ async fn group_journey_lists_come_in_travel_order() {
     assert_eq!(ids(&shared, "journeyId"), vec![future, recent, old]);
     cleanup(&pool, prefix).await;
 }
+
+/// A shared row carries the train its owner picked (DS-199): the owner's
+/// subscription id is blanked, but the train's resolution and the
+/// journey's counts are the journey's own, so the reader sees the train,
+/// not a leg still needing one. The frontend reads "has a train" from
+/// `resolutionStatus`, never from the blanked id.
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api journey_history -- --ignored --test-threads=1`"]
+async fn a_shared_row_keeps_the_owners_picked_train() {
+    let pool = connect().await;
+    let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+    let prefix = "jho-train";
+    seed_shared_journey(&pool, prefix, 2).await;
+    let owner = format!("{prefix}-owner");
+    let friend = format!("{prefix}-friend");
+    let group = format!("{prefix}-g");
+    exec(
+        &pool,
+        "INSERT INTO trains (train_uid, service_date) VALUES ('TEST-TRAIN-JHO1', '2026-09-22')",
+        &[],
+    )
+    .await;
+    let journey: i64 = sqlx::query_scalar(
+        "WITH j AS (INSERT INTO journeys (user_id) VALUES ($1) RETURNING id), \
+              sub AS ( \
+                  INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, \
+                                                   pin_destination_crs, resolution_status, trains_id) \
+                  SELECT $1, '2026-09-22', 'KGX', 'YRK', 'resolved', t.id FROM trains t \
+                  WHERE t.train_uid = 'TEST-TRAIN-JHO1' AND t.service_date = '2026-09-22' \
+                  RETURNING id \
+              ), \
+              leg AS ( \
+                  INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, \
+                                            service_date, train_subscription_id, match_mode) \
+                  SELECT j.id, 1, 'KGX', 'YRK', '2026-09-22', sub.id, 'manual' FROM j, sub \
+              ) \
+         SELECT id FROM j",
+    )
+    .bind(&owner)
+    .fetch_one(&pool)
+    .await
+    .expect("seed the train journey");
+    share(&pool, &group, journey, &owner).await;
+
+    let router = router(pool.clone());
+    let (status, rows) = get(
+        &router,
+        "/Journeys/mine?include=shared",
+        &session(&pool, &friend).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == journey)
+        .expect("the shared journey")
+        .clone();
+    assert!(row.get("sharedVia").is_some(), "{row}");
+    assert_eq!(row["trainSubscriptionId"], Value::Null);
+    assert_eq!(row["resolutionStatus"], "resolved", "{row}");
+    assert_eq!(row["trainLegCount"], 1, "{row}");
+    assert_eq!(row["unmatchedLegCount"], 0, "{row}");
+    cleanup(&pool, prefix).await;
+}

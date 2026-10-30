@@ -455,6 +455,35 @@ VALUES
   ('fixture-group-1', 900102, 'fixture-member', NOW())
 ON CONFLICT DO NOTHING;
 
+-- Two upcoming train journeys of fixture-member's, shared into the same
+-- group, for shared-journeys.spec.ts (DS-199): one on their own tracking
+-- of the planned W77777 (so fixture-owner, who doesn't follow it, sees
+-- the train fixture-member picked, not "Needs a train picked"), and one
+-- whose train leg has no train picked yet ("No train picked yet" to
+-- fixture-owner until they follow it). Fixed ids, nobody follows them.
+INSERT INTO journeys (id, user_id, custom_name, created_at, updated_at)
+VALUES
+  (900111, 'fixture-member', 'Fixture shared train', NOW(), NOW()),
+  (900112, 'fixture-member', 'Fixture shared train to pick', NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, train_subscription_id, match_mode)
+SELECT 900111, 1, 'KGX', 'EDB', '2099-01-05', ts.id, 'manual'
+FROM train_subscriptions ts
+JOIN trains t ON t.id = ts.trains_id
+WHERE t.train_uid = 'W77777' AND t.service_date = '2099-01-05' AND ts.user_id = 'fixture-member'
+ON CONFLICT (journey_id, leg_order) DO NOTHING;
+
+INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, depart_after, match_mode)
+VALUES (900112, 1, 'EDB', 'KGX', '2099-01-06', '09:00', 'unmatched')
+ON CONFLICT (journey_id, leg_order) DO NOTHING;
+
+INSERT INTO group_journeys (group_id, journey_id, added_by, added_at)
+VALUES
+  ('fixture-group-1', 900111, 'fixture-member', NOW()),
+  ('fixture-group-1', 900112, 'fixture-member', NOW())
+ON CONFLICT DO NOTHING;
+
 -- ---------------------------------------------------------------------
 -- Transit: a small Manchester Metrolink network (transit networks spec;
 -- the pages under /transit, shown because ci.yml's frontend-e2e job sets

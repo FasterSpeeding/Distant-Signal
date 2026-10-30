@@ -1398,7 +1398,7 @@ describe('DashboardPage -- journey sections', () => {
     });
     renderWithMantine(await DashboardPage());
 
-    expect(api.getMyJourneys).toHaveBeenCalledWith({ includeFollowed: true });
+    expect(api.getMyJourneys).toHaveBeenCalledWith({ includeFollowed: true, includeShared: true });
     const current = screen.getByRole('region', { name: 'Current journey' });
     const card = within(current).getByRole('link', { name: /Work trip/ });
     expect(card).toHaveAttribute('href', '/journeys/10');
@@ -1410,6 +1410,70 @@ describe('DashboardPage -- journey sections', () => {
     expect(rows.map((link) => link.getAttribute('href'))).toEqual(['/journeys/11', '/journeys/12']);
     expect(within(cardOf(rows[0]!)).queryByText(/Shared by/)).not.toBeInTheDocument();
     expect(within(cardOf(rows[1]!)).getByText(/Shared by Olive/)).toBeInTheDocument();
+  });
+
+  // DS-199: journeys other members shared into the caller's groups, not
+  // followed, are listed under "Shared with you", apart from the caller's
+  // own and never as the current journey, with who shared them and the
+  // owner's train.
+  it('lists journeys shared with the caller under Shared with you, never as the current journey', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    vi.mocked(api.getJourney).mockClear();
+    const sharedVia = [
+      {
+        groupId: 'grp-1',
+        groupName: 'Family',
+        addedByName: 'Olive',
+        addedByTag: null,
+        addedAt: '2026-09-16T08:00:00Z',
+      },
+    ];
+    // Olive's journey under way now, and a later one of hers with no
+    // train picked yet; the caller's own evening out.
+    const olivesNow = { ...underWay, id: 20, customName: "Olive's trip", isOwner: false };
+    const olivesLater = journeyDetail(
+      21,
+      [{ ...trainLeg(1, YRK, KGX, '2026-09-24T08:00:00Z', '2026-09-24T10:00:00Z'), trackedTrainState: null }],
+      "Olive's return",
+    );
+    vi.mocked(api.getMyJourneys).mockResolvedValue([
+      { ...journeyListItem(olivesNow), sharedVia, trainSubscriptionId: null },
+      journeyListItem(laterToday),
+      {
+        ...journeyListItem(olivesLater, undefined, { firstServiceDate: '2026-09-24', serviceDate: '2026-09-24' }),
+        sharedVia,
+      },
+    ]);
+    vi.mocked(api.getJourney).mockImplementation(async (id) => {
+      const detail = [olivesNow, laterToday].find((candidate) => candidate.id === id);
+      if (!detail) throw new Error(`no journey ${id}`);
+      return detail;
+    });
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
+    const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
+    const hrefs = within(upcoming)
+      .getAllByRole('link')
+      .map((link) => link.getAttribute('href'))
+      .filter((href) => href?.match(/^\/journeys\/\d+$/));
+    // The caller's own first, then Olive's: under way, then to come.
+    expect(hrefs).toEqual(['/journeys/11', '/journeys/20', '/journeys/21']);
+    expect(within(upcoming).getByRole('heading', { name: 'Shared with you', level: 3 })).toBeInTheDocument();
+    const now = cardOf(within(upcoming).getByRole('link', { name: "Olive's trip" }));
+    expect(within(now).getByText(/Shared by Olive in Family/)).toBeInTheDocument();
+    // Her train, read in full: its delay, not a request to pick a train.
+    expect(within(now).getByText('Delayed')).toBeInTheDocument();
+    const later = cardOf(within(upcoming).getByRole('link', { name: "Olive's return" }));
+    expect(within(later).getByText('No train picked yet')).toBeInTheDocument();
+    expect(within(upcoming).queryByText('Needs a train picked')).not.toBeInTheDocument();
+    // Read in full by the same rule as the caller's own.
+    expect(
+      vi
+        .mocked(api.getJourney)
+        .mock.calls.map(([id]) => id)
+        .sort(),
+    ).toEqual([11, 20]);
   });
 
   it('logged in with upcoming journeys only: no current section', async () => {
