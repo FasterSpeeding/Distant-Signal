@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { ActionIcon, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import { CheckIcon } from './CheckIcon';
 import { CopyIcon } from './CopyIcon';
@@ -32,6 +32,7 @@ export function CopyableLink({
   share = false,
   shareTitle,
   monospace = false,
+  onCopied,
 }: {
   value: string;
   label: string;
@@ -42,9 +43,14 @@ export function CopyableLink({
   shareTitle?: string | undefined;
   /** For a command rather than a URL. */
   monospace?: boolean | undefined;
+  /** Called each time the value is copied or shared. */
+  onCopied?: (() => void) | undefined;
 }) {
   const { state, run } = useShareOrCopy({ share, ...(shareTitle !== undefined && { shareTitle }) });
   const copied = state === 'copied';
+  useEffect(() => {
+    if (copied) onCopied?.();
+  }, [copied, onCopied]);
   // "Copy MCP server URL"; a hidden label reads mid-sentence ("Share invite link").
   const named = hideLabel ? label.charAt(0).toLowerCase() + label.slice(1) : label;
   const actionLabel = `${share ? 'Share' : 'Copy'} ${named}`;

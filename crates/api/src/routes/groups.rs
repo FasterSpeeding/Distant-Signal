@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
 use crate::data::groups::{self, GroupRole};
+use crate::usage_events::FeatureEvent;
 
 pub fn router() -> Router {
     Router::new()
@@ -574,14 +575,20 @@ async fn get_join_preview(
     State(app): State<App>,
     Path(token): Path<String>,
 ) -> Result<Json<groups::JoinPreview>, (StatusCode, String)> {
-    groups::resolve_invite_link(&app.database, &token)
+    let result = groups::resolve_invite_link(&app.database, &token)
         .await
         .map_err(internal_error("resolve invite link"))?
         .map(Json)
         .ok_or((
             StatusCode::NOT_FOUND,
             "this invite link is invalid or has expired".to_string(),
-        ))
+        ));
+    // Usage analytics, phase 1 (DS-190): opened or not, never which group.
+    match &result {
+        Ok(_) => FeatureEvent::GroupJoinViewed.record(),
+        Err(_) => FeatureEvent::GroupJoinRefused.record(),
+    }
+    result
 }
 
 #[derive(Debug, Serialize)]
@@ -598,11 +605,27 @@ async fn post_join(
     user: AuthenticatedUser,
     Path(token): Path<String>,
 ) -> Result<Json<JoinResponse>, (StatusCode, String)> {
-    match groups::consume_invite_link(&app.database, &token, &user.id)
+    let result = join(&app, &user, &token).await;
+    if matches!(&result, Err((status, _)) if status.is_client_error()) {
+        FeatureEvent::GroupJoinRefused.record();
+    }
+    result
+}
+
+/// [`post_join`]'s work.
+async fn join(
+    app: &App,
+    user: &AuthenticatedUser,
+    token: &str,
+) -> Result<Json<JoinResponse>, (StatusCode, String)> {
+    match groups::consume_invite_link(&app.database, token, &user.id)
         .await
         .map_err(internal_error("join group"))?
     {
-        groups::JoinOutcome::Joined(group_id) => Ok(Json(JoinResponse { group_id })),
+        groups::JoinOutcome::Joined(group_id) => {
+            FeatureEvent::GroupJoinJoined.record();
+            Ok(Json(JoinResponse { group_id }))
+        }
         groups::JoinOutcome::InvalidLink => Err((
             StatusCode::NOT_FOUND,
             "this invite link is invalid or has expired".to_string(),

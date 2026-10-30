@@ -27,6 +27,7 @@ import { codeRouteLabel, codeStationLabel, isGroupCode } from '@/lib/stationLabe
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import type { CreateJourneyResponse, TrainSearchDates, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { trackFeature } from '@/lib/usageAnalytics';
 
 /** A failure already worded for the visitor (`describeFailure` or the API's own sentence). */
 class JourneyCreationError extends Error {}
@@ -174,10 +175,15 @@ export function PlanTripFlow({
     // never mentions could keep rendering the old plan's name for the
     // brief window before `getStationNames` below resolves.
     setStationNames(new Map());
+    trackFeature('plan', 'searched');
     try {
       const sent = apiQuery(query);
       const result = await fetchTripPlan(sent);
       if (searchRequestId.current !== requestId) return; // superseded by a newer search
+      trackFeature(
+        'plan',
+        result.segments.some((segment) => segment.itineraries.length === 0) ? 'no_route' : 'results',
+      );
       setSearchedPlan(result);
       setList(startList(query, sent.date, result));
       setAnsweredQuery(query);
@@ -192,6 +198,7 @@ export function PlanTripFlow({
       });
     } catch (error) {
       if (searchRequestId.current !== requestId) return;
+      trackFeature('plan', 'failed');
       if (error instanceof TripPlanError && isTooLargeSearchError(error)) {
         setTooLarge(true);
         return;
@@ -269,6 +276,7 @@ export function PlanTripFlow({
       if (!response.ok) {
         throw new JourneyCreationError(await failureFromResponse('create', 'this journey', response));
       }
+      trackFeature('plan', 'saved_journey');
       onCreated((await response.json()) as CreateJourneyResponse);
     } catch (error) {
       setCreationError(

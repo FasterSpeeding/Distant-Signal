@@ -17,6 +17,7 @@ import { StationField } from './StationField';
 import { OperatorField } from './OperatorField';
 import { nowInLondon, londonWallClockToUtc } from '@/lib/londonWallClock';
 import type { CreateJourneyResponse } from '@/lib/types';
+import { trackFeature } from '@/lib/usageAnalytics';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { ButtonSpinner } from '@/components/LoadingText';
 import {
@@ -358,6 +359,7 @@ export function TrackTrainForm({
     setSubmitting(true);
     needsLoginState.reset();
     setFieldError(null);
+    trackFeature('track_train', 'submitted');
     try {
       // `scheduledDeparture` is the DateTimePicker's own bare-wall-clock
       // string, `'YYYY-MM-DD HH:mm:ss'` (@mantine/dates' `assign-time.mjs`
@@ -429,6 +431,7 @@ export function TrackTrainForm({
       });
 
       if (response.ok) {
+        trackFeature('track_train', 'succeeded');
         const result = (await response.json()) as CreateJourneyResponse;
         if (attachTicketId !== undefined && result.trackingId !== null) {
           try {
@@ -456,12 +459,14 @@ export function TrackTrainForm({
         needsLoginState.markNeedsLogin();
         return;
       }
+      trackFeature('track_train', 'failed');
       if (response.status === 400) {
         setFieldError(await failureFromResponse('track', 'this train', response));
         return;
       }
       setFieldError(describeFailure('track', 'this train', response.status));
     } catch {
+      trackFeature('track_train', 'failed');
       setFieldError(describeFailure('track', 'this train'));
     } finally {
       setSubmitting(false);

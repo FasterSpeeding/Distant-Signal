@@ -129,6 +129,31 @@ describe('/api/[...path] proxy', () => {
     }
   });
 
+  // DS-190: the api drops a usage event that carries either privacy
+  // signal, so the proxy must relay them, and add neither on its own.
+  it("forwards the browser's Sec-GPC and DNT headers, and adds none it didn't send", async () => {
+    const req = makeRequest('/api/events', {
+      method: 'POST',
+      headers: { origin: 'http://localhost:3000', 'sec-gpc': '1', dnt: '1' },
+      body: JSON.stringify({ name: 'page_view', route_template: '/' }),
+    });
+    await POST(req, { params: Promise.resolve({ path: ['events'] }) });
+    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0]!;
+    expect(calledUrl.toString()).toBe('http://test-api:8080/public/events');
+    const headers = (init as { headers: Record<string, string> }).headers;
+    expect(headers['Sec-GPC']).toBe('1');
+    expect(headers.DNT).toBe('1');
+
+    vi.mocked(fetch).mockClear();
+    await POST(makeRequest('/api/events', { method: 'POST', body: '{}' }), {
+      params: Promise.resolve({ path: ['events'] }),
+    });
+    const [, plain] = vi.mocked(fetch).mock.calls[0]!;
+    const plainHeaders = (plain as { headers: Record<string, string> }).headers;
+    expect(plainHeaders['Sec-GPC']).toBeUndefined();
+    expect(plainHeaders.DNT).toBeUndefined();
+  });
+
   it('omits Origin/Referer from the outbound fetch when the browser sent neither', async () => {
     const req = makeRequest('/api/auth/logout', { method: 'POST' });
     await POST(req, { params: Promise.resolve({ path: ['auth', 'logout'] }) });

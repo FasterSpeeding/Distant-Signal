@@ -167,6 +167,10 @@ async function hasAcceptableOriginForMutation(req: NextRequest): Promise<boolean
   return origin === expectedOrigin;
 }
 
+/** Request headers relayed upstream as they came, for the api's usage
+ * events (see where `proxy` sets them). */
+export const PRIVACY_SIGNAL_HEADERS: readonly string[] = ['Sec-GPC', 'DNT'];
+
 /** The largest request body this proxy forwards (FE-7): the api's biggest
  * per-route limit a browser can reach, the 8 MiB ticket upload
  * (`crates/api/src/routes/train.rs`'s `DefaultBodyLimit`). Anything larger
@@ -332,6 +336,15 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   const referer = req.headers.get('referer');
   if (referer) {
     headers.Referer = referer;
+  }
+  // The browser's privacy signals, Global Privacy Control (`Sec-GPC`) and
+  // Do Not Track (`DNT`): `POST /public/events` drops any usage event that
+  // carries either set to 1 (DS-190), as the browser side already does.
+  for (const name of PRIVACY_SIGNAL_HEADERS) {
+    const value = req.headers.get(name);
+    if (value) {
+      headers[name] = value;
+    }
   }
 
   const init: RequestInit = {

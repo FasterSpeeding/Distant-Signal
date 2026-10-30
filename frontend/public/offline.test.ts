@@ -128,3 +128,40 @@ describe('offline.html last-connected line', () => {
     );
   });
 });
+
+describe('offline.html usage-counts note', () => {
+  const noteScript = (): string => {
+    const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+      .map(([, body]) => body!)
+      .find((body) => body.includes('ds-analytics-offline-pending'));
+    expect(script).toBeDefined();
+    return script!;
+  };
+  const run = () => {
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval -- runs offline.html's own inline script, the code under test
+    new Function(noteScript())();
+  };
+
+  afterEach(() => {
+    localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it('notes the offline page only for a browser that opted in', () => {
+    run();
+    expect(localStorage.getItem('ds-analytics-offline-pending')).toBeNull();
+    localStorage.setItem('ds-analytics-opt-in', 'true');
+    run();
+    expect(localStorage.getItem('ds-analytics-offline-pending')).toBe('1');
+  });
+
+  it('notes nothing when the browser sends Global Privacy Control or Do Not Track', () => {
+    localStorage.setItem('ds-analytics-opt-in', 'true');
+    vi.stubGlobal('navigator', { globalPrivacyControl: true });
+    run();
+    expect(localStorage.getItem('ds-analytics-offline-pending')).toBeNull();
+    vi.stubGlobal('navigator', { doNotTrack: '1' });
+    run();
+    expect(localStorage.getItem('ds-analytics-offline-pending')).toBeNull();
+  });
+});

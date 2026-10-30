@@ -1,4 +1,5 @@
 import { Group, Paper, Stack, Text, VisuallyHidden } from '@mantine/core';
+import { TrackEmptyState } from '@/components/TrackEmptyState';
 import { SectionTitle } from '@/components/SectionTitle';
 import { ApiNotFoundError, getLineTrainsSummary, searchTrainsBetween } from '@/lib/api';
 import type { LineCatalogueStation, LineTrainSummary, LineTrainsSummary, TrainSearchResult } from '@/lib/types';
@@ -464,6 +465,7 @@ function StationPairResults({
       {result.rows.length === 0 ? (
         <Empty>
           No trains from {fromName} to {toName} in this window.
+          <TrackEmptyState kind="line_trains_none" />
         </Empty>
       ) : (
         <ServiceRowList aria-label={`Trains from ${fromName} to ${toName}`}>

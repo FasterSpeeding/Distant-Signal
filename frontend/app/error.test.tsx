@@ -3,7 +3,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { ConnectivityContext } from '@/components/ConnectivityMonitor';
+import { track } from '@/lib/usageAnalytics';
 import ErrorBoundary from './error';
+
+vi.mock('@/lib/usageAnalytics', () => ({ track: vi.fn() }));
 
 // `TextLink` is a client component that calls usePathname()/useSearchParams()
 // -- same stub `app/page.test.tsx` uses for the same reason.
@@ -52,6 +55,16 @@ describe('app/error.tsx', () => {
   // Provider, so it gets the context's own non-throwing default of
   // `disconnected: false` (see ConnectivityMonitor.tsx) -- i.e. the same
   // "ordinary error" case Harness's `initial={false}` also exercises below.
+  it('reports only the digest to the opt-in usage counts, never the message', () => {
+    vi.mocked(track).mockClear();
+    renderWithMantine(<ErrorBoundary error={errorWithDigest('secret detail', '2914387@E1')} reset={() => {}} />);
+    expect(track).toHaveBeenCalledWith('error_boundary', { digest: '2914387@E1' });
+    vi.mocked(track).mockClear();
+    renderWithMantine(<ErrorBoundary error={errorWithDigest('no digest here')} reset={() => {}} />);
+    expect(track).toHaveBeenCalledWith('error_boundary', undefined);
+    expect(JSON.stringify(vi.mocked(track).mock.calls)).not.toContain('detail');
+  });
+
   it('never renders the raw error message', () => {
     renderWithMantine(
       <ErrorBoundary error={errorWithDigest('Minified React error #130', 'abc123')} reset={() => {}} />,

@@ -3,6 +3,28 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-30: opt-in usage analytics
+
+Additive. DS-MCP needs no change and should not call the new routes (DS-190;
+[usage-analytics.md](usage-analytics.md)).
+
+- `POST /public/events`: one usage event from a browser that opted in,
+  `{"name", "route_template", "props"?}`, checked against an allowlist
+  (`crates/api/src/usage_events.rs`). Always `204`, counted or not; not
+  counted with `Sec-GPC: 1` or `DNT: 1`, or from a signed-in user who has
+  not opted in. Bodies over 1 KiB get `413`. Its own rate limit,
+  `API_RATE_LIMIT_EVENTS_PER_MINUTE` (60) and `_BURST` (30) per client IP;
+  `429` past it.
+- `GET`/`PUT /public/preferences/analytics`: the signed-in user's choice,
+  `{"optIn": false}` by default. `PUT` answers `204`; both need a session
+  (`401` without).
+- `GET /public/auth/session` gains `analyticsOptIn` (`false` when logged
+  out).
+- The account export's `account` gains `analytics_opt_in`.
+- No other response changes. The api now also counts some outcomes
+  (tracking a train, planning a trip, share links, push subscriptions,
+  group joins, connected apps) in Prometheus, with no identifiers.
+
 ## 2026-10-29: Tube rides without route data no longer go round loops
 
 No shape change. DS-MCP needs nothing new; the numbers are better (DS-187;

@@ -55,7 +55,7 @@ The inactive-account sweep (below) uses the same function.
 
 | Table | Personal data | On account deletion | Retention while the account exists | Export |
 |---|---|---|---|---|
-| `users` | OIDC subject id, name, username, IdP groups (no email: the legacy column is dropped by `20261026090000_drop_users_email.sql`), created and last-login times | Deleted | Kept while the account exists. Optional inactive-account deletion is **off by default** (`INACTIVE_ACCOUNT_RETENTION_DAYS`). | `account` |
+| `users` | OIDC subject id, name, username, IdP groups (no email: the legacy column is dropped by `20261026090000_drop_users_email.sql`), created and last-login times, the usage-analytics choice (`analytics_opt_in`, off by default) | Deleted | Kept while the account exists. Optional inactive-account deletion is **off by default** (`INACTIVE_ACCOUNT_RETENTION_DAYS`). | `account` |
 | `sessions` | Hashed session token, expiry | Cascade | Deleted when expired (`session_ttl_days`, 14), hourly | `sessions` (without id or token) |
 | `oidc_login_state` | PKCE verifier, nonce, CSRF state, return path. Not linked to a user. | n/a | Deleted after 15 minutes | n/a |
 | `push_subscriptions` | Push endpoint URL, encryption keys, timestamps (including the last push delivered), a device label worked out from the browser's User-Agent ("Chrome on Android"; the header itself is not kept) | Cascade | Deleted when the push service reports it gone, beyond 20 per user, or when the user has not logged in **and** the subscription has not been renewed for `STALE_PUSH_SUBSCRIPTION_DAYS` (365) | `pushSubscriptions` (without keys) |
@@ -100,6 +100,28 @@ All three are on the api (`crates/api/src/data/config.rs`), and are set in the c
 `INACTIVE_ACCOUNT_RETENTION_DAYS` is off by default because the app holds no email addresses, so a user cannot be warned first. Before enabling it (the audit suggests 730), state it in the privacy notice.
 
 The `/account` page says "18 months" and "up to 14 days" (backups). If `PAST_TRAVEL_RETENTION_DAYS` or the backup retention changes, update that copy too: the account, account-deleted and privacy pages, and the delete-account dialog.
+
+## Usage analytics
+
+Not personal data, recorded here because the privacy page describes it.
+Design and queries: [usage-analytics.md](usage-analytics.md).
+
+| What | Where | Retention |
+|---|---|---|
+| Opt-in event counts (`POST /public/events`): one row per London day, event, dimension (route template and enumerated properties) and signed-in or not. No user id, IP address, user agent or session id. | `usage_daily` | Days older than 13 months are deleted by the hourly sweep (`data::usage::prune`, from `retention::prune_personal_data`; not switchable) |
+| The same counts, and the always-on feature counters (`distant_signal_api_feature_events_total`), with fixed labels only | Prometheus | Prometheus' own retention (30 days or 25 GB on the cluster) |
+| A signed-in user's choice | `users.analytics_opt_in` | With the account; in the export's `account` |
+| A logged-out browser's choice, and the offline page's pending count | `localStorage` `ds-analytics-opt-in`, `ds-analytics-offline-pending` (the browser only) | Until cleared |
+
+Turning analytics off stops future counts. Past counts are aggregates with
+nothing that links them to a person, so there is nothing to export or delete
+for one user; account deletion leaves them.
+
+## Application logs
+
+The api's and the frontend's container logs (requests, errors) can hold an
+IP address or a user id. Loki keeps DS application logs for **up to 7 days**
+(Ranma-Config). The privacy page says so; keep it in step if that changes.
 
 ## Schedule feed SFTP server logs
 

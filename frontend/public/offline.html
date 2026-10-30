@@ -199,6 +199,24 @@
       <button type="button" onclick="location.reload()">Try again</button>
     </main>
     <script>
+      // Opt-in usage counts (DS-190, lib/usageAnalytics.ts): nothing can be
+      // sent while offline, so an opted-in browser notes that this page was
+      // shown and the next online page load sends `offline_shown` and removes
+      // the note. Never written for a browser that has not opted in on this
+      // device (ds-analytics-opt-in), or that sends Global Privacy Control or
+      // Do Not Track.
+      (function () {
+        try {
+          var nav = window.navigator;
+          if (nav.globalPrivacyControl === true || nav.doNotTrack === '1' || window.doNotTrack === '1') return;
+          if (window.localStorage.getItem('ds-analytics-opt-in') !== 'true') return;
+          window.localStorage.setItem('ds-analytics-offline-pending', '1');
+        } catch (e) {
+          // Storage blocked: nothing to note.
+        }
+      })();
+    </script>
+    <script>
       // Reuses LastUpdated.tsx's mechanic (a stored absolute timestamp, "now"
       // recomputed at render/tick time) without reusing the component itself --
       // this page has no React runtime. If no value is stored yet (first-ever
