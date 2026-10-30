@@ -21,7 +21,7 @@ export interface TimetableQuery {
 
 /** The rows after the server-rendered first page: "Load more" fetches the
  * next page through the `/api` proxy and appends it (the shared
- * `LoadMoreControl`, as `StationTimetable` does). Without JavaScript the
+ * `LoadMoreControl`, as the train search does). Without JavaScript the
  * `<noscript>` link opens the next page instead (`after=` in the URL). */
 export function TimetableMore({
   id,
