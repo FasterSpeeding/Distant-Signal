@@ -3,7 +3,7 @@ import { Group, Radio, Stack, Text } from '@mantine/core';
 import { ClickableCard, selectableCardRadioProps, StaticCard } from './ClickableCard';
 import { codeRouteLabel, tflStopPlaceName } from '@/lib/stationLabel';
 import { ServiceModeBadge } from './ServiceModeBadge';
-import { satisfiedStationLabel, viaSatisfiedLabel, waypointSatisfiedLabel } from '@/lib/tripPlan';
+import { optionLabelText, satisfiedStationLabel, viaSatisfiedLabel, waypointSatisfiedLabel } from '@/lib/tripPlan';
 import { CANCELLED_LABEL, delayLabel } from '@/lib/serviceStatus';
 import type { StationGroup } from '@/lib/stationGroups';
 import type {
@@ -201,6 +201,16 @@ export function ItineraryOption({
           }
         />
         <Stack gap={4} align="flex-end">
+          {/* "Compare options" (DS-196): what this option is. */}
+          {itinerary.labels && itinerary.labels.length > 0 && (
+            <Group gap={4} justify="flex-end" data-option-labels>
+              {itinerary.labels.map((label, labelIndex) => (
+                <StateBadge key={labelIndex} tone={label.kind === 'alternative' ? 'neutral' : 'action'}>
+                  {optionLabelText(label, (code) => stationNames.get(code) ?? code)}
+                </StateBadge>
+              ))}
+            </Group>
+          )}
           <Text size="sm">{itinerary.totalDurationMinutes} min</Text>
           <StateBadge tone={itinerary.changeCount === 0 ? 'good' : 'neutral'}>
             {itinerary.changeCount} {itinerary.changeCount === 1 ? 'change' : 'changes'}

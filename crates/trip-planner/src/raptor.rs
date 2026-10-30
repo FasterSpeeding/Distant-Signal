@@ -431,11 +431,29 @@ pub fn raptor_search_restricted(
     // sweep of `connections` for every remaining round even after the
     // network has been fully explored. See `run_one_round`'s own doc
     // comment and its dedicated test for what this actually relies on.
+    //
+    // Target pruning (DS-196): a later round only contributes to the Pareto
+    // set by reaching the destination strictly before every earlier round
+    // did, and nothing departing at or after that arrival can, so each
+    // round's sweep stops there. On a day's timetable most of the sweep is
+    // after the first arrival, so this is most of the rounds' cost.
+    let to: Vec<&str> = options
+        .to_tiplocs
+        .iter()
+        .map(|tiploc| normalize_tiploc(tiploc))
+        .collect();
     for _ in 1..=options.max_rounds {
         let previous = rounds.last().expect("round0 was just pushed");
+        let cutoff = to
+            .iter()
+            .filter_map(|tiploc| previous.arrival.get(*tiploc))
+            .min()
+            .copied()
+            .unwrap_or(u32::MAX);
         let (current, improved) = run_one_round(
             previous,
-            crate::overlay::connections_from(options.connections, overlay, options.departure_min),
+            crate::overlay::connections_from(options.connections, overlay, options.departure_min)
+                .take_while(|connection| connection.departure_min < cutoff),
             &origin,
             options.departure_min,
             options.interchange,

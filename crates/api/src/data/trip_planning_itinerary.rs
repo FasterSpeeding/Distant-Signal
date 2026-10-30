@@ -12,7 +12,11 @@
 
 use chrono::{NaiveDate, NaiveTime};
 use schedule_query::InterchangeData;
-use trip_planner::{ArriveByOptions, JourneyLeg, RaptorJourney, Restrictions};
+use trip_planner::options::Direction;
+use trip_planner::{
+    ArriveByOptions, Choice, DiversifyOptions, JourneyLeg, OptionJourney, RaptorJourney,
+    Restrictions,
+};
 
 /// The cap `GET /Trips/plan` uses when the caller omits `?maxChanges=`:
 /// at most 4 interchanges (5 legs) per itinerary -- applied here, in the
@@ -280,6 +284,41 @@ pub struct PlannedItinerary {
     /// otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scheduled_only: Option<bool>,
+    /// Internal: `Some` on an alternative route `results=options` added to
+    /// its Pareto set (DS-196), holding the CRS that tells it apart (if
+    /// any). Turned into `labels` by [`label_options`].
+    #[serde(skip)]
+    pub alternative: Option<Option<String>>,
+    /// `results=options` only (additive, 2026-10-30, DS-196): what this
+    /// option is -- see [`OptionLabel`]. The same on every segment's part
+    /// of one journey. Absent in `fastest` mode.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<OptionLabel>,
+}
+
+/// One label of a `results=options` journey (DS-196), served as
+/// `{"kind": "fastest"}`, `{"kind": "leavesLatest"}`,
+/// `{"kind": "fewestChanges"}` or `{"kind": "alternative", "viaCrs": "MYB"}`
+/// (`viaCrs` may be `null`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum OptionLabel {
+    /// Depart-after: arrives first (then fewest changes). Exactly one
+    /// journey.
+    Fastest,
+    /// Arrive-by's counterpart of [`Self::Fastest`]: leaves last (then
+    /// arrives first). Exactly one journey.
+    LeavesLatest,
+    /// The fewest changes of any option, the best-ranked such journey;
+    /// only when the options' change counts differ.
+    FewestChanges,
+    /// A different route (another corridor or station), not part of the
+    /// arrival-versus-changes trade-off.
+    Alternative {
+        /// The station that tells it apart from the fastest option.
+        #[serde(rename = "viaCrs")]
+        via_crs: Option<String>,
+    },
 }
 
 impl PlannedItinerary {
@@ -306,6 +345,8 @@ impl PlannedItinerary {
             continues_previous_train: false,
             via_satisfied_by: Vec::new(),
             scheduled_only: None,
+            alternative: None,
+            labels: Vec::new(),
             arrival_tiploc: legs.last().map(|leg| match leg {
                 JourneyLeg::Train(train) => train.to_tiploc.clone(),
                 JourneyLeg::Transfer(transfer) => transfer.to_tiploc.clone(),
@@ -542,6 +583,7 @@ pub fn plan_segment_from_min(
         max_changes,
         overlay,
         restrictions: None,
+        alternatives: false,
     }
     .search(
         origin_crs,
@@ -585,6 +627,9 @@ pub struct SegmentSearch<'a> {
     pub overlay: Option<&'a trip_planner::ConnectionOverlay>,
     /// `avoid`/`avoidStop`/`avoidChange`, see [`build_restrictions`].
     pub restrictions: Option<&'a Restrictions>,
+    /// `options` only: add alternative routes to the Pareto set
+    /// (`trip_planner::options`, DS-196). `false` keeps the bare set.
+    pub alternatives: bool,
 }
 
 impl SegmentSearch<'_> {
@@ -654,9 +699,10 @@ impl SegmentSearch<'_> {
                     self.overlay,
                     self.restrictions,
                 );
-                let within_cap: Vec<&RaptorJourney> = all
+                let within_cap: Vec<RaptorJourney> = all
                     .iter()
                     .filter(|j| j.changes <= self.max_changes)
+                    .cloned()
                     .collect();
                 // Judgment Call 2: did the headroom round (`max_rounds`, one
                 // past what `max_changes` alone needs) find something
@@ -668,7 +714,28 @@ impl SegmentSearch<'_> {
                     j.changes > self.max_changes
                         && best_within_cap.is_none_or(|best| j.arrival_min < best)
                 });
-                Ok((self.itineraries(within_cap), capped))
+                let choices = self.diversify(
+                    within_cap,
+                    from_tiplocs,
+                    to_tiplocs,
+                    Direction::DepartAfter,
+                    |restrictions| {
+                        trip_planner::scan_connections_restricted(
+                            trip_planner::ScanOptions {
+                                connections: self.connections,
+                                interchange: self.interchange,
+                                from_tiplocs,
+                                to_tiplocs,
+                                departure_min,
+                                date: self.date,
+                            },
+                            self.overlay,
+                            Some(restrictions),
+                        )
+                        .map(RaptorJourney::from)
+                    },
+                );
+                Ok((self.itineraries(&choices), capped))
             }
             ("options", TimeBound::ArriveBy(arrive_by_min)) => {
                 let options = self.arrive_by_options(from_tiplocs, to_tiplocs, arrive_by_min);
@@ -686,21 +753,30 @@ impl SegmentSearch<'_> {
                     .iter()
                     .flatten()
                     .any(|t| best_within_cap.is_none_or(|best| t > best));
-                let journeys = trip_planner::raptor_arrive_by_from_latest(
+                let journeys: Vec<RaptorJourney> = trip_planner::raptor_arrive_by_from_latest(
                     &options,
                     self.overlay,
                     self.restrictions,
                     within,
+                )
+                .into_iter()
+                .filter(|j| j.changes <= self.max_changes)
+                .collect();
+                let choices = self.diversify(
+                    journeys,
+                    from_tiplocs,
+                    to_tiplocs,
+                    Direction::ArriveBy,
+                    |restrictions| {
+                        trip_planner::scan_connections_arrive_by(
+                            self.arrive_by_options(from_tiplocs, to_tiplocs, arrive_by_min),
+                            self.overlay,
+                            Some(restrictions),
+                        )
+                        .map(RaptorJourney::from)
+                    },
                 );
-                Ok((
-                    self.itineraries(
-                        journeys
-                            .iter()
-                            .filter(|j| j.changes <= self.max_changes)
-                            .collect(),
-                    ),
-                    capped,
-                ))
+                Ok((self.itineraries(&choices), capped))
             }
             (results, _) => Err(format!(
                 "results must be 'fastest' or 'options', not '{results}'"
@@ -708,11 +784,12 @@ impl SegmentSearch<'_> {
         }
     }
 
-    fn itineraries(&self, journeys: Vec<&RaptorJourney>) -> Vec<PlannedItinerary> {
-        journeys
-            .into_iter()
-            .map(|journey| {
-                PlannedItinerary::from_legs(
+    fn itineraries(&self, choices: &[Choice<RaptorJourney>]) -> Vec<PlannedItinerary> {
+        choices
+            .iter()
+            .map(|choice| {
+                let journey = &choice.journey;
+                let mut itinerary = PlannedItinerary::from_legs(
                     &journey.legs,
                     journey.departure_min,
                     journey.arrival_min,
@@ -720,9 +797,26 @@ impl SegmentSearch<'_> {
                     None,
                     self.date,
                     self.interchange,
-                )
+                );
+                itinerary.alternative = alternative_crs(choice, self.interchange);
+                itinerary
             })
             .collect()
+    }
+
+    /// `base` plus, when [`Self::alternatives`] is on, the alternative
+    /// routes `search` finds under `trip_planner::options`' bans. `ends`
+    /// (the segment's ends, waypoints and vias) are never banned.
+    fn diversify<J: OptionJourney>(
+        &self,
+        base: Vec<J>,
+        from_tiplocs: &[String],
+        to_tiplocs: &[String],
+        direction: Direction,
+        search: impl FnMut(&Restrictions) -> Option<J>,
+    ) -> Vec<Choice<J>> {
+        let protected = from_tiplocs.iter().chain(to_tiplocs).cloned().collect();
+        diversify_with(self, base, protected, direction, search)
     }
 
     fn arrive_by_options<'b>(
@@ -771,6 +865,50 @@ impl SegmentSearch<'_> {
             ),
         }
     }
+}
+
+/// [`trip_planner::diversify`] for `search`'s mode, or `base` unchanged
+/// when alternatives are off (`fastest` mode, `alternatives=false`, or a
+/// journey re-plan).
+fn diversify_with<J: OptionJourney>(
+    search: &SegmentSearch<'_>,
+    base: Vec<J>,
+    protected: Vec<String>,
+    direction: Direction,
+    run: impl FnMut(&Restrictions) -> Option<J>,
+) -> Vec<Choice<J>> {
+    if !search.alternatives || search.results != "options" {
+        return base
+            .into_iter()
+            .map(|journey| Choice {
+                journey,
+                alternative: None,
+            })
+            .collect();
+    }
+    trip_planner::diversify(
+        base,
+        &DiversifyOptions {
+            connections: search.connections,
+            interchange: search.interchange,
+            restrictions: search.restrictions,
+            protected,
+            direction,
+            max_changes: search.max_changes,
+        },
+        run,
+    )
+}
+
+/// [`PlannedItinerary::alternative`] for `choice`: its distinguishing
+/// station as a CRS.
+fn alternative_crs<J>(choice: &Choice<J>, interchange: &InterchangeData) -> Option<Option<String>> {
+    choice.alternative.as_ref().map(|alternative| {
+        alternative
+            .via_tiploc
+            .as_deref()
+            .and_then(|tiploc| crs_for_tiploc(interchange, tiploc))
+    })
 }
 
 /// Why a segment has no itineraries -- served as the segment's
@@ -972,6 +1110,7 @@ pub fn plan_via_waypoints_with_overlay(
             max_changes,
             overlay,
             restrictions: None,
+            alternatives: false,
         },
         passes: None,
         avoid: &AvoidLists::default(),
@@ -1685,6 +1824,33 @@ fn plan_trip_joint(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, Stri
                 ));
             }
         };
+    // Alternative routes (DS-196), every waypoint and via kept.
+    let protected: Vec<String> = tiplocs
+        .iter()
+        .flatten()
+        .cloned()
+        .chain(
+            input
+                .via_search
+                .into_iter()
+                .flat_map(trip_planner::Vias::all_tiplocs)
+                .cloned(),
+        )
+        .collect();
+    let journeys: Vec<Choice<trip_planner::StagedJourney>> = match input.time {
+        TimeBound::DepartAfter(start) => diversify_with(
+            search,
+            journeys,
+            protected,
+            Direction::DepartAfter,
+            |bans| trip_planner::scan_staged(&staged, start, overlay, Some(bans)),
+        ),
+        TimeBound::ArriveBy(_) => {
+            diversify_with(search, journeys, protected, Direction::ArriveBy, |bans| {
+                trip_planner::staged_arrive_by(&options, overlay, Some(bans))
+            })
+        }
+    };
 
     let fastest = search.results == "fastest";
     let mut segments: Vec<SegmentResult> = pairs
@@ -1699,7 +1865,9 @@ fn plan_trip_joint(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, Stri
             no_result_reason: None,
         })
         .collect();
-    for journey in &journeys {
+    for choice in &journeys {
+        let journey = &choice.journey;
+        let alternative = alternative_crs(choice, interchange);
         let mut previous_arrival = journey.departure_min;
         for (segment, part) in segments.iter_mut().zip(&journey.parts) {
             let departure = part
@@ -1720,6 +1888,7 @@ fn plan_trip_joint(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, Stri
                 interchange,
             );
             itinerary.continues_previous_train = part.continues_previous_train;
+            itinerary.alternative.clone_from(&alternative);
             segment.itineraries.push(itinerary);
         }
         for (via, hit) in input.vias.iter().zip(&journey.via_legs) {
@@ -2028,6 +2197,8 @@ pub struct JourneySummary {
     pub live_feasible: Option<bool>,
     /// For each requested via in order, the leg that passed it.
     pub via_satisfied_by: Vec<ViaSatisfied>,
+    /// `results=options` only: see [`label_options`].
+    pub labels: Vec<OptionLabel>,
 }
 
 /// The journeys of an aligned plan (see [`plan_trip`]). Empty when the
@@ -2083,9 +2254,67 @@ pub fn journey_summaries(
                     .iter()
                     .flat_map(|part| part.via_satisfied_by.iter().cloned())
                     .collect(),
+                labels: first.labels.clone(),
             }
         })
         .collect()
+}
+
+/// Labels a `results=options` plan's journeys (DS-196), on every segment's
+/// part of each: [`OptionLabel::Fastest`] (arrive-by:
+/// [`OptionLabel::LeavesLatest`]) on the best-ranked journey
+/// (`trip_planner::options::rank`), [`OptionLabel::FewestChanges`] on the
+/// best-ranked of those with the fewest changes when the change counts
+/// differ, and [`OptionLabel::Alternative`] on each alternative route.
+/// Run once the plan is final (after the live re-plans and the
+/// `acrossMidnight` merge), so the labels describe what is served.
+pub fn label_options(
+    segments: &mut [SegmentResult],
+    interchange: &InterchangeData,
+    time: TimeBound,
+) {
+    let summaries = journey_summaries(segments, interchange);
+    if summaries.is_empty() {
+        return;
+    }
+    let direction = match time {
+        TimeBound::DepartAfter(_) => Direction::DepartAfter,
+        TimeBound::ArriveBy(_) => Direction::ArriveBy,
+    };
+    let rank = |j: usize| {
+        let summary = &summaries[j];
+        trip_planner::options::rank(
+            direction,
+            summary.departure_min,
+            summary.arrival_min,
+            summary.change_count,
+        )
+    };
+    let count = summaries.len();
+    let fastest = (0..count).min_by_key(|&j| rank(j));
+    let fewest = summaries.iter().map(|s| s.change_count).min();
+    let varied = summaries.iter().any(|s| Some(s.change_count) != fewest);
+    let fewest_changes = (0..count)
+        .filter(|&j| varied && Some(summaries[j].change_count) == fewest)
+        .min_by_key(|&j| rank(j));
+    for j in 0..count {
+        let mut labels = Vec::new();
+        if fastest == Some(j) {
+            labels.push(match direction {
+                Direction::DepartAfter => OptionLabel::Fastest,
+                Direction::ArriveBy => OptionLabel::LeavesLatest,
+            });
+        }
+        if fewest_changes == Some(j) {
+            labels.push(OptionLabel::FewestChanges);
+        }
+        if let Some(via_crs) = segments[0].itineraries[j].alternative.clone() {
+            labels.push(OptionLabel::Alternative { via_crs });
+        }
+        for segment in segments.iter_mut() {
+            segment.itineraries[j].labels.clone_from(&labels);
+        }
+    }
 }
 
 /// The per-segment chained planner (the only planner before 2026-09-29):
@@ -3101,6 +3330,7 @@ mod tests {
                 max_changes: DEFAULT_MAX_CHANGES,
                 overlay: None,
                 restrictions: restrictions.as_ref(),
+                alternatives: false,
             },
             passes,
             avoid,
@@ -3473,6 +3703,7 @@ mod tests {
                 max_changes: 2,
                 overlay: None,
                 restrictions: None,
+                alternatives: false,
             },
             passes: None,
             avoid: &AvoidLists::default(),
@@ -3513,6 +3744,7 @@ mod tests {
                 max_changes,
                 overlay: None,
                 restrictions: None,
+                alternatives: false,
             },
             passes: None,
             avoid: &AvoidLists::default(),
@@ -3768,6 +4000,7 @@ mod tests {
                 max_changes,
                 overlay: None,
                 restrictions: restrictions.as_ref(),
+                alternatives: false,
             },
             passes: Some(passes),
             avoid,
@@ -4280,6 +4513,8 @@ mod tests {
             continues_previous_train: false,
             via_satisfied_by: Vec::new(),
             scheduled_only: None,
+            alternative: None,
+            labels: Vec::new(),
         };
         let walk = PlannedLeg::Transfer {
             mode: "WALK".to_string(),
