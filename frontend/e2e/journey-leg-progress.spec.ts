@@ -24,6 +24,14 @@ test.describe('journey leg progress and calling points', () => {
     await expect(
       main.getByText('Not started. The train is on its way to Fixture Brook, last reported at Fixture Ashby.'),
     ).toBeVisible();
+    // The train calls on both sides of the leg: a stub and a note at each
+    // end, and the same in words for a screen reader.
+    await expect(progress.locator('[data-leg-continues="before"]')).toContainText('Fixture Brook');
+    await expect(progress.locator('[data-leg-continues="after"]')).toContainText('Fixture Dale');
+    await expect(progress.locator('[data-leg-continues-note]')).toHaveText(['+1 stop', '+1 stop']);
+    await expect(progress).toHaveAccessibleDescription(
+      'The train starts at Fixture Ashby, 1 stop before you board, and continues to Fixture End, 1 stop after you get off.',
+    );
 
     // The calling points: the leg's three stops, then the two toggles.
     const table = main.getByRole('table', { name: 'Journey timeline' });
@@ -51,6 +59,8 @@ test.describe('journey leg progress and calling points', () => {
     const main = page.locator('#main-content');
     const progress = main.getByRole('group', { name: /Journey progress/ });
     await expect(progress.locator('[data-journey-node]')).toHaveCount(5);
+    await expect(progress.locator('[data-leg-continues]')).toHaveCount(0);
+    await expect(progress).not.toHaveAttribute('aria-describedby');
     const table = main.getByRole('table', { name: 'Journey timeline' });
     await expect(table.getByText('Fixture End')).toBeVisible();
     await expect(table.getByRole('button', { name: /stops (from|to)/ })).toHaveCount(0);

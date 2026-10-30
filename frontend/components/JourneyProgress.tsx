@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { Box, Flex, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import { journeyStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
@@ -94,6 +94,32 @@ function nodeIsEndpoint(stop: JourneyStop, index: number, total: number, clipped
 
 function nodeDiameter(endpoint: boolean): number {
   return endpoint ? ENDPOINT_DIAMETER : INTERMEDIATE_DIAMETER;
+}
+
+/** How many of the train's stops a journey leg leaves out on one side:
+ * before the traveller boards, or after they get off. */
+interface LegContinuation {
+  side: 'before' | 'after';
+  count: number;
+}
+
+function stopCount(count: number): string {
+  return `${count} ${count === 1 ? 'stop' : 'stops'}`;
+}
+
+/** The screen-reader restatement of a clipped leg's stubs: where the
+ * train starts, if before the boarding stop, and where it runs on to, if
+ * past the alighting stop. `null` when it does neither (no stubs drawn). */
+export function legContinuationDescription(
+  origin: { name: string; count: number } | null,
+  terminus: { name: string; count: number } | null,
+): string | null {
+  const starts = origin ? `starts at ${origin.name}, ${stopCount(origin.count)} before you board` : null;
+  const continues = terminus ? `continues to ${terminus.name}, ${stopCount(terminus.count)} after you get off` : null;
+  if (starts && continues) return `The train ${starts}, and ${continues}.`;
+  if (starts) return `The train ${starts}.`;
+  if (continues) return `The train ${continues}.`;
+  return null;
 }
 
 type NodeState = 'reached' | 'marker' | 'not-reached' | 'cancelled-remaining';
@@ -366,6 +392,32 @@ export function JourneyProgress({
   const lastIndex = legProgress ? legProgress.index : position.index;
   const beforeStop = legPhase === 'before' && position.index >= 0 ? allStops[position.index] : undefined;
   const trainAt = beforeStop ? journeyStopLabel(beforeStop, position.index, allStops.length, endpointNames) : null;
+  // A clipped leg whose train also calls before the boarding stop or after
+  // the alighting stop: a short dashed stub past that end of the line, a
+  // "+n stops" note under that end's label, and the same in words as the
+  // group's accessible description. Counts match `JourneyTimeline`'s
+  // "Earlier stops"/"Later stops" toggles.
+  const stopsBefore = legRange ? legRange.start : 0;
+  const stopsAfter = legRange ? allStops.length - 1 - legRange.end : 0;
+  const trainOrigin = allStops[0];
+  const trainTerminus = allStops[allStops.length - 1];
+  const continuationDescription = legContinuationDescription(
+    stopsBefore > 0 && trainOrigin
+      ? { name: journeyStopLabel(trainOrigin, 0, allStops.length, endpointNames), count: stopsBefore }
+      : null,
+    stopsAfter > 0 && trainTerminus
+      ? {
+          name: journeyStopLabel(trainTerminus, allStops.length - 1, allStops.length, endpointNames),
+          count: stopsAfter,
+        }
+      : null,
+  );
+  const descriptionId = useId();
+  function continuation(index: number): LegContinuation | null {
+    if (index === 0 && stopsBefore > 0) return { side: 'before', count: stopsBefore };
+    if (index === stops.length - 1 && stopsAfter > 0) return { side: 'after', count: stopsAfter };
+    return null;
+  }
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const nodeRefs = useRef<(HTMLDivElement | null)[]>([]);
   // One stable callback-ref per index, cached across renders, so a re-render
@@ -462,6 +514,7 @@ export function JourneyProgress({
         data-journey-progress-scroll
         role="group"
         aria-label={ariaLabel}
+        aria-describedby={continuationDescription ? descriptionId : undefined}
         // eslint-disable-next-line react/forbid-component-props -- stop counts known only at render time, as CSS variables
         style={{
           // Counts only -- every px measurement the diagram uses lives in
@@ -501,10 +554,19 @@ export function JourneyProgress({
               endpoint={nodeIsEndpoint(stop, index, stops.length, clipped)}
               endpointNames={endpointNames}
               nodeRef={nodeRefSetter(index)}
+              continuation={continuation(index)}
             />
           ))}
         </Box>
       </Box>
+      {/* Hidden, but still read as the group's description through
+          `aria-describedby`: shown, it would repeat what the stubs and
+          their "+n stops" notes already say. */}
+      {continuationDescription && (
+        <span id={descriptionId} hidden>
+          {continuationDescription}
+        </span>
+      )}
       <Text size="sm" c="dimmed">
         {caption}
       </Text>
@@ -535,6 +597,7 @@ function JourneyProgressNode({
   endpoint,
   endpointNames,
   nodeRef,
+  continuation = null,
 }: {
   stop: JourneyStop;
   index: number;
@@ -545,6 +608,9 @@ function JourneyProgressNode({
   endpoint: boolean;
   endpointNames: JourneyEndpointNames | undefined;
   nodeRef: (el: HTMLDivElement | null) => void;
+  /** Set on a clipped leg's boarding or alighting node when the train also
+   * calls beyond it on that side. */
+  continuation?: LegContinuation | null;
 }) {
   const diameter = nodeDiameter(endpoint);
   const state = nodeState(index, lastIndex, status, stop);
@@ -627,12 +693,22 @@ function JourneyProgressNode({
   // `flex` shorthand races the media query.
   if (endpoint) {
     return (
-      <Box className="journeyProgressNode journeyProgressNode--endpoint" data-journey-node-slot="endpoint">
+      <Box
+        className="journeyProgressNode journeyProgressNode--endpoint"
+        data-journey-node-slot="endpoint"
+        data-leg-continues={continuation?.side}
+      >
         {circleSlot}
         {glyph}
         <Text size="xs" fw={700} ta="center" className="journeyProgressLabel">
           {label}
         </Text>
+        {/* `aria-hidden`: the group's description says it in full. */}
+        {continuation && (
+          <Text size="xs" c="dimmed" ta="center" aria-hidden="true" data-leg-continues-note>
+            +{stopCount(continuation.count)}
+          </Text>
+        )}
         {/* Compact badge, not the full `ScheduleRow` list-row component --
             this is a dense schematic diagram, not a list, so
             `PlatformBadge` alone (already the smallest, colour+text unit
