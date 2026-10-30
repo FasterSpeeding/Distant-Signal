@@ -22,7 +22,7 @@ import { pageMetadata } from '@/lib/pageMetadata';
  * Title matches the page's own `<h1>` ("Track a Train"). This route has no
  * nav label of its own to agree with: it sits under the nav's one "Journeys"
  * entry (`lib/navLinks.ts`'s `JOURNEYS_DESTINATION`), and is NOT redirected
- * to `/journeys/new` because several narrower flows still land here on
+ * to `/plan` because several narrower flows still land here on
  * purpose, each wanting exactly this single pre-filled leg-1 form and
  * nothing past it -- `/trains`' manual-fallback link, `/stations/[crs]`,
  * `TicketEntryForm`, and `trackAgainHref`'s "Track this journey again" --

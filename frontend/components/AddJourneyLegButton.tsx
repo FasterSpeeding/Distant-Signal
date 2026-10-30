@@ -114,7 +114,7 @@ export function AddJourneyLegButton({
    * there to chain from or its arrival isn't known: the service date then
    * defaults to London's today and the earliest departure stays empty. */
   priorArrival?: LondonDateTime | null;
-  /** `JourneyCreationFlow.tsx`'s (the `/journeys/new` continuous
+  /** `JourneyCreationFlow.tsx`'s (the `/plan` continuous
    * multi-leg creation page) only caller of this prop: that page keeps
    * the journey it's building as local client state (`fetch`ed from
    * `GET /api/Journeys/{id}` after each leg), not as a server-rendered

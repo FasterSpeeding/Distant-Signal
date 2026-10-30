@@ -404,7 +404,7 @@ describe('AddJourneyLegButton', () => {
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
   });
 
-  // `JourneyCreationFlow` (the `/journeys/new` continuous creation page)
+  // `JourneyCreationFlow` (the `/plan` continuous creation page)
   // reuses this button to chain leg 2+ onto a journey that only exists as
   // local client state there -- there is no server-rendered journey page
   // for `router.refresh()` to re-pull, so it needs the added leg's own

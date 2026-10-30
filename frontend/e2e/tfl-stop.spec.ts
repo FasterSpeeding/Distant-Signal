@@ -59,7 +59,9 @@ test.describe('TfL stop page', () => {
   test('"Add as a journey leg" opens the Tube form at the stop', async ({ page }) => {
     await page.goto('/tfl/stops/940GZZLUKSX');
     await page.getByRole('link', { name: 'Add as a journey leg' }).click();
-    await expect(page).toHaveURL(/\/journeys\/new\?fromTflStop=940GZZLUKSX$/);
+    await expect(page).toHaveURL(/\/plan\?fromTflStop=940GZZLUKSX$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Plan a journey' })).toBeVisible();
+    await expect(page.getByRole('radio', { name: 'Tube, bus or walk' })).toBeChecked();
     await expect(page.getByRole('combobox', { name: 'From (optional)' })).toHaveValue("King's Cross St. Pancras");
   });
 });

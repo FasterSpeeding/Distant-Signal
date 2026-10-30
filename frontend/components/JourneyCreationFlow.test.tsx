@@ -9,7 +9,7 @@ const pushMock = vi.fn();
 const refreshMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock, refresh: refreshMock }),
-  usePathname: () => '/journeys/new',
+  usePathname: () => '/plan',
   useSearchParams: () => new URLSearchParams(''),
 }));
 
@@ -115,7 +115,17 @@ describe('JourneyCreationFlow', () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<JourneyCreationFlow initialEntryMode="known" />);
     expect(screen.getByRole('button', { name: /Track this train/ })).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /journey/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'View journey' })).not.toBeInTheDocument();
+  });
+
+  // DS-194: the ways in with a page of their own, under the options.
+  it('links to a train search, a ticket and journey templates before leg 1 exists', () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(<JourneyCreationFlow />);
+    expect(screen.getByText('Other ways to start:')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');
+    expect(screen.getByRole('link', { name: 'Add a ticket' })).toHaveAttribute('href', '/track/mine/add-ticket');
+    expect(screen.getByRole('link', { name: 'Journey templates' })).toHaveAttribute('href', '/journeys/templates');
   });
 
   describe('the option it opens on', () => {

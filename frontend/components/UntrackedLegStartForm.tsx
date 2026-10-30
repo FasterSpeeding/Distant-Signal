@@ -15,7 +15,7 @@ import { londonToday } from '@/lib/londonWallClock';
 import type { CreateJourneyResponse, TransitMode } from '@/lib/types';
 
 /** Where an untracked first leg starts when the page was opened from a TfL
- * stop's "Add as a journey leg" (`/journeys/new?fromTflStop=...`). */
+ * stop's "Add as a journey leg" (`/plan?fromTflStop=...`). */
 export interface UntrackedLegOrigin {
   stopId: string;
   name: string;
@@ -23,7 +23,7 @@ export interface UntrackedLegOrigin {
 }
 
 /** Starts a journey with an untracked leg (a Tube ride, a bus, a walk) on
- * `/journeys/new`: the "Tube, bus or walk" option (spec
+ * `/plan`: the "Tube, bus or walk" option (spec
  * docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md
  * §2.3), for a trip that begins away from the railway. `POST /Journeys`
  * with `mode: "untracked"`, then hands the new journey to `onCreated`, as

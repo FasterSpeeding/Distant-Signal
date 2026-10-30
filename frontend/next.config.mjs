@@ -99,6 +99,15 @@ const nextConfig = {
         destination: '/journeys',
         permanent: true,
       },
+      // "New journey" (`/journeys/new`) merged into "Plan a journey"
+      // (`/plan`) in DS-194. Next passes the query through unchanged, and
+      // `/plan` reads every parameter the old page did (`?mode=`,
+      // `?fromTflStop=`), so old links and bookmarks open the same option.
+      {
+        source: '/journeys/new',
+        destination: '/plan',
+        permanent: true,
+      },
       // Train pushes linked to `/track/{id}`, a page that never existed,
       // until 22 Oct 2026; this keeps the links already sent working.
       {

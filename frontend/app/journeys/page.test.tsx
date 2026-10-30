@@ -130,25 +130,26 @@ describe('JourneysPage', () => {
     );
   });
 
-  it('null (not logged in): offers New journey first, then the two things that need no account', async () => {
+  it('null (not logged in): offers Plan a journey first, as a button, then a train search', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
     vi.mocked(api.getMyTickets).mockResolvedValue(null);
     renderWithMantine(await JourneysPage());
-    const newJourney = screen.getByRole('link', { name: 'New journey' });
-    expect(newJourney).toHaveAttribute('href', '/journeys/new');
+    const newJourney = screen.getByRole('link', { name: 'Plan a journey' });
+    expect(newJourney).toHaveAttribute('href', '/plan');
     expect(newJourney).toHaveClass('mantine-Button-root');
     expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');
-    expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
+    // One way in to the planner, not a button and a link as before DS-194.
+    expect(screen.getAllByRole('link', { name: 'Plan a journey' })).toHaveLength(1);
     expect(screen.queryByRole('link', { name: 'Add a ticket' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Upcoming' })).toBeNull();
   });
 
-  it('no trains and no tickets: shows the empty state, under the New journey button', async () => {
+  it('no trains and no tickets: shows the empty state, under the Plan a journey button', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await JourneysPage());
     expect(screen.getByText(/You have no journeys yet/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');
+    expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
     expect(screen.queryByRole('heading', { name: 'Upcoming' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Past' })).toBeNull();
   });
@@ -419,13 +420,13 @@ describe('JourneysPage', () => {
     expect(screen.queryByText('Your reliability')).not.toBeInTheDocument();
   });
 
-  it('heads the page Journeys, with New journey and every other way to start beside it', async () => {
+  it('heads the page Journeys, with Plan a journey and every other way to start beside it', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await JourneysPage());
     expect(screen.getByRole('heading', { level: 1, name: 'Journeys' })).toBeInTheDocument();
-    const newJourney = screen.getByRole('link', { name: 'New journey' });
-    expect(newJourney).toHaveAttribute('href', '/journeys/new');
+    const newJourney = screen.getByRole('link', { name: 'Plan a journey' });
+    expect(newJourney).toHaveAttribute('href', '/plan');
     expect(newJourney).toHaveClass('mantine-Button-root');
     expect(screen.queryByRole('link', { name: 'Track a journey' })).toBeNull();
     expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');

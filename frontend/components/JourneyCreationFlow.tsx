@@ -18,11 +18,18 @@ import { isUntrackedLeg, untrackedLegPlaces, untrackedLegTitle } from '@/lib/unt
 import { routeLabel } from '@/lib/stationLabel';
 import type { CreateJourneyResponse, JourneyDetail, TrainSearchDates } from '@/lib/types';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
-import { DEFAULT_JOURNEY_ENTRY_MODE, type JourneyEntryMode, type KnownRouteMode } from '@/lib/journeyEntryMode';
+import {
+  DEFAULT_JOURNEY_ENTRY_MODE,
+  entryModeSearch,
+  type JourneyEntryMode,
+  type KnownRouteMode,
+} from '@/lib/journeyEntryMode';
+import { TextLink } from '@/components/TextLink';
 import { LoadingText } from '@/components/LoadingText';
 
-/** The `/journeys/new` page's own interactive body -- see that page's doc
- * comment for the design this component is the engine of. Two states:
+/** The body of `/plan`, "Plan a journey" (it was `/journeys/new`'s until
+ * DS-194 merged that page into this one) -- see that page's doc comment
+ * for the design this component is the engine of. Two states:
  *
  * 1. `journeyId === null` -- nothing exists yet. Renders `TrackTrainForm`
  *    completely unmodified except for one new prop (`onCreated`), which
@@ -59,21 +66,23 @@ import { LoadingText } from '@/components/LoadingText';
  * without a fetched `JourneyDetail` -- but a Retry button offers a way
  * out of that narrower gap without losing the journey itself.
  *
- * `planOnly` is `/plan`'s mode: the planner straight away, with no "I know
- * my route" toggle (that page's job is planning; "Track a Journey" is one
- * link away). `planOrigin` pre-fills the planner's From field, for
- * `/plan?from=CRS` links such as a station page's "Plan a journey from
- * here". Both leave the after-creation view above unchanged.
+ * `planOrigin` pre-fills the planner's From field, for `/plan?origin=CRS`
+ * links such as a station page's "Plan a journey from here", and
+ * `planQuery` restores a whole search from the URL. The planner writes each
+ * search back into the address bar (`syncUrl`), so a planned route can be
+ * shared or bookmarked.
  *
  * `initialEntryMode` is the option selected on first render: the planner
  * unless the page's `?mode=` named another (`lib/journeyEntryMode.ts`).
  * An `untrackedOrigin` overrides it with "Tube, bus or walk".
  * `knownRouteMode` opens "I know my route" on `TrackTrainForm`'s pick or
- * window half. */
+ * window half. Switching option writes `?mode=` into the address bar
+ * (`history.replaceState`, no navigation), so a shared link opens on the
+ * same option. Under the options, links start a journey the other ways
+ * the page has no form for: a train search, a ticket, a journey template. */
 export function JourneyCreationFlow({
   initialEntryMode = DEFAULT_JOURNEY_ENTRY_MODE,
   knownRouteMode,
-  planOnly = false,
   planOrigin,
   planQuery,
   planSearchDates,
@@ -81,24 +90,21 @@ export function JourneyCreationFlow({
 }: {
   initialEntryMode?: JourneyEntryMode;
   knownRouteMode?: KnownRouteMode | undefined;
-  planOnly?: boolean;
   planOrigin?: string | undefined;
-  /** `/plan` only: the search its URL restores (`lib/tripPlanUrl.ts`). */
+  /** The search the page's URL restores (`lib/tripPlanUrl.ts`). */
   planQuery?: PlanFormInitial | undefined;
   /** The planner's date range (`GET /public/trains/search/dates`), read by
-   * the page on the server -- both `/plan` and `/journeys/new` pass it. */
+   * the page on the server. */
   planSearchDates?: TrainSearchDates | null | undefined;
-  /** `/journeys/new?fromTflStop=...` (a TfL stop page's "Add as a journey
-   * leg"): opens on the "Tube, bus or walk" form, starting at that stop. */
+  /** `/plan?fromTflStop=...` (a TfL stop page's "Add as a journey leg"):
+   * opens on the "Tube, bus or walk" form, starting at that stop. */
   untrackedOrigin?: UntrackedLegOrigin | null | undefined;
 } = {}) {
   const [journeyId, setJourneyId] = useState<number | null>(null);
   const [journey, setJourney] = useState<JourneyDetail | null>(null);
   const [loadingJourney, setLoadingJourney] = useState(false);
   const [journeyLoadError, setJourneyLoadError] = useState(false);
-  const [entryMode, setEntryMode] = useState<JourneyEntryMode>(
-    planOnly ? 'plan' : untrackedOrigin ? 'untracked' : initialEntryMode,
-  );
+  const [entryMode, setEntryMode] = useState<JourneyEntryMode>(untrackedOrigin ? 'untracked' : initialEntryMode);
   const entryModeLabelId = useId();
 
   async function refreshJourney(id: number) {
@@ -128,16 +134,10 @@ export function JourneyCreationFlow({
     if (journeyId !== null) void refreshJourney(journeyId);
   }
 
-  if (journeyId === null && planOnly) {
-    return (
-      <PlanTripFlow
-        onCreated={handleLegOneCreated}
-        initialOriginCrs={planOrigin}
-        initialQuery={planQuery}
-        searchDates={planSearchDates}
-        syncUrl
-      />
-    );
+  function changeEntryMode(value: JourneyEntryMode) {
+    setEntryMode(value);
+    const search = entryModeSearch(window.location.search, value);
+    window.history.replaceState(null, '', `${window.location.pathname}${search}`);
   }
 
   if (journeyId === null) {
@@ -165,7 +165,7 @@ export function JourneyCreationFlow({
           className="ds-entry-mode-control"
           aria-labelledby={entryModeLabelId}
           value={entryMode}
-          onChange={(value) => setEntryMode(value)}
+          onChange={(value) => changeEntryMode(value)}
           withItemsBorders={false}
           data={[
             // The default first (`DEFAULT_JOURNEY_ENTRY_MODE`).
@@ -193,10 +193,29 @@ export function JourneyCreationFlow({
             {...(knownRouteMode === undefined ? {} : { initialMode: knownRouteMode })}
           />
         )}
-        {entryMode === 'plan' && <PlanTripFlow onCreated={handleLegOneCreated} searchDates={planSearchDates} />}
+        {entryMode === 'plan' && (
+          <PlanTripFlow
+            onCreated={handleLegOneCreated}
+            initialOriginCrs={planOrigin}
+            initialQuery={planQuery}
+            searchDates={planSearchDates}
+            syncUrl
+          />
+        )}
         {entryMode === 'untracked' && (
           <UntrackedLegStartForm onCreated={handleLegOneCreated} origin={untrackedOrigin} />
         )}
+        {/* The ways in that have a page of their own rather than a form
+            here. Shown to everyone: each page asks a logged-out visitor to
+            log in itself. */}
+        <Group gap="md" align="center">
+          <Text size="sm" c="dimmed">
+            Other ways to start:
+          </Text>
+          <TextLink href="/trains">Find a train</TextLink>
+          <TextLink href="/track/mine/add-ticket">Add a ticket</TextLink>
+          <TextLink href="/journeys/templates">Journey templates</TextLink>
+        </Group>
       </Stack>
     );
   }

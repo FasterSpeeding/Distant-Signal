@@ -80,7 +80,7 @@ describe('/tfl/stops/[id]', () => {
     );
     expect(screen.getByRole('link', { name: 'Add as a journey leg' })).toHaveAttribute(
       'href',
-      '/journeys/new?fromTflStop=940GZZLUKSX',
+      '/plan?fromTflStop=940GZZLUKSX',
     );
 
     cleanup();
