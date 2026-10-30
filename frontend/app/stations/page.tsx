@@ -18,17 +18,15 @@ import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
  * `/trains` follow.
  *
  * The description reaches past this page into what a result actually shows
- * (`app/stations/[crs]/page.tsx`: disruptions, scheduled departures,
- * per-operator sample stats, and accessibility & facilities) rather than
+ * (`app/stations/[crs]/page.tsx`: disruptions, per-operator sample stats,
+ * accessibility & facilities, and a link to the station's departures on
+ * the train search) rather than
  * only restating the search box, because "search for a station" alone says
  * nothing about why a reader would want to. Keep it in step with that page
  * if its sections change.
  *
- * Two words in it are load-bearing and must not be "tightened" into
- * something snappier: "scheduled" departures, because `StationTimetable`
- * disclaims in so many words that its rows are "from the scheduled
- * timetable, not live running information"; and "delay and cancellation
- * stats" rather than "punctuality", because that section is an LDBWS
+ * "Delays" rather than "punctuality" is load-bearing and must not be
+ * "tightened" into something snappier, because that section is an LDBWS
  * SAMPLE (headed "Sample stats by operator", and a station can be outside
  * the sampling entirely), not a punctuality record. */
 const METADATA_TITLE = 'Stations';

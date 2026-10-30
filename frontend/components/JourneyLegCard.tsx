@@ -292,7 +292,7 @@ export function JourneyLegCard({
                 throughs to the train entries for each leg" -- this was
                 previously a plain, unlinked `Text`, even though every
                 other per-train reference in the app (the `ServiceRow` links
-                of `JourneyLegCandidates`/`StationTimetable`/`TrainSearchForm`/
+                of `JourneyLegCandidates`/`TrainSearchForm`/
                 `LineTrainsResults`) already points here. Gated on
                 `state.trainUid` alone, same as the plain-text version this
                 replaces: `trackedTrainState !== null` (the branch this card
