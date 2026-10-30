@@ -3,6 +3,35 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-30: Tube rides change trains when quicker, and use a station's other stops
+
+Additive. DS-MCP can show `boardStop` and `alightStop` where present; the
+numbers are better (DS-191; `crates/api/src/data/tfl_access.rs`).
+
+- `GET /Trips/plan` with a TfL stop end: a ride measured along TfL's
+  routes changed trains (`changeAt`) only where no one train goes. Round a
+  loop, one train goes almost everywhere: Paddington to Liverpool Street
+  came out as one Circle train round by Victoria, 13 km and 31 minutes,
+  and Paddington to King's Cross 38. A ride with one change is now taken
+  whenever its minutes, the change's 10 included, are fewer than one
+  train's (Paddington to Liverpool Street with a change at Edgware Road,
+  30); a tie keeps the one train. Still at most one change, never at
+  either end.
+- A stop's station may have other stop areas: stops of one TfL hub within
+  400 m (Paddington and Paddington (H&C Line), Hammersmith's two, Bank's
+  DLR and Tube stops). A ride from or to a stop may now start or end at
+  one of them, its `minutes` including the walk between the two.
+  Paddington to Liverpool Street is the Hammersmith & City or Circle from
+  Paddington (H&C Line): 5 to walk there, 20 riding, 25 in all, no change;
+  Paddington to King's Cross is about 19.
+- New on candidates (`access.origin.candidates[]`,
+  `access.destination.candidates[]`) and on an access leg's `access`:
+  `boardStop` (the stop the ride is boarded at, when it is not the plan's
+  own stop end but another stop of its station) and `alightStop` (likewise
+  where the ride is left), each a stop (`id`, `name`, `modes`, `lines`),
+  absent otherwise. The leg's `originStop` and `destinationStop` stay the
+  plan's own stops. A line candidate's `stationStop` is unchanged.
+
 ## 2026-10-29: Tube rides without route data no longer go round loops
 
 No shape change. DS-MCP needs nothing new; the numbers are better (DS-187;
