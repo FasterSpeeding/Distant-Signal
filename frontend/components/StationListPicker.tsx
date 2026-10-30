@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useRef, useState } from 'react';
-import { ActionIcon, Autocomplete, Group, Stack, Text, VisuallyHidden } from '@mantine/core';
+import { ActionIcon, Autocomplete, Group, Stack, Text, VisuallyHidden, type ComboboxProps } from '@mantine/core';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { codeStationLabel, isTiplocCode, normalizeLocationCode, parseGroupCode } from '@/lib/stationLabel';
@@ -87,6 +87,7 @@ export function StationListPicker({
   allowGroups = false,
   error,
   itemNoun,
+  comboboxProps,
 }: {
   label: string;
   description?: React.ReactNode;
@@ -109,6 +110,10 @@ export function StationListPicker({
   error?: string | null | undefined;
   /** What one row is, for the buttons' names, e.g. "via" or "avoided station". */
   itemNoun: string;
+  /** Passed to the `Autocomplete`: `{ withinPortal: false }` inside a
+   * popover (the `/trains` Filters panel), where a portalled option list
+   * would count as outside it and close it. */
+  comboboxProps?: ComboboxProps | undefined;
 }) {
   const [query, setQuery] = useState('');
   const [announcement, setAnnouncement] = useState('');
@@ -184,6 +189,7 @@ export function StationListPicker({
           </>
         }
         placeholder={full ? 'List full' : 'Add a station'}
+        {...(comboboxProps && { comboboxProps })}
         value={query}
         disabled={full}
         error={shownError}

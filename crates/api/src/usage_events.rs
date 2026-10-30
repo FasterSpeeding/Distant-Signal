@@ -307,6 +307,12 @@ pub const FEATURE_STEPS: &[(&str, &[&str])] = &[
             "failed",
         ],
     ),
+    // A `/trains` search with that advanced option set: its kind only,
+    // never the stations.
+    (
+        "trains_filters",
+        &["calls_at", "via", "avoid", "avoid_stop"],
+    ),
     // The planner's "Compare options": a search with it on, and an option
     // other than the fastest chosen, then saved as a journey.
     (
@@ -349,6 +355,7 @@ const FEATURES: &[&str] = &[
     "chat",
     "connected_app",
     "trains",
+    "trains_filters",
     "compare_options",
     "shared_journeys",
     "leg_stops",
