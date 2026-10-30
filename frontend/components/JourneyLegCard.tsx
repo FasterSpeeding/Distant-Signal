@@ -341,6 +341,7 @@ export function JourneyLegCard({
         <TrainJourney
           state={state}
           skippedCrs={skippedCrs}
+          legOriginCrs={leg.originCrs}
           legDestinationCrs={leg.destinationCrs}
           suppressTrainUidHeading
         />
