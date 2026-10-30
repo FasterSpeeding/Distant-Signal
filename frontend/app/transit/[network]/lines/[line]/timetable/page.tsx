@@ -122,7 +122,7 @@ export default async function TransitTimetablePage({ params, searchParams }: Par
         </Group>
       </Stack>
 
-      <TransitLineTimetable timetable={timetable} />
+      <TransitLineTimetable network={network} timetable={timetable} />
 
       <TransitAttributionNote network={detail} />
     </Stack>
