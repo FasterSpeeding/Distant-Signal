@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation';
 import { Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
-import { ApiNotFoundError, getAllTocs, getIncident, getStationName } from '@/lib/api';
+import { ApiNotFoundError, getAllTocs, getIncident, getPreviewTocs, getStationName } from '@/lib/api';
 import { endedDescription, incidentState, upcomingDescription, validityEndedDescription } from '@/lib/incidents';
 import { sanitizeDescription } from '@/lib/sanitizeHtml';
 import { IncidentStateBadge } from '@/components/IncidentStateBadge';
@@ -12,7 +12,13 @@ import { formatDateTime, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import { operatorLabel, tocNameLookup } from '@/lib/displayLabels';
 import { stationLabel } from '@/lib/stationLabel';
 import type { IncidentDetail, IncidentHistoryEntry, ValidityPeriod } from '@/lib/types';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { pageMetadata, SITE_NAME } from '@/lib/pageMetadata';
+import {
+  incidentPreviewAlt,
+  incidentPreviewCard,
+  incidentPreviewDescription,
+  incidentPreviewImage,
+} from '@/lib/incidentPreview';
 import { StateBadge } from '@/components/StateBadge';
 
 // Same rationale as every dynamic `[param]` route in this app: without
@@ -66,16 +72,17 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     throw err;
   }
 
-  const title = incident.summary;
-  const kind = incident.isPlanned ? 'Planned work' : 'Real-Time';
-  const affectedLines = incident.currentlyAffectsLines.map((line) => line.name);
-  const description =
-    affectedLines.length > 0
-      ? `${kind} incident affecting ${affectedLines.join(', ')}.`
-      : `${kind} incident: ${incident.summary}.`;
+  // The description names operators, not codes: the hour-long shared read
+  // the preview image uses too, so it is almost never an api call at all.
+  const operatorNames = tocNameLookup(await getPreviewTocs().catch(() => []));
+  const card = incidentPreviewCard(incident, { operatorNames, now: Date.now() });
 
   // One incident, gone within hours: worth following, not worth indexing.
-  return pageMetadata(title, description, { noindex: true });
+  // Its preview image is its own (`card.png`), versioned by what it shows.
+  return pageMetadata(incident.summary, incidentPreviewDescription(incident, operatorNames), {
+    noindex: true,
+    image: incidentPreviewImage(incident, incidentPreviewAlt(card, SITE_NAME)),
+  });
 }
 
 export default async function IncidentDetailPage({ params }: { params: Promise<{ id: string }> }) {

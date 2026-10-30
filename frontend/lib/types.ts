@@ -2038,7 +2038,20 @@ export interface TripPlanItinerary {
   continuesPreviousTrain?: boolean;
   /** Any leg is a transit leg, whose times are scheduled, not live. */
   scheduledOnly?: boolean;
+  /** `results=options` only (2026-10-30, DS-196): what this option is.
+   * The same on every segment's part of one journey. */
+  labels?: TripPlanOptionLabel[];
 }
+
+/** One label of a `results=options` journey (DS-196): the fastest
+ * (`leavesLatest` for an arrive-by plan), the fewest changes, or an
+ * alternative route, with the station that tells it apart (`viaCrs`,
+ * `null` when none does). */
+export type TripPlanOptionLabel =
+  | { kind: 'fastest' }
+  | { kind: 'leavesLatest' }
+  | { kind: 'fewestChanges' }
+  | { kind: 'alternative'; viaCrs: string | null };
 
 /** One whole journey: `segments[s].itineraries[j]` for every segment `s`,
  * with its end-to-end change count. */
@@ -2056,6 +2069,8 @@ export interface TripPlanJourney {
    * 2026-10-07): one entry per waypoint, in order -- where the journey
    * stopped for it. */
   waypointSatisfiedBy?: TripPlanWaypointSatisfied[];
+  /** `results=options` only (DS-196): see `TripPlanItinerary.labels`. */
+  labels?: TripPlanOptionLabel[];
 }
 
 /** Where a journey stopped for one of the request's waypoints

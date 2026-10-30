@@ -9,7 +9,7 @@ import { test, expect, type Page } from '@playwright/test';
 // (whose first day is today) keeps the date the URL restores.
 //
 // `/Trips/plan` is rate limited per client (20 a minute, burst 10), so the
-// whole file makes nine plan requests.
+// whole file makes ten plan requests.
 
 const FIXED_NOW = new Date('2026-09-17T06:00:00Z'); // 07:00 in London
 
@@ -102,6 +102,22 @@ test('an arrival just after midnight searches both dates', async ({ page }) => {
   expect(sent.get('acrossMidnight')).toBe('true');
   await expect(page.getByTestId('plan-timing-summary')).toHaveText('Arrive by 00:50, 18 Sep 2026');
   await expect(page.getByText(/^00:10 .*00:40$/)).toBeVisible();
+});
+
+// Compare options (DS-196): the seed's "Two routes for /plan's Compare
+// options", ZOA to ZOD, fast via ZOS and 20 minutes slower via ZOC.
+test('compare options lists another route besides the fastest, labelled', async ({ page }) => {
+  await openPlan(page, 'origin=ZOA&destination=ZOD&date=2026-09-17&departAfter=07:30');
+  await page.getByText('Compare options', { exact: true }).click();
+  const response = await findRoutes(page);
+  expect(new URL(response.url()).searchParams.get('results')).toBe('options');
+
+  const cards = page.locator('[data-plan-entry]');
+  await expect(cards).toHaveCount(2);
+  await expect(cards.nth(0).getByText(/^08:00 .*09:00$/)).toBeVisible();
+  await expect(cards.nth(0).getByText('Fastest', { exact: true })).toBeVisible();
+  await expect(cards.nth(1).getByText(/^08:05 .*09:20$/)).toBeVisible();
+  await expect(cards.nth(1).getByText(/^Via /)).toBeVisible();
 });
 
 // Rail, tram, rail (transit trip planning §11): the seed's "A rail, tram,

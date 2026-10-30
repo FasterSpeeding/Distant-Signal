@@ -113,6 +113,11 @@ impl Vias {
         }
     }
 
+    /// Every TIPLOC any via covers (normalized).
+    pub fn all_tiplocs(&self) -> impl Iterator<Item = &String> {
+        self.targets.iter().flatten()
+    }
+
     pub fn len(&self) -> usize {
         self.targets.len()
     }

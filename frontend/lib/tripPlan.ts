@@ -4,6 +4,7 @@ import type {
   TripPlanItinerary,
   TripPlanLeg,
   TripPlanNoResultReason,
+  TripPlanOptionLabel,
   TripPlanResponse,
   TripPlanViaSatisfied,
   TripPlanWaypointSatisfied,
@@ -42,6 +43,11 @@ export function collectTripPlanStationCodes(response: TripPlanResponse): string[
         if (leg.originCrs) codes.add(leg.originCrs);
         if (leg.destinationCrs) codes.add(leg.destinationCrs);
       }
+      // An alternative's distinguishing station (DS-196) may be a call no
+      // leg names.
+      for (const label of itinerary.labels ?? []) {
+        if (label.kind === 'alternative' && label.viaCrs) codes.add(label.viaCrs);
+      }
     }
     for (const value of segment.noResultReason?.values ?? []) codes.add(value);
   }
@@ -53,6 +59,23 @@ export function collectTripPlanStationCodes(response: TripPlanResponse): string[
     }
   }
   return Array.from(codes).filter(isStationCode);
+}
+
+/** What a "Compare options" label says (DS-196): "Fastest", "Leaves
+ * latest", "Fewest changes", or an alternative route's "Via London
+ * Marylebone" ("Other route" when no station tells it apart). `nameOf`
+ * resolves a station code to its name. */
+export function optionLabelText(label: TripPlanOptionLabel, nameOf: (code: string) => string): string {
+  switch (label.kind) {
+    case 'fastest':
+      return 'Fastest';
+    case 'leavesLatest':
+      return 'Leaves latest';
+    case 'fewestChanges':
+      return 'Fewest changes';
+    case 'alternative':
+      return label.viaCrs ? `Via ${nameOf(label.viaCrs)}` : 'Other route';
+  }
 }
 
 /** The names of a plan's TfL stop ends (DS-135), by stop id, from its

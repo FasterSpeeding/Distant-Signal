@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
   buildTripPlanQuery,
   collectTripPlanStationCodes,
+  optionLabelText,
   countAdvancedOptions,
   fetchTripPlan,
   isTooLargeSearchError,
@@ -229,6 +230,51 @@ describe('collectTripPlanStationCodes', () => {
 
   it('returns an empty array for a plan with no segments', () => {
     expect(collectTripPlanStationCodes({ results: 'fastest', segments: [] })).toEqual([]);
+  });
+});
+
+describe('Compare options labels (DS-196)', () => {
+  const nameOf = (code: string) => (code === 'MYB' ? 'London Marylebone' : code);
+
+  it('says what each label is', () => {
+    expect(optionLabelText({ kind: 'fastest' }, nameOf)).toBe('Fastest');
+    expect(optionLabelText({ kind: 'leavesLatest' }, nameOf)).toBe('Leaves latest');
+    expect(optionLabelText({ kind: 'fewestChanges' }, nameOf)).toBe('Fewest changes');
+    expect(optionLabelText({ kind: 'alternative', viaCrs: 'MYB' }, nameOf)).toBe('Via London Marylebone');
+    expect(optionLabelText({ kind: 'alternative', viaCrs: null }, nameOf)).toBe('Other route');
+  });
+
+  it("collects an alternative's station for the name lookup", () => {
+    const response: TripPlanResponse = {
+      results: 'options',
+      segments: [
+        {
+          originCrs: 'EUS',
+          destinationCrs: 'MAN',
+          cappedByMaxChanges: false,
+          itineraries: [
+            {
+              legs: [
+                {
+                  kind: 'train',
+                  trainUid: 'A1',
+                  serviceDate: '2026-10-30',
+                  originCrs: 'EUS',
+                  destinationCrs: 'MAN',
+                  scheduledDeparture: '09:00:00',
+                  scheduledArrival: '11:10:00',
+                  arrivalDayOffset: 0,
+                },
+              ],
+              changeCount: 0,
+              totalDurationMinutes: 130,
+              labels: [{ kind: 'alternative', viaCrs: 'CRE' }],
+            },
+          ],
+        },
+      ],
+    };
+    expect(new Set(collectTripPlanStationCodes(response))).toEqual(new Set(['EUS', 'MAN', 'CRE']));
   });
 });
 

@@ -392,14 +392,32 @@ used, rather than as a literal in a component.
 - **Link previews** (`lib/previewImage.tsx`): a route's `opengraph-image.tsx`
   renders its own title on the brand template (the bare arm and the name,
   the title below, on a grape 7 to 9 gradient). Static pages pass their
-  `metadata`; a line or station passes its own `generateMetadata`, so the
-  two can't disagree. Titles never come from the request. Every other
+  `metadata`, so the two can't disagree. Titles never come from the
+  request. Every other
   route falls back to `public/opengraph-image.png`, the template's no-title
   form. A route with its own image passes `OWN_PREVIEW_IMAGE` to
   `pageMetadata`: an explicit card image would otherwise win over it.
   The bare arm is cropped to `signalMarkBounds` (the shape's own extent,
   raised fishtail tip included), never a hand-picked box. Re-save
   `public/opengraph-image.png` whenever the template or the mark changes.
+- **Live link previews** (`lib/livePreview.ts`): an incident, a line and
+  a station have a card drawn from live data (`renderStatusPreviewImage`,
+  mapped by `lib/incidentPreview.ts`, `lib/linePreview.ts` and
+  `lib/stationPreview.ts`, served from `{page}/card.png`). A band in the
+  severity pill's colours names the state in words ("Minor delays",
+  "Disruption in progress", "Cleared") with its time ("As of ...",
+  "Updated ..."); below it the wordmark, the title clamped to three lines,
+  what is wrong, line chips and one-line facts. A line or station card
+  ends "A snapshot in UK time: open the page for live status". The page
+  lists the card itself with `?v=`, a digest of the state it shows (never
+  a timestamp), so a new state is a new URL in chat apps that cache
+  images; it is not an `opengraph-image.tsx`, whose URL can't carry that.
+  `og:description` stays evergreen; the live part is in the image only.
+  The routes read through the "Reads for link-preview images" in
+  `lib/api.ts` (anonymous, no client IP, shared for a minute) and
+  regenerate the PNG at most once a minute. No departures on a station
+  card: they go stale in minutes and a chat app shows the card for hours.
+  Sample cards: `frontend/test/fixtures/preview-cards/`.
 - **Preferences** (`app/account/preferences/page.tsx`): open to everyone,
   never a redirect. Each section is a `PreferencesSection` card.
   - Device-local, no account needed: Appearance (colour theme, pride
