@@ -75,6 +75,55 @@ describe('TransitDisruptions', () => {
     expect(links[0]!.getAttribute('href')).toBe('https://example.invalid/s1');
   });
 
+  it('links each stop a disruption names to its stop page', () => {
+    renderWithMantine(
+      <TransitDisruptions
+        situations={SITUATIONS}
+        empty="None."
+        network="metrolink"
+        stopNames={{ '9400ZZMAPIC': 'Piccadilly' }}
+      />,
+    );
+    const lift = within(screen.getByRole('list', { name: 'Disruptions now' }))
+      .getAllByRole('listitem')
+      .find((item) => item.textContent.includes(LIFT.summary))!;
+    expect(lift.textContent).toContain('At Piccadilly');
+    expect(within(lift).getByRole('link', { name: 'Piccadilly' }).getAttribute('href')).toBe(
+      '/transit/metrolink/stops/9400ZZMAPIC',
+    );
+    // A line disruption names no stops, so links none (bar "More details").
+    const delay = within(screen.getByRole('list', { name: 'Disruptions now' }))
+      .getAllByRole('listitem')
+      .find((item) => item.textContent.includes(DELAY.summary))!;
+    expect(
+      within(delay)
+        .getAllByRole('link')
+        .map((a) => a.textContent),
+    ).toEqual(['More details']);
+  });
+
+  it('lists several stops, and leaves out a stop it has no name for', () => {
+    const works = { ...LIFT, id: 'S9', stops: ['9400ZZMAPIC', '9400ZZMAGMX', '9400ZZMAECC', '9400ZZMAXXX'] };
+    renderWithMantine(
+      <TransitDisruptions
+        situations={{ ...SITUATIONS, current: [works], upcoming: [] }}
+        empty="None."
+        network="metrolink"
+        stopNames={{ '9400ZZMAPIC': 'Piccadilly', '9400ZZMAGMX': 'Deansgate-Castlefield', '9400ZZMAECC': 'Eccles' }}
+      />,
+    );
+    expect(screen.getByText(/^At /).textContent).toBe('At Piccadilly, Deansgate-Castlefield and Eccles');
+    expect(screen.getByRole('link', { name: 'Eccles' }).getAttribute('href')).toBe(
+      '/transit/metrolink/stops/9400ZZMAECC',
+    );
+  });
+
+  it('links no stops without a network, as on a stop page', () => {
+    renderWithMantine(<TransitDisruptions situations={SITUATIONS} empty="None." />);
+    expect(screen.queryByRole('link', { name: 'Piccadilly' })).toBeNull();
+    expect(screen.queryByText(/^At /)).toBeNull();
+  });
+
   it('says when nothing is reported', () => {
     renderWithMantine(
       <TransitDisruptions
