@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { categoryLabel, tocNameLookup, operatorLabel, transferLabel } from './displayLabels';
+import { categoryLabel, changesBadge, tocNameLookup, operatorLabel, transferLabel } from './displayLabels';
+import type { TripPlanItinerary, TripPlanLeg } from './types';
 
 describe('categoryLabel', () => {
   it('maps a known TOML-enum category to a human label', () => {
@@ -60,5 +61,45 @@ describe('transferLabel', () => {
     expect(transferLabel('TUBE')).toBe('Tube');
     expect(transferLabel('WALK', '  ')).toBe('Walk');
     expect(transferLabel('TUBE', null)).toBe('Tube');
+  });
+});
+
+describe('changesBadge', () => {
+  const actonTown = { id: '940GZZLUACT', name: 'Acton Town', modes: ['tube'], lines: [] };
+  const ride = (mode: string, changes: boolean): TripPlanLeg => ({
+    kind: 'transfer',
+    mode,
+    originCrs: null,
+    destinationCrs: null,
+    minutes: 60,
+    access: { end: 'both', basis: 'line', distanceMetres: 33_000, ...(changes && { changeAt: actonTown }) },
+  });
+  const itinerary = (legs: TripPlanLeg[], changeCount: number, accessChangeCount?: number): TripPlanItinerary => ({
+    legs,
+    changeCount,
+    ...(accessChangeCount !== undefined && { accessChangeCount }),
+    totalDurationMinutes: 60,
+  });
+
+  it("counts National Rail's changes alone as before", () => {
+    expect(changesBadge(itinerary([], 0))).toEqual({ total: 0, label: '0 changes' });
+    expect(changesBadge(itinerary([], 1, 0))).toEqual({ total: 1, label: '1 change' });
+  });
+
+  it("adds a TfL ride's change and says what it is", () => {
+    expect(changesBadge(itinerary([ride('TUBE', true)], 0, 1))).toEqual({
+      total: 1,
+      label: '1 change',
+      breakdown: '1 Tube change',
+    });
+    expect(changesBadge(itinerary([ride('TUBE', true), ride('METRO', true)], 2, 2))).toEqual({
+      total: 4,
+      label: '4 changes',
+      breakdown: '2 train changes, 1 Tube change, 1 Metro change',
+    });
+  });
+
+  it('falls back to TfL when the legs do not name every change', () => {
+    expect(changesBadge(itinerary([ride('TUBE', false)], 0, 1)).breakdown).toBe('1 TfL change');
   });
 });

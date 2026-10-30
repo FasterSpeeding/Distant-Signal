@@ -853,6 +853,7 @@ mod tests {
             itineraries: vec![crate::data::trip_planning_itinerary::PlannedItinerary {
                 legs,
                 change_count: 0,
+                access_change_count: 0,
                 total_duration_minutes: 60,
                 exceeds_recommended_changes: None,
                 departure_min: 0,
@@ -1294,6 +1295,7 @@ mod db_tests {
                     transfer("TUBE", "Z8A", "Z8C"),
                 ],
                 change_count: 0,
+                access_change_count: 0,
                 total_duration_minutes: 36,
                 exceeds_recommended_changes: None,
                 departure_min: 0,
@@ -1378,6 +1380,7 @@ mod db_tests {
             itineraries: vec![crate::data::trip_planning_itinerary::PlannedItinerary {
                 legs,
                 change_count: 0,
+                access_change_count: 0,
                 total_duration_minutes: 24,
                 exceeds_recommended_changes: None,
                 departure_min: 0,

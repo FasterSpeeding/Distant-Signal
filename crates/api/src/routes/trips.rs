@@ -920,6 +920,9 @@ async fn plan_trip_request(
             .map(|(j, journey)| {
                 let mut value = serde_json::json!({
                     "changeCount": journey.change_count,
+                    // Additive (2026-10-30): changes within `TfL` access
+                    // legs, not in `changeCount`.
+                    "accessChangeCount": journey.access_change_count,
                     "departure": segment_clock(journey.departure_min),
                     "arrival": segment_clock(journey.arrival_min),
                     "totalDurationMinutes": journey.arrival_min - journey.departure_min,
@@ -1325,6 +1328,7 @@ async fn plan_on_date(
         }
         None => Vec::new(),
     };
+    trip_planning_itinerary::count_access_changes(&mut segments);
     Ok(DatePlan {
         request,
         segments,

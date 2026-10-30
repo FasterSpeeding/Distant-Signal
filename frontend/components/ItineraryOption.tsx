@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Group, Radio, Stack, Text } from '@mantine/core';
+import { Group, Radio, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { ClickableCard, selectableCardRadioProps, StaticCard } from './ClickableCard';
 import { codeRouteLabel, tflStopPlaceName } from '@/lib/stationLabel';
 import { ServiceModeBadge } from './ServiceModeBadge';
@@ -23,7 +23,7 @@ import type {
   TripPlanWaypointSatisfied,
   TflStop,
 } from '@/lib/types';
-import { accessChangeClause, accessLegNote, accessStopsNote, transferLabel } from '@/lib/displayLabels';
+import { accessChangeClause, accessLegNote, accessStopsNote, changesBadge, transferLabel } from '@/lib/displayLabels';
 import { transitServiceModeLabel } from '@/lib/serviceMode';
 import { SCHEDULED_CAPTION } from '@/lib/transitStops';
 import { StateBadge } from './StateBadge';
@@ -151,6 +151,7 @@ export function ItineraryOption({
   stopAccess?: TripPlanResponse['access'];
 }) {
   const hasTrainLeg = itinerary.legs.some((leg) => leg.kind === 'train');
+  const changes = changesBadge(itinerary);
   const stationLabelOf = (hit: { crs: string; matchedCrs?: string | null }) =>
     satisfiedStationLabel(
       hit,
@@ -233,8 +234,14 @@ export function ItineraryOption({
             </Group>
           )}
           <Text size="sm">{itinerary.totalDurationMinutes} min</Text>
-          <StateBadge tone={itinerary.changeCount === 0 ? 'good' : 'neutral'}>
-            {itinerary.changeCount} {itinerary.changeCount === 1 ? 'change' : 'changes'}
+          {/* Every change, a TfL ride's included (DS-205): "1 change", with
+              "1 Tube change" in its tooltip and for screen readers. */}
+          <StateBadge
+            tone={changes.total === 0 ? 'good' : 'neutral'}
+            {...(changes.breakdown !== undefined && { title: changes.breakdown })}
+          >
+            {changes.label}
+            {changes.breakdown !== undefined && <VisuallyHidden> ({changes.breakdown})</VisuallyHidden>}
           </StateBadge>
           {itinerary.liveFeasible === false && (
             <Text size="xs" c="red">
