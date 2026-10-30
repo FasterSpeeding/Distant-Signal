@@ -61,9 +61,12 @@ test.describe('edit and insert journey legs', () => {
     await edit.getByRole('button', { name: 'Save leg' }).click();
     await expect(main.getByText('Tube: Northern line')).toBeVisible();
 
-    // Add a walk at the start, ending where the Tube leg starts.
+    // Add a walk at the start, ending where the Tube leg starts. "Victoria"
+    // (no TfL stop picked) is no station's exact name, so the dialog opens
+    // on "Tube, bus or walk" rather than the time-window train search.
     await main.getByRole('button', { name: 'Add a leg at the start' }).click();
     const add = page.getByRole('dialog', { name: 'Add a leg at the start' });
+    await expect(add.getByRole('radio', { name: 'Tube, bus or walk' })).toBeChecked();
     await expect(add.getByRole('combobox', { name: 'To (optional)' })).toHaveValue('Victoria');
     const londonTime = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Europe/London',

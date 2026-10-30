@@ -79,7 +79,16 @@ type LegMode = NewJourneyLegRequest['mode'];
  * stop the leg ended at (`priorStopId`) through the hub crosswalk, else
  * its place name when that is exactly a station's. A station opens the
  * train search ("Search a time window") from it; a place that is no
- * station ("Home") opens "Tube, bus or walk" from that place. */
+ * station ("Home") opens "Tube, bus or walk" from that place.
+ *
+ * "Add a leg at the start" (`beforeLegId`) defaults to the same time-window
+ * search, mirrored: the window ENDS where and when the first leg starts --
+ * its station as the destination (looked up the same way when the first leg
+ * is untracked: its TfL stop, else its place's exact station name), its
+ * departure date as the service date and its departure time as the latest
+ * arrival, again with no interchange margin. Only a first leg that starts
+ * somewhere no station is ("Home") opens on "Tube, bus or walk" instead,
+ * ending at that place. */
 export function AddJourneyLegButton({
   journeyId,
   priorDestinationCrs,
@@ -95,12 +104,20 @@ export function AddJourneyLegButton({
   /** Insert the new leg in front of this leg (`POST .../legs?before=`)
    * instead of after the last one (spec 2026-10-20 §2.3): for a Tube or
    * walk start added to a journey that already has its trains. The dialog
-   * then opens on "Tube, bus or walk" and seeds from `nextLegStart`. */
+   * then opens on the time-window search ending where and when
+   * `nextLegStart` starts (or "Tube, bus or walk" when that is no station). */
   beforeLegId?: number | null;
   /** Where and when the leg being inserted before starts: the new leg's
    * default "to" place (and, for a train search, destination station) and
    * arrival. */
-  nextLegStart?: { place: string | null; crs: string | null; departure: LondonDateTime | null } | null;
+  nextLegStart?: {
+    place: string | null;
+    crs: string | null;
+    /** The TfL stop an untracked first leg starts from, mapped to its
+     * station for the train search's destination. */
+    stopId?: string | null;
+    departure: LondonDateTime | null;
+  } | null;
   /** The button's words; "Add a leg" by default. */
   label?: string;
   priorDestinationCrs: string | null;
@@ -172,14 +189,20 @@ export function AddJourneyLegButton({
     // The station the previous leg ended at, when it isn't a train leg's
     // own code: looked up first, so the dialog opens once, on the right
     // form, instead of switching under the traveller.
-    let origin = priorDestinationCrs;
-    const needsLookup = beforeLegId === null && !priorDestinationCrs && Boolean(priorStopId || priorPlaceName);
+    // Inserting before the first leg: the station that leg starts at is
+    // the new train's destination, found the same way.
+    const inserting = beforeLegId !== null;
+    const known = inserting
+      ? { crs: nextLegStart?.crs ?? null, stopId: nextLegStart?.stopId ?? null, name: nextLegStart?.place ?? null }
+      : { crs: priorDestinationCrs, stopId: priorStopId, name: priorPlaceName };
+    let station = known.crs;
+    const needsLookup = !known.crs && Boolean(known.stopId || known.name);
     if (needsLookup) {
       resolvingRef.current = true;
       setResolving(true);
       try {
-        origin = await resolvePriorOriginCrs(
-          { crs: null, stopId: priorStopId, name: priorPlaceName },
+        station = await resolvePriorOriginCrs(
+          { crs: null, stopId: known.stopId, name: known.name },
           { railCrsForStop: (stopId) => railCrsForStop(stopId), searchStations: (q) => searchStations(q) },
         );
       } finally {
@@ -190,23 +213,29 @@ export function AddJourneyLegButton({
     setError(null);
     needsLoginState.reset();
     // A place that is no station ("Home") opens on "Tube, bus or walk",
-    // starting from that place; a station, on the train search from it.
-    setMode(beforeLegId !== null || (needsLookup && origin === null) ? 'untracked' : 'window');
+    // starting (or, inserted before a leg, ending) at that place; a
+    // station, on the train search from (or to) it. With nothing known at
+    // all after the last leg, the search still opens, to be filled in.
+    setMode((inserting || needsLookup) && station === null ? 'untracked' : 'window');
     // Re-seeded on every open (not just once at mount) -- see this
     // component's own doc comment.
-    setOriginCrs(beforeLegId === null ? (origin ?? '') : '');
-    setDestinationCrs(beforeLegId === null ? '' : (nextLegStart?.crs ?? ''));
+    setOriginCrs(inserting ? '' : (station ?? ''));
+    setDestinationCrs(inserting ? (station ?? '') : '');
     setOriginTouched(false);
     setDestinationTouched(false);
-    // The previous leg's arrival when known (already London time, and on
-    // the next day for an arrival after midnight); otherwise London's
-    // today, not the browser's (FE-4): a rail service date.
-    setServiceDate(priorArrival?.date ?? nowInLondon().format('YYYY-MM-DD'));
+    // The previous leg's arrival (or, inserted before a leg, that leg's
+    // departure) when known: already London time, and on the next day for
+    // a time after midnight. Otherwise London's today, not the browser's
+    // (FE-4): a rail service date.
+    const anchor = inserting ? (nextLegStart?.departure ?? null) : priorArrival;
+    setServiceDate(anchor?.date ?? nowInLondon().format('YYYY-MM-DD'));
     setTrainUid('');
-    setDepartFrom(priorArrival?.time ?? '');
+    // The window: leaving at or after the previous leg's arrival, or
+    // arriving at or before the next leg's departure.
+    setDepartFrom(inserting ? '' : (priorArrival?.time ?? ''));
     setDepartTo('');
     setArriveFrom('');
-    setArriveTo('');
+    setArriveTo(inserting ? (nextLegStart?.departure?.time ?? '') : '');
     setIncompleteTimes({ departFrom: false, departTo: false, arriveFrom: false, arriveTo: false });
     setUntrackedDraft(
       beforeLegId === null
@@ -429,7 +458,12 @@ export function AddJourneyLegButton({
                 <TimeFilterInput
                   label="Latest arrival (optional)"
                   name="latest arrival"
-                  description={`Only trains reaching ${resolvedDestination ?? 'the destination'} at or before this time.`}
+                  description={
+                    `Only trains reaching ${resolvedDestination ?? 'the destination'} at or before this time.` +
+                    (beforeLegId !== null && nextLegStart?.departure
+                      ? ` Your next leg leaves at ${nextLegStart.departure.time}.`
+                      : '')
+                  }
                   value={arriveTo}
                   onChange={setArriveTo}
                   onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, arriveTo: v }))}
