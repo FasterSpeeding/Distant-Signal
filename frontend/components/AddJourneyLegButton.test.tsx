@@ -680,22 +680,125 @@ describe('AddJourneyLegButton', () => {
     });
   });
 
-  /** Spec 2026-10-20 §2.3 follow-up: "Add a leg at the start" inserts in
-   * front of the first leg, opening on "Tube, bus or walk" and ending where
-   * and when that leg starts. */
-  it('inserts an untracked leg before a leg, seeded to end where it starts', async () => {
+  it('after the last leg, opens on the time-window search leaving at or after its arrival', async () => {
+    const fetchMock = mockFetch(legResponse);
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs="WAT"
+        priorArrival={{ date: '2026-10-21', time: '10:07' }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    expect(await screen.findByRole('radio', { name: 'Search a time window' })).toBeChecked();
+    fireEvent.change(screen.getByRole('combobox', { name: 'To station' }), { target: { value: 'CLJ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/Journeys/1/legs',
+        expect.objectContaining({
+          body: JSON.stringify({
+            mode: 'window',
+            originCrs: 'WAT',
+            destinationCrs: 'CLJ',
+            serviceDate: '2026-10-21',
+            departWindow: { after: '10:07', before: null },
+            arriveWindow: { after: null, before: null },
+          }),
+        }),
+      );
+    });
+  });
+
+  /** "Add a leg at the start" inserts in front of the first leg, and opens
+   * on the same time-window search as "Add a leg", mirrored: a train
+   * arriving where the first leg starts, at or before it leaves. */
+  it('inserts before a leg on the time-window search, arriving where and before it starts', async () => {
     const fetchMock = mockFetch(legResponse);
     renderWithMantine(
       <AddJourneyLegButton
         journeyId={1}
         priorDestinationCrs={null}
         beforeLegId={7}
-        nextLegStart={{ place: 'London Euston', crs: 'EUS', departure: { date: '2026-10-21', time: '09:30' } }}
+        nextLegStart={{ place: 'London Waterloo', crs: 'WAT', departure: { date: '2026-10-21', time: '09:30' } }}
         label="Add a leg at the start"
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg at the start' }));
-    expect(await screen.findByRole('combobox', { name: 'To (optional)' })).toHaveValue('London Euston');
+
+    expect(await screen.findByRole('radio', { name: 'Search a time window' })).toBeChecked();
+    expect(screen.getByRole('combobox', { name: 'From station' })).toHaveValue('');
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'To station' })).toHaveValue('London Waterloo (WAT)'),
+    );
+    expect(screen.getByLabelText('Service date')).toHaveValue('21 Oct 2026');
+    expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('');
+    expect(screen.getByLabelText('Latest arrival (optional)')).toHaveValue('09:30');
+    expect(screen.getByText(/Your next leg leaves at 09:30\./)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'From station' }), { target: { value: 'WOK' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/Journeys/1/legs?before=7',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            mode: 'window',
+            originCrs: 'WOK',
+            destinationCrs: 'WAT',
+            serviceDate: '2026-10-21',
+            departWindow: { after: null, before: null },
+            arriveWindow: { after: null, before: '09:30' },
+          }),
+        }),
+      );
+    });
+  });
+
+  it("inserts before a Tube leg on the time-window search to its stop's station", async () => {
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs={null}
+        beforeLegId={7}
+        nextLegStart={{
+          place: 'Euston',
+          crs: null,
+          stopId: '940GZZLUEUS',
+          departure: { date: '2026-10-21', time: '09:30' },
+        }}
+        label="Add a leg at the start"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg at the start' }));
+
+    expect(await screen.findByRole('combobox', { name: 'To station' })).toHaveValue('EUS');
+    expect(screen.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
+    expect(screen.getByLabelText('Latest arrival (optional)')).toHaveValue('09:30');
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith('/api/tfl/stops/rail-crs?ids=940GZZLUEUS', {});
+  });
+
+  /** Spec 2026-10-20 §2.3 follow-up: a first leg that starts somewhere no
+   * station is ("Home") still opens on "Tube, bus or walk", ending where
+   * and when that leg starts. */
+  it('inserts an untracked leg before a leg that starts at no station, seeded to end where it starts', async () => {
+    const fetchMock = mockFetch(legResponse);
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs={null}
+        beforeLegId={7}
+        nextLegStart={{ place: 'Home', crs: null, departure: { date: '2026-10-21', time: '09:30' } }}
+        label="Add a leg at the start"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg at the start' }));
+    expect(await screen.findByRole('combobox', { name: 'To (optional)' })).toHaveValue('Home');
+    expect(screen.getByRole('radio', { name: 'Tube, bus or walk' })).toBeChecked();
     expect(screen.getByLabelText('Date')).toHaveValue('21 Oct 2026');
     expect(screen.getByLabelText('Arrives')).toHaveValue('09:30');
     fireEvent.change(placeField('From (optional)'), { target: { value: 'Brixton' } });
@@ -711,7 +814,7 @@ describe('AddJourneyLegButton', () => {
             mode: 'untracked',
             transitMode: 'tube',
             originName: 'Brixton',
-            destinationName: 'London Euston',
+            destinationName: 'Home',
             plannedDeparture: '2026-10-21T08:05:00.000Z',
             plannedArrival: '2026-10-21T08:30:00.000Z',
           }),

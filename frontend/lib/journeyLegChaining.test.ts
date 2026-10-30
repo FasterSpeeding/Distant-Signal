@@ -404,6 +404,7 @@ describe('journeyFirstLegStart', () => {
       legId: 4,
       place: 'London Waterloo',
       crs: 'WAT',
+      stopId: null,
       departure: { date: '2026-09-22', time: '09:00' },
     });
     expect(journeyFirstLegStart(journey([]))).toBeNull();

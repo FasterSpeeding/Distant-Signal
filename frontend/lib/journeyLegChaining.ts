@@ -252,9 +252,13 @@ export function connectionText(leg: JourneyLegDetail, next: JourneyLegDetail): s
 /** Where and when the journey's FIRST leg starts: what "Add a leg at the
  * start" (inserting before it, spec 2026-10-20 §2.3) seeds a new leg's
  * end from. `null` for a journey with no legs. */
-export function journeyFirstLegStart(
-  journey: JourneyDetail,
-): { legId: number; place: string | null; crs: string | null; departure: LondonDateTime | null } | null {
+export function journeyFirstLegStart(journey: JourneyDetail): {
+  legId: number;
+  place: string | null;
+  crs: string | null;
+  stopId: string | null;
+  departure: LondonDateTime | null;
+} | null {
   const first = journey.legs[0];
   if (first === undefined) return null;
   const crs = first.originCrs ?? first.trackedTrainState?.pinOriginCrs ?? null;
@@ -263,6 +267,9 @@ export function journeyFirstLegStart(
     legId: first.id,
     place: first.originName ?? first.trackedTrainState?.pinOriginName ?? crs,
     crs,
+    // The TfL stop an untracked first leg starts from, so "Add a leg at the
+    // start" can find its station (`resolvePriorOriginCrs`).
+    stopId: isUntrackedLeg(first) ? (first.originStopId ?? null) : null,
     departure: departure === null ? null : londonDateTime(departure),
   };
 }
