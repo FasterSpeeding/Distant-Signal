@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { cleanup, screen } from '@testing-library/react';
+import { cleanup, screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import StationDisruptionPage, { generateMetadata } from './page';
 import * as api from '@/lib/api';
@@ -152,9 +152,30 @@ describe('StationDisruptionPage -- outage behaviour', () => {
     expect(screen.getByRole('heading', { name: 'London Kings Cross (KGX)', level: 1 })).toBeInTheDocument();
   });
 
-  it('renders the collapsed Scheduled departures section', async () => {
-    await renderPage();
-    expect(screen.getByRole('button', { name: 'Scheduled departures' })).toBeInTheDocument();
+  it('shows no departure board, and sends both Departures links to the train search for this station', async () => {
+    vi.mocked(api.getStationName).mockResolvedValue('London Euston');
+    await renderPage('EUS');
+
+    expect(screen.queryByRole('button', { name: 'Scheduled departures' })).toBeNull();
+    expect(screen.queryByRole('list', { name: 'Scheduled departures' })).toBeNull();
+    const onThisPage = screen.getByRole('navigation', { name: 'On this page' });
+    expect(within(onThisPage).getByRole('link', { name: 'Departures' })).toHaveAttribute('href', '/trains?station=EUS');
+    expect(screen.getByRole('link', { name: 'See departures from London Euston' })).toHaveAttribute(
+      'href',
+      '/trains?station=EUS',
+    );
+    // The board fetched its rows client-side; nothing does now.
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it('names the station by its code in the departures link when the name lookup fails', async () => {
+    vi.mocked(api.getStationName).mockRejectedValue(new Error('500'));
+    await renderPage('KGX');
+
+    expect(screen.getByRole('link', { name: 'See departures from KGX' })).toHaveAttribute(
+      'href',
+      '/trains?station=KGX',
+    );
   });
 });
 
@@ -434,7 +455,7 @@ describe('generateMetadata', () => {
     vi.mocked(api.getStopPointDisruption).mockResolvedValue([report('ecml', 'East Coast Main Line')]);
     const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
     expect(metadata.title).toBe('London Kings Cross (KGX)');
-    expect(metadata.description).toBe('Live departures, disruption and accessibility at London Kings Cross (KGX).');
+    expect(metadata.description).toBe('Disruption, accessibility and departures for London Kings Cross (KGX).');
     expect(metadata.alternates).toEqual({ canonical: '/stations/KGX' });
     expect(metadata.openGraph).toMatchObject({
       title: 'London Kings Cross (KGX) · Distant Signal',
@@ -473,7 +494,7 @@ describe('generateMetadata', () => {
   it('never quotes the live status, which would go stale in a search snippet', async () => {
     vi.mocked(api.getStopPointDisruption).mockRejectedValue(new ApiNotFoundError('no line coverage'));
     const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
-    expect(metadata.description).toBe('Live departures, disruption and accessibility at London Kings Cross (KGX).');
+    expect(metadata.description).toBe('Disruption, accessibility and departures for London Kings Cross (KGX).');
   });
 
   it('redirects a lower- or mixed-case code to the upper-case page', async () => {

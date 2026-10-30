@@ -4,7 +4,7 @@ import { Box, Button, Group, Stack, Text } from '@mantine/core';
 
 /** The one "Load more" footer every cursor-paginated results list in this
  * app renders below its rows -- `TrainSearchForm`, `IncidentSearchForm` and
- * `StationTimetable` all page `nextCursor`-style keyset responses the same
+ * the line timetable all page `nextCursor`-style keyset responses the same
  * way (fetch `limit + 1` server-side, `nextCursor` an explicit `null` on the
  * last page: see `queries::search_incidents` /
  * `queries::search_schedule_calling_point_departures`), so they share this
