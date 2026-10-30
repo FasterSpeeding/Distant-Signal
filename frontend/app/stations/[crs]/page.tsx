@@ -11,6 +11,7 @@ import {
   getStationAccessibility,
   getAllTocs,
   getTransitRailLinks,
+  getPreviewStopPointDisruption,
   ApiNotFoundError,
 } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
@@ -28,7 +29,8 @@ import { worstStatus, severityRank } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport, Preferences, StationAccessibilityData, StationOperatorSampleStats } from '@/lib/types';
-import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
+import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
+import { type StationDisruptionState, stationPreviewImage } from '@/lib/stationPreview';
 import { stationJsonLd } from '@/lib/jsonLd';
 import { JsonLd, structuredDataOrigin } from '@/components/JsonLd';
 
@@ -166,7 +168,28 @@ export async function generateMetadata({ params }: { params: Promise<{ crs: stri
 
   const heading = lookup.outcome === 'found' ? `${lookup.name} (${crs})` : crs;
   const description = `Live departures, disruption and accessibility at ${heading}.`;
-  return pageMetadata(heading, description, { ...OWN_PREVIEW_IMAGE, path: `/stations/${crs}` });
+  // The live state goes in the preview image (`card.png`), its URL versioned
+  // by it. Read through the image route's own shared, minute-cached entry
+  // (`getPreviewStopPointDisruption`), not the page's per-visitor read: Next
+  // doesn't dedupe `generateMetadata`'s fetches with the page's here, so
+  // that would be a second api call per view, and this way the version and
+  // the image come from the same data. An outage leaves the URL unversioned
+  // rather than failing the page's metadata.
+  const state = await previewDisruptionState(crs);
+  return pageMetadata(heading, description, {
+    path: `/stations/${crs}`,
+    image: stationPreviewImage(crs, heading, state, previewImageAlt(heading)),
+  });
+}
+
+/** The station's disruptions as its preview card reads them, or null when
+ * they can't be read. */
+async function previewDisruptionState(crs: string): Promise<StationDisruptionState | null> {
+  try {
+    return { coverage: 'covered', reports: await getPreviewStopPointDisruption(crs) };
+  } catch (err) {
+    return err instanceof ApiNotFoundError ? { coverage: 'none' } : null;
+  }
 }
 
 export default async function StationDisruptionPage({ params }: { params: Promise<{ crs: string }> }) {

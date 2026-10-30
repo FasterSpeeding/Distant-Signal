@@ -52,9 +52,21 @@ export function canonicalPath(path: string): string {
   return trimmed === '' ? '/' : trimmed;
 }
 
+/** A page's own preview image, listed explicitly (an incident's
+ * `card.png`): a URL the page computes, so it can carry a version. */
+export interface PreviewImage {
+  url: string;
+  alt: string;
+  width: number;
+  height: number;
+  type: string;
+}
+
 export interface PreviewCardOptions {
   /** See `OWN_PREVIEW_IMAGE`. */
   ownPreviewImage?: boolean;
+  /** List this image instead of the site-wide one. */
+  image?: PreviewImage;
   /** The page's path, as `og:url`; the root layout's `metadataBase` makes
    * it absolute. */
   path?: string;
@@ -69,7 +81,7 @@ export interface PreviewCardOptions {
 export function previewCards(
   title: string,
   description: string,
-  { ownPreviewImage = false, path, imageAlt }: PreviewCardOptions = {},
+  { ownPreviewImage = false, image, path, imageAlt }: PreviewCardOptions = {},
 ): Pick<Metadata, 'openGraph' | 'twitter'> {
   const openGraph = {
     title,
@@ -80,6 +92,12 @@ export function previewCards(
   } as const;
   const twitter = { card: 'summary_large_image', title, description } as const;
   if (ownPreviewImage) return { openGraph, twitter };
+  if (image !== undefined) {
+    return {
+      openGraph: { ...openGraph, images: [image] },
+      twitter: { ...twitter, images: [{ url: image.url, alt: image.alt }] },
+    };
+  }
   if (imageAlt === undefined) {
     return {
       openGraph: { ...openGraph, images: [PREVIEW_IMAGE] },

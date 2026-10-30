@@ -73,6 +73,7 @@ import type {
 } from './types';
 import { createLogger } from './logger';
 import { lineTimetableQuery } from './lineTrains';
+import { LIVE_PREVIEW_REVALIDATE_SECONDS } from './livePreview';
 
 const log = createLogger('lib/api');
 
@@ -1084,6 +1085,67 @@ export async function getIncident(incidentId: string): Promise<IncidentDetail> {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
+}
+
+/* ---------------------------------------------------------------------------
+ * Reads for link-preview images (`lib/livePreview.ts`)
+ *
+ * A preview image is fetched by chat apps, not by the visitor, so its route
+ * reads on the frontend's own behalf: no session cookie (it can't hold
+ * anyone's private custom lines, so one answer suits every requester) and
+ * no `X-Real-IP`. Next keys its data cache on the request headers, so a
+ * per-requester IP would give every unfurler its own cache entry, and
+ * `headers()` would make the route dynamic, re-rendering the PNG on every
+ * hit. Without either, one api call a minute (`revalidate`) serves every
+ * unfurl of a page, and the route itself is regenerated at most that often.
+ * The api's rate limiter keys these on the frontend pod, the right bucket
+ * for traffic the frontend originates. Same endpoints the pages read: no
+ * new api routes.
+ * ------------------------------------------------------------------------- */
+
+async function previewJson<T>(url: string, revalidate: number): Promise<T> {
+  const response = await fetch(url, withTimeout({ next: { revalidate } }, API_FETCH_TIMEOUT_MS));
+  if (!response.ok) {
+    throw errorForResponse(url, response);
+  }
+  return response.json() as Promise<T>;
+}
+
+/** `GET /public/incidents/{incidentId}`, as a preview read (above): the incident card. */
+export async function getPreviewIncident(incidentId: string): Promise<IncidentDetail> {
+  return previewJson(
+    `${baseUrl()}/public/incidents/${encodeURIComponent(incidentId)}`,
+    LIVE_PREVIEW_REVALIDATE_SECONDS,
+  );
+}
+
+/** `GET /Line/{id}/Status?detail=true` for one line, as a preview read (above): the
+ * line card. Anonymous, so a private custom line is a 404 here. */
+export async function getPreviewLineStatus(id: string): Promise<LineStatusReport[]> {
+  return previewJson(`${baseUrl()}/Line/${encodeURIComponent(id)}/Status?detail=true`, LIVE_PREVIEW_REVALIDATE_SECONDS);
+}
+
+/** `GET /StopPoint/{crs}/Disruption`, as a preview read (above): the station card. */
+export async function getPreviewStopPointDisruption(crs: string): Promise<LineStatusReport[]> {
+  return previewJson(`${baseUrl()}/StopPoint/${encodeURIComponent(crs)}/Disruption`, LIVE_PREVIEW_REVALIDATE_SECONDS);
+}
+
+/** `GET /public/lines`, a preview read kept for an hour (above): the public catalogue,
+ * to name a line that has no status row yet. */
+export async function getPreviewLines(): Promise<LineSummary[]> {
+  return previewJson(`${baseUrl()}/public/lines`, 3600);
+}
+
+/** `getAllTocs`, as a preview read (above). */
+export async function getPreviewTocs(): Promise<Suggestion[]> {
+  return previewJson(`${baseUrl()}/public/tocs/all`, 3600);
+}
+
+/** `getStationName`, as a preview read (above). */
+export async function getPreviewStationName(crs: string): Promise<string | null> {
+  const results = await previewJson<Suggestion[]>(`${baseUrl()}/public/stations?q=${encodeURIComponent(crs)}`, 3600);
+  const match = results.find((s) => s.code.toUpperCase() === crs.toUpperCase());
+  return match ? match.name : null;
 }
 
 /** Where `getRecentlyCleared` looks: one catalogue line, one station, or

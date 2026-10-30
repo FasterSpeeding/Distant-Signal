@@ -745,6 +745,44 @@ describe('generateMetadata', () => {
     expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });
 
+  it('lists its own preview image, named for the line and versioned by its status', async () => {
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('tfl-northern', 'Northern')]);
+    const good = await generateMetadata({ params: Promise.resolve({ id: 'tfl-northern' }) });
+    const images = good.openGraph?.images as { url: string; alt: string }[];
+    expect(images).toEqual([
+      {
+        url: expect.stringMatching(/^\/lines\/tfl-northern\/card\.png\?v=[0-9a-f]{8}$/) as unknown,
+        alt: 'Northern on Distant Signal',
+        width: 1200,
+        height: 630,
+        type: 'image/png',
+      },
+    ]);
+    expect(good.twitter?.images).toEqual([{ url: images[0]!.url, alt: 'Northern on Distant Signal' }]);
+
+    __resetStaleCacheForTests();
+    vi.mocked(api.getLineStatus).mockResolvedValue([
+      {
+        ...report('tfl-northern', 'Northern'),
+        lineStatuses: [
+          {
+            statusSeverity: 9,
+            statusSeverityDescription: 'Minor Delays',
+            reason: 'Minor delays',
+            dataQuality: 'tfl',
+            validityPeriods: [],
+            sampleAvailability: { state: 'no-coverage' },
+            fullCoverageAvailability: { state: 'not-enabled' },
+          },
+        ],
+      },
+    ]);
+    const delayed = await generateMetadata({ params: Promise.resolve({ id: 'tfl-northern' }) });
+    expect((delayed.openGraph?.images as { url: string }[])[0]!.url).not.toBe(images[0]!.url);
+    // The description stays the same: the live part is in the image.
+    expect(delayed.description).toBe(good.description);
+  });
+
   it("describes a TfL line without the trains it doesn't show, and never repeats its status", async () => {
     vi.mocked(api.getLineStatus).mockResolvedValue([report('tfl-northern', 'Northern')]);
     const metadata = await generateMetadata({ params: Promise.resolve({ id: 'tfl-northern' }) });
