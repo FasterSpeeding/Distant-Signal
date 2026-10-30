@@ -368,6 +368,13 @@ used, rather than as a literal in a component.
   fit a phone stack: `orientation="vertical"` in a dialog
   (`AddJourneyLegButton`), or below `xs` only with `.ds-entry-mode-control`
   (Plan a journey), whose labels also wrap rather than clip.
+- **Journey progress on a leg** (`JourneyProgress` with `legRange`): the
+  line runs from the boarding stop to the alighting stop. Where the train
+  also calls before boarding or after getting off, a 32px dashed stub
+  fades out past that end circle, with an xs dimmed "+3 stops" under the
+  end's label; the group's accessible description says it in words ("The
+  train starts at X, 3 stops before you board"). Nothing is drawn on a
+  side where the leg starts at the origin or ends at the terminus.
 - **Calling-point table** (`JourneyTimeline`): below `sm` the delay sits
   under the Actual time instead of in its own column, cells have 6px side
   padding, and the table only scrolls sideways (inside its own box) when a

@@ -1872,6 +1872,34 @@ a[data-text-link-tone='inherit'] {
   content: none;
 }
 
+/* A journey leg's train calls before the boarding stop or after the
+   alighting stop (`data-leg-continues` on that end node): a short dashed
+   stub runs on past the end circle and fades out, rather than the line
+   simply stopping there. A shade darker than the line (the not-reached
+   circles' grey) so the broken, fading dashes stay visible; it reads as more of the
+   same route, just not part of this leg. Fixed at 32px so it fits inside
+   the 76px phone endpoint slot's half (38px) with room to spare. Declared
+   after the `:first-child`/`:last-child` rule above, which it overrides at
+   equal specificity. */
+.journeyProgressNode[data-leg-continues='before']::before,
+.journeyProgressNode[data-leg-continues='after']::after {
+  content: '';
+  width: 32px;
+  background: repeating-linear-gradient(to right, var(--mantine-color-gray-5) 0 4px, transparent 4px 7px);
+}
+
+.journeyProgressNode[data-leg-continues='before']::before {
+  left: auto;
+  right: 50%;
+  mask-image: linear-gradient(to left, #000 50%, transparent);
+}
+
+.journeyProgressNode[data-leg-continues='after']::after {
+  left: 50%;
+  right: auto;
+  mask-image: linear-gradient(to right, #000 50%, transparent);
+}
+
 /* Belt-and-braces. `align-items: center` above already sizes the label to
    fit-content, which is capped by the slot; the one thing that can still
    exceed it is the min-content floor of a single unbreakable word

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MantineProvider } from '@mantine/core';
 import { renderWithMantine } from '@/test/render';
 import { theme } from '@/lib/theme';
-import { JourneyProgress } from './JourneyProgress';
+import { JourneyProgress, legContinuationDescription } from './JourneyProgress';
 import type { JourneyStop } from '@/lib/types';
 
 function stop(overrides: Partial<JourneyStop>): JourneyStop {
@@ -1567,5 +1567,72 @@ describe('JourneyProgress clipped to a journey leg', () => {
     const { container } = renderLeg(route(0), { legRange: null });
     expect(container.querySelectorAll('[data-journey-node]')).toHaveLength(5);
     expect(screen.getByText('Currently at London Kings Cross.')).toBeInTheDocument();
+  });
+
+  describe('stops beyond the leg', () => {
+    function continues(container: HTMLElement): (string | null)[] {
+      return [...container.querySelectorAll('[data-journey-node-slot]')].map((node) =>
+        node.getAttribute('data-leg-continues'),
+      );
+    }
+    function notes(container: HTMLElement): (string | null)[] {
+      return [...container.querySelectorAll('[data-leg-continues-note]')].map((note) => note.textContent);
+    }
+
+    it('marks both ends when the train calls before boarding and after alighting', () => {
+      const { container } = renderLeg(route(-1));
+      expect(continues(container)).toEqual(['before', null, 'after']);
+      expect(notes(container)).toEqual(['+1 stop', '+1 stop']);
+      expect(screen.getByRole('group')).toHaveAccessibleDescription(
+        'The train starts at London Kings Cross, 1 stop before you board, and continues to Edinburgh, 1 stop after you get off.',
+      );
+    });
+
+    it('marks only the boarding end for a leg that gets off at the terminus', () => {
+      const { container } = renderLeg(route(-1), { legRange: { start: 3, end: 4 } });
+      expect(continues(container)).toEqual(['before', null]);
+      expect(notes(container)).toEqual(['+3 stops']);
+      expect(screen.getByRole('group')).toHaveAccessibleDescription(
+        'The train starts at London Kings Cross, 3 stops before you board.',
+      );
+    });
+
+    it('marks only the alighting end for a leg that boards at the origin', () => {
+      const { container } = renderLeg(route(-1), { legRange: { start: 0, end: 2 } });
+      expect(continues(container)).toEqual([null, null, 'after']);
+      expect(notes(container)).toEqual(['+2 stops']);
+      expect(screen.getByRole('group')).toHaveAccessibleDescription(
+        'The train continues to Edinburgh, 2 stops after you get off.',
+      );
+    });
+
+    it('marks neither end for the whole train', () => {
+      const { container } = renderLeg(route(-1), { legRange: null });
+      expect(continues(container)).toEqual([null, null, null, null, null]);
+      expect(notes(container)).toEqual([]);
+      expect(screen.getByRole('group')).not.toHaveAttribute('aria-describedby');
+      expect(screen.getByRole('group')).toHaveAccessibleDescription('');
+    });
+
+    it('keeps the not-started caption while the train is short of the boarding stop', () => {
+      const { container } = renderLeg(route(0));
+      expect(continues(container)).toEqual(['before', null, 'after']);
+      expect(nodeStates(container)).toEqual(['not-reached', 'not-reached', 'not-reached']);
+      expect(
+        screen.getByText('Not started. The train is on its way to Peterborough, last reported at London Kings Cross.'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('legContinuationDescription', () => {
+    it('says nothing when the train neither starts earlier nor runs on', () => {
+      expect(legContinuationDescription(null, null)).toBeNull();
+    });
+
+    it('counts stops in words', () => {
+      expect(legContinuationDescription({ name: 'York', count: 3 }, { name: 'Leeds', count: 1 })).toBe(
+        'The train starts at York, 3 stops before you board, and continues to Leeds, 1 stop after you get off.',
+      );
+    });
   });
 });
