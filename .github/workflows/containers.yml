@@ -828,7 +828,7 @@ jobs:
             if cosign sign --yes "${CHART_REF}"; then
               break
             fi
-            if [ "${attempt}" -eq 3 ]; then
+            if [[ "${attempt}" -eq 3 ]]; then
               exit 1
             fi
             echo "::warning::cosign sign attempt ${attempt} failed"
@@ -884,7 +884,7 @@ jobs:
             if cosign sign --yes "${CHART_REF}"; then
               break
             fi
-            if [ "${attempt}" -eq 3 ]; then
+            if [[ "${attempt}" -eq 3 ]]; then
               exit 1
             fi
             echo "::warning::cosign sign attempt ${attempt} failed"
