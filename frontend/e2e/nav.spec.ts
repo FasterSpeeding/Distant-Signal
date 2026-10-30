@@ -240,7 +240,16 @@ test.describe('phone nav bar (390x844)', () => {
 
     const drawer = await openNavDrawer(page);
     // `exact: true` for the same reason as the desktop-bar test above.
-    for (const label of ['Journeys', 'Trains', 'Status', 'Lines', 'Operators', 'Stations', 'Incidents', 'Preferences']) {
+    for (const label of [
+      'Journeys',
+      'Trains',
+      'Status',
+      'Lines',
+      'Operators',
+      'Stations',
+      'Incidents',
+      'Preferences',
+    ]) {
       await expect(drawer.getByRole('link', { name: label, exact: true })).toBeVisible();
     }
     // DS-194: no Plan a journey entry; the page is part of Journeys.

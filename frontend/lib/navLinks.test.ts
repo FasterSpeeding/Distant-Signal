@@ -112,7 +112,15 @@ describe('isActiveNavHref', () => {
     for (const path of ['/trains', '/train/W12345/2026-09-17']) {
       expect(isActiveNavHref(path, TRAINS_DESTINATION), path).toBe(true);
     }
-    for (const path of ['/train/by-id/42', '/train/by-id', '/trainsx', '/journeys', '/plan', '/track', '/stations/RDG']) {
+    for (const path of [
+      '/train/by-id/42',
+      '/train/by-id',
+      '/trainsx',
+      '/journeys',
+      '/plan',
+      '/track',
+      '/stations/RDG',
+    ]) {
       expect(isActiveNavHref(path, TRAINS_DESTINATION), path).toBe(false);
     }
   });
