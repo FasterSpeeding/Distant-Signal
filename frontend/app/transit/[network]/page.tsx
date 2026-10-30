@@ -9,7 +9,7 @@ import { TransitDisruptions } from '@/components/TransitDisruptions';
 import { TransitLineList } from '@/components/TransitLineList';
 import { getTransitNetwork, getTransitSituations, getTransitStops } from '@/lib/api';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
-import { orNotFound, TRANSIT_ID } from '@/lib/transit';
+import { orNotFound, TRANSIT_ID, transitStopHref } from '@/lib/transit';
 
 interface Params {
   params: Promise<{ network: string }>;
@@ -39,6 +39,7 @@ export default async function TransitNetworkPage({ params, searchParams }: Param
     getTransitSituations(network).catch(() => null),
   ]);
   const lineNames = Object.fromEntries(detail.lines.map((line) => [line.id, line.name]));
+  const stopNames = Object.fromEntries(stops.map((stop) => [stop.id, stop.name]));
   const hasFeed = (detail.status?.state ?? 'none') !== 'none';
   return (
     <Stack p="lg" gap="lg">
@@ -57,6 +58,8 @@ export default async function TransitNetworkPage({ params, searchParams }: Param
         failed={hasFeed && situations === null}
         empty="No disruptions reported."
         lineNames={lineNames}
+        network={network}
+        stopNames={stopNames}
       />
 
       <Stack gap="sm">
@@ -72,10 +75,11 @@ export default async function TransitNetworkPage({ params, searchParams }: Param
             titlePrefix={`${detail.name} stops`}
             initialQuery={Array.isArray(q) ? q[0] : q}
             layout="list"
+            listLabel="Stops"
             items={stops.map((stop) => ({
               key: stop.id,
               text: stop.name,
-              node: <TextLink href={`/transit/${network}/stops/${stop.id}`}>{stop.name}</TextLink>,
+              node: <TextLink href={transitStopHref(network, stop.id)}>{stop.name}</TextLink>,
             }))}
           />
         )}

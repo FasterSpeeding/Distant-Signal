@@ -87,14 +87,22 @@ async fn cleanup(pool: &PgPool) {
         .execute(pool)
         .await
         .ok();
-    sqlx::query("DELETE FROM tfl_line_routes WHERE line_id IN ('testmet135', 'testpic135')")
+    sqlx::query("DELETE FROM tfl_stops WHERE stop_id LIKE '940GZZTC%'")
         .execute(pool)
         .await
         .ok();
+    sqlx::query(
+        "DELETE FROM tfl_line_routes \
+         WHERE line_id IN ('testmet135', 'testpic135', 'testcircle191', 'testhc191')",
+    )
+    .execute(pool)
+    .await
+    .ok();
     for crs in STATIONS
         .iter()
         .map(|(crs, _, _)| *crs)
         .chain([BRANCH_CRS])
+        .chain(CIRCLE_STATIONS.iter().map(|(crs, _, _)| *crs))
         .chain(OLD_STREET_STATIONS.iter().map(|(crs, _, _)| *crs))
     {
         // Only this file's rows: `EUS` is a real code.
@@ -827,5 +835,267 @@ async fn euston_to_old_street(with_routes: bool) {
     );
     assert_eq!(itinerary["legs"][0]["line"], "Northern");
     check_euston(&euston(&body, "origin"));
+    cleanup(&pool).await;
+}
+
+/// DS-191: a hand-written Circle and Hammersmith & City, as `TfL` runs
+/// them, moved to the North Sea (each position plus 4 degrees north, 3.5
+/// east). The Circle from Edgware Road by Paddington's Circle stop (`PAC`)
+/// round by Victoria and Liverpool Street to Edgware Road again, then to
+/// Paddington's Hammersmith & City stop (`PAH`); the Hammersmith & City
+/// from Liverpool Street by King's Cross to `PAH`; each both ways. The two
+/// Paddington stops, 250 m apart, may share a hub (`HUBZTP`, station
+/// `ZTP`); Liverpool Street's station is `ZTL`.
+const CIRCLE_PAC: &str = "940GZZTCPAC";
+const CIRCLE_PAH: &str = "940GZZTCPAH";
+const CIRCLE_LVT: &str = "940GZZTCLVT";
+
+/// `(stop id suffix, name, on the Hammersmith & City, (latitude,
+/// longitude) before the move, hub CRS)`.
+type CircleStop<'a> = (&'a str, &'a str, bool, (f64, f64), Option<&'a str>);
+
+const CIRCLE_STOPS: [CircleStop<'static>; 28] = [
+    ("ERC", "Test Edgware Road", true, (51.5199, -0.1679), None),
+    (
+        "PAC",
+        "Test Paddington",
+        false,
+        (51.5166, -0.1757),
+        Some("ZTP"),
+    ),
+    ("BWT", "Test Bayswater", false, (51.5121, -0.1879), None),
+    (
+        "NHG",
+        "Test Notting Hill Gate",
+        false,
+        (51.5094, -0.1967),
+        None,
+    ),
+    (
+        "HSK",
+        "Test High Street Kensington",
+        false,
+        (51.5009, -0.1925),
+        None,
+    ),
+    (
+        "GTR",
+        "Test Gloucester Road",
+        false,
+        (51.4945, -0.1829),
+        None,
+    ),
+    (
+        "SKS",
+        "Test South Kensington",
+        false,
+        (51.4941, -0.1738),
+        None,
+    ),
+    ("SSQ", "Test Sloane Square", false, (51.4924, -0.1565), None),
+    ("VIC", "Test Victoria", false, (51.4965, -0.1447), None),
+    (
+        "SJP",
+        "Test St. James's Park",
+        false,
+        (51.4994, -0.1335),
+        None,
+    ),
+    ("WSM", "Test Westminster", false, (51.5010, -0.1254), None),
+    ("EMB", "Test Embankment", false, (51.5074, -0.1223), None),
+    ("TMP", "Test Temple", false, (51.5111, -0.1141), None),
+    ("BKF", "Test Blackfriars", false, (51.5120, -0.1031), None),
+    ("MSH", "Test Mansion House", false, (51.5122, -0.0940), None),
+    ("CST", "Test Cannon Street", false, (51.5113, -0.0904), None),
+    ("MMT", "Test Monument", false, (51.5108, -0.0863), None),
+    ("TWH", "Test Tower Hill", false, (51.5098, -0.0766), None),
+    ("ALD", "Test Aldgate", false, (51.5143, -0.0755), None),
+    (
+        "LVT",
+        "Test Liverpool Street",
+        true,
+        (51.5178, -0.0823),
+        Some("ZTL"),
+    ),
+    ("MGT", "Test Moorgate", true, (51.5186, -0.0886), None),
+    ("BBN", "Test Barbican", true, (51.5204, -0.0979), None),
+    ("FCC", "Test Farringdon", true, (51.5203, -0.1053), None),
+    ("KSX", "Test King's Cross", true, (51.5308, -0.1238), None),
+    ("ESQ", "Test Euston Square", true, (51.5257, -0.1359), None),
+    (
+        "GPS",
+        "Test Great Portland Street",
+        true,
+        (51.5238, -0.1439),
+        None,
+    ),
+    ("BST", "Test Baker Street", true, (51.5226, -0.1571), None),
+    (
+        "PAH",
+        "Test Paddington (H&C Line)",
+        true,
+        (51.5182, -0.1783),
+        Some("ZTP"),
+    ),
+];
+
+/// `(crs, tiploc, (latitude, longitude))`, after the move.
+const CIRCLE_STATIONS: [(&str, &str, (f64, f64)); 2] = [
+    ("ZTP", "TTPADD", (55.5170, 3.3240)),
+    ("ZTL", "TTLIVST", (55.5178, 3.4177)),
+];
+
+/// Seeds the Circle fixture; with `hub`, the two Paddington stops share
+/// `HUBZTP` (and so its station). Without, `PAH` is no station's: else
+/// the plan walks to `ZTP` from `PAC` and rides from `PAH` as a station
+/// candidate, which hides the change at Edgware Road.
+async fn seed_circle(pool: &PgPool, hub: bool) {
+    let both = serde_json::json!([
+        { "id": "testcircle191", "name": "Circle" },
+        { "id": "testhc191", "name": "Hammersmith & City" },
+    ]);
+    let circle = serde_json::json!([{ "id": "testcircle191", "name": "Circle" }]);
+    for (suffix, name, hc, (lat, lon), crs) in CIRCLE_STOPS {
+        let id = format!("940GZZTC{suffix}");
+        let hub_code = crs.filter(|_| hub).map(|crs| format!("HUB{crs}"));
+        sqlx::query(
+            "INSERT INTO tfl_stops \
+             (stop_id, name, search_name, modes, lines, hub_code, latitude, longitude, fetched_at) \
+             VALUES ($1, $2, lower($2), ARRAY['tube'], $3, $4, $5, $6, now())",
+        )
+        .bind(&id)
+        .bind(name)
+        .bind(if hc { &both } else { &circle })
+        .bind(hub_code)
+        .bind(lat + 4.0)
+        .bind(lon + 3.5)
+        .execute(pool)
+        .await
+        .expect("seed tfl_stops");
+        if let Some(crs) = crs.filter(|_| hub || suffix != "PAH") {
+            sqlx::query("INSERT INTO tfl_stop_crs (stop_id, crs, source) VALUES ($1, $2, 'hub')")
+                .bind(&id)
+                .bind(crs)
+                .execute(pool)
+                .await
+                .expect("seed tfl_stop_crs");
+        }
+    }
+    for (crs, tiploc, (lat, lon)) in CIRCLE_STATIONS {
+        sqlx::query(
+            "INSERT INTO stations (crs, name, latitude, longitude) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(crs)
+        .bind(format!("Test station {crs}"))
+        .bind(lat)
+        .bind(lon)
+        .execute(pool)
+        .await
+        .expect("seed stations");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ($1, $2, $3, $2, 1) ON CONFLICT (stanox) DO NOTHING",
+        )
+        .bind(format!("TESTTFLACC-{crs}"))
+        .bind(crs)
+        .bind(tiploc)
+        .execute(pool)
+        .await
+        .expect("seed stanox_crs");
+    }
+    let order = |suffixes: &[&str]| -> Vec<String> {
+        suffixes.iter().map(|s| format!("940GZZTC{s}")).collect()
+    };
+    let north = [
+        "LVT", "MGT", "BBN", "FCC", "KSX", "ESQ", "GPS", "BST", "ERC", "PAH",
+    ];
+    let circle_route: Vec<&str> = CIRCLE_STOPS[..19]
+        .iter()
+        .map(|(suffix, ..)| *suffix)
+        .chain(north)
+        .collect();
+    for (line, ids) in [
+        ("testcircle191", order(&circle_route)),
+        ("testhc191", order(&north)),
+    ] {
+        let back: Vec<String> = ids.iter().rev().cloned().collect();
+        for (direction, stops) in [("inbound", ids), ("outbound", back)] {
+            sqlx::query(
+                "INSERT INTO tfl_line_routes (line_id, direction, route_index, name, stop_ids, fetched_at) \
+                 VALUES ($1, $2, 0, 'Test', $3, now())",
+            )
+            .bind(line)
+            .bind(direction)
+            .bind(stops)
+            .execute(pool)
+            .await
+            .expect("seed a route");
+        }
+    }
+}
+
+/// DS-191: Paddington to Liverpool Street, stop to stop. One Circle train
+/// runs there round by Victoria (31 minutes); the ride to Edgware Road and
+/// a change there is quicker (30), and the Hammersmith & City from
+/// Paddington's other stop, a walk away, quicker still (25).
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api \
+            routes::trips -- --ignored --test-threads=1`"]
+async fn paddington_to_liverpool_street_takes_the_short_way() {
+    let pool = connect().await;
+    seed(&pool).await;
+    let router = test_router(test_app(pool.clone()));
+    let leg = |body: &Value| -> Value {
+        let itinerary = &body["segments"][0]["itineraries"][0];
+        assert_eq!(
+            describe(itinerary),
+            [format!("TUBE {CIRCLE_PAC}-{CIRCLE_LVT} both")],
+            "{body:?}"
+        );
+        itinerary["legs"][0].clone()
+    };
+
+    // The two Paddington stops apart: the change at Edgware Road.
+    seed_circle(&pool, false).await;
+    let (status, body) = get(
+        router.clone(),
+        plan_uri(CIRCLE_PAC, CIRCLE_LVT, "departAfter=10:00"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let changed = leg(&body);
+    assert_eq!(changed["line"], "Circle", "{changed:?}");
+    // About 30 (29 here: a degree of longitude is shorter this far north).
+    let minutes = changed["minutes"].as_i64().expect("minutes");
+    assert!((28..=30).contains(&minutes), "{changed:?}");
+    assert_eq!(changed["access"]["changeAt"]["id"], "940GZZTCERC");
+    assert!(changed["access"].get("boardStop").is_none(), "{changed:?}");
+
+    // One station: from the Hammersmith & City stop.
+    cleanup(&pool).await;
+    seed(&pool).await;
+    seed_circle(&pool, true).await;
+    let (status, body) = get(
+        router.clone(),
+        plan_uri(CIRCLE_PAC, CIRCLE_LVT, "departAfter=10:00"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let sibling = leg(&body);
+    assert!(
+        sibling["minutes"].as_i64().expect("minutes") <= 25,
+        "{sibling:?}"
+    );
+    assert_eq!(sibling["access"]["boardStop"]["id"], CIRCLE_PAH);
+    assert!(sibling["access"].get("changeAt").is_none(), "{sibling:?}");
+    assert_eq!(sibling["originStop"]["id"], CIRCLE_PAC);
+    assert_eq!(sibling["destinationStop"]["id"], CIRCLE_LVT);
+
+    // To Liverpool Street's station: the same ride from the other stop.
+    let (status, body) = get(router, plan_uri(CIRCLE_PAC, "ZTL", "departAfter=10:00")).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let ztl = candidate(&body, "ZTL");
+    assert_eq!(ztl["boardStop"]["id"], CIRCLE_PAH, "{ztl:?}");
+    assert!(ztl["minutes"].as_i64().expect("minutes") <= 25, "{ztl:?}");
     cleanup(&pool).await;
 }
