@@ -63,9 +63,9 @@ test.describe('/trains views', () => {
     await station.focus();
     await page.keyboard.press('ArrowRight');
     await expect(page.getByRole('radio', { name: 'Between stations' })).toBeChecked();
-    await page.getByRole('combobox', { name: 'From' }).fill('ZFA');
+    await page.getByRole('combobox', { name: 'From', exact: true }).fill('ZFA');
     await page.keyboard.press('Tab');
-    await page.getByRole('combobox', { name: 'To' }).fill('ZFC');
+    await page.getByRole('combobox', { name: 'To', exact: true }).fill('ZFC');
     await page.keyboard.press('Tab');
     await page.getByRole('button', { name: 'Search' }).press('Enter');
     await expect(page).toHaveURL(/[?&]from=ZFA&to=ZFC(&|$)/);
