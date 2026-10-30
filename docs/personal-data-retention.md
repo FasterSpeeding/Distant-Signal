@@ -121,8 +121,9 @@ for one user; account deletion leaves them.
 
 The api's and the frontend's container logs (requests, errors) can hold an
 IP address or a user id. Loki keeps DS application logs for **up to 31 days**
-(Ranma-Config's `{namespace="distant-signal"}` retention rule, from
-2026-10-31; before that they fell under Loki's global default of a year).
+(Ranma-Config's `{namespace="distant-signal"}` retention rule; previously
+they fell under Loki's global default of a year). DS-MCP's own logs (the
+`ds-mcp` namespace) have the same 31-day rule.
 The privacy page says so; keep it in step if that changes.
 
 ## Schedule feed SFTP server logs
