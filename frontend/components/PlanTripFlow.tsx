@@ -75,9 +75,9 @@ export function PlanTripFlow({
   initialOriginCrs?: string | undefined;
   /** A search restored from `/plan`'s query string (`lib/tripPlanUrl.ts`). */
   initialQuery?: PlanFormInitial | undefined;
-  /** `/plan` only: write each search into the address bar
+  /** `/plan`: write each search into the address bar
    * (`history.replaceState`, no navigation), so it can be shared and
-   * reopens the same form. Off on `/journeys/new`, whose query means
+   * reopens the same form. Off by default, for a caller whose query means
    * something else. */
   syncUrl?: boolean;
   /** The date picker's range -- see `PlanTripForm`. */

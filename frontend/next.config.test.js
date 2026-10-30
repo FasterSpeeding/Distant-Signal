@@ -84,10 +84,16 @@ describe('next.config.mjs static Content-Security-Policy headers', () => {
 });
 
 describe('next.config.mjs redirects', () => {
-  it('leaves /journeys/new?mode=plan on New journey, its planner option', async () => {
+  // DS-194: New journey merged into Plan a journey. No query in the
+  // destination, so Next passes the old URL's query (`?mode=`,
+  // `?fromTflStop=`) through untouched.
+  it('sends /journeys/new to /plan for good, keeping its query', async () => {
     if (!nextConfig.redirects) throw new Error('next.config.mjs defines no redirects()');
     const entries = await nextConfig.redirects();
-    expect(entries.filter((entry) => entry.source.startsWith('/journeys/new'))).toEqual([]);
+    expect(entries.filter((entry) => entry.source.startsWith('/journeys/new'))).toEqual([
+      { source: '/journeys/new', destination: '/plan', permanent: true },
+    ]);
+    expect(entries.filter((entry) => entry.source.startsWith('/plan'))).toEqual([]);
   });
 
   it.each(['/track/mine', '/track/tickets'])(

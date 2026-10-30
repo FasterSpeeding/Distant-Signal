@@ -409,22 +409,22 @@ describe('UpcomingJourneysSection', () => {
     expect(within(cardOf(links[0]!)).queryByText(/Shared/)).not.toBeInTheDocument();
   });
 
-  it('offers New journey at the top of the section, as a button', () => {
+  it('offers Plan a journey at the top of the section, as a button', () => {
     renderWithMantine(<UpcomingJourneysSection upcoming={[upcoming(1)]} />);
     const section = screen.getByRole('region', { name: 'Upcoming journeys' });
-    const button = within(section).getByRole('link', { name: 'New journey' });
-    expect(button).toHaveAttribute('href', '/journeys/new');
+    const button = within(section).getByRole('link', { name: 'Plan a journey' });
+    expect(button).toHaveAttribute('href', '/plan');
     expect(button).toHaveClass('mantine-Button-root');
     // Above the list: it comes before the first journey's row.
     const firstRow = within(section).getByRole('link', { name: /to York/ });
     expect(button.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('with nothing upcoming, says so and still offers New journey, without View all', () => {
+  it('with nothing upcoming, says so and still offers Plan a journey, without View all', () => {
     renderWithMantine(<UpcomingJourneysSection upcoming={[]} />);
     const section = screen.getByRole('region', { name: 'Upcoming journeys' });
     expect(within(section).getByText('No upcoming journeys.')).toBeInTheDocument();
-    expect(within(section).getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');
+    expect(within(section).getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
     expect(within(section).queryByRole('link', { name: 'View all' })).not.toBeInTheDocument();
   });
 
@@ -433,7 +433,7 @@ describe('UpcomingJourneysSection', () => {
     const section = screen.getByRole('region', { name: 'Upcoming journeys' });
     expect(within(section).getByText("Couldn't load your journeys. Try again.")).toBeInTheDocument();
     expect(within(section).queryByText('No upcoming journeys.')).not.toBeInTheDocument();
-    expect(within(section).getByRole('link', { name: 'New journey' })).toBeInTheDocument();
+    expect(within(section).getByRole('link', { name: 'Plan a journey' })).toBeInTheDocument();
   });
 
   it(`caps the list at ${MAX_UPCOMING_JOURNEYS} and says how many more there are`, () => {

@@ -166,13 +166,17 @@ used, rather than as a literal in a component.
   text colour at 20%).
 - The bar starts with the wordmark (`Wordmark`: the favicon's signal arm on
   its grape tile, 24px, then "Distant Signal" in 16px bold). Its links are
-  Journeys, Plan a journey, Status, Lines, Operators, Stations and
-  Incidents (`lib/navLinks.ts`). Journeys is the one tracking entry: it
-  opens the Journeys page (`/journeys`; `/track/mine` redirects there) and
-  stays marked current on `/track`, `/trains` and every `/journeys` page.
-  Starting a journey is not a nav entry: "New journey" (`/journeys/new`)
-  is a button on the Journeys page and at the top of the home page's
-  "Upcoming journeys". Logged out, that section is a teaser in the same
+  Journeys, Status, Lines, Operators, Stations and Incidents
+  (`lib/navLinks.ts`). Journeys is the one tracking entry: it opens the
+  Journeys page (`/journeys`; `/track/mine` redirects there) and stays
+  marked current on `/plan`, `/track`, `/trains` and every `/journeys`
+  page. Starting a journey is not a nav entry: "Plan a journey" (`/plan`;
+  `/journeys/new` redirects there) is a button on the Journeys page and at
+  the top of the home page's "Upcoming journeys", and a link on station
+  and stop pages. It plans a route, or starts from a train you know or a
+  Tube, bus or walk leg (a segmented control), and links to "Find a
+  train", "Add a ticket" and "Journey templates" under it. Logged out,
+  "Upcoming journeys" is a teaser in the same
   frame: one flat card saying what tracking a journey gives you, a "Log
   in or sign up" `LoginControl` button and a "Plan a journey" link
   (`UpcomingJourneysTeaser`). No settings live in the bar: the theme and pride flag are
@@ -356,7 +360,7 @@ used, rather than as a literal in a component.
   label to one line with an ellipsis, so three or more options that don't
   fit a phone stack: `orientation="vertical"` in a dialog
   (`AddJourneyLegButton`), or below `xs` only with `.ds-entry-mode-control`
-  (New journey), whose labels also wrap rather than clip.
+  (Plan a journey), whose labels also wrap rather than clip.
 - **Calling-point table** (`JourneyTimeline`): below `sm` the delay sits
   under the Actual time instead of in its own column, cells have 6px side
   padding, and the table only scrolls sideways (inside its own box) when a
@@ -431,7 +435,7 @@ used, rather than as a literal in a component.
   first departure has passed and whose last leg hasn't ended) and then "Upcoming journeys" (first departure
   still to come, soonest first, five then "View all"). "Current journey"
   renders only when there is one; "Upcoming journeys" always does, with a
-  light "New journey" button in its header, and says "No upcoming
+  light "Plan a journey" button in its header, and says "No upcoming
   journeys." when it is empty. The current journey is one `ClickableCard` with a 2px
   grape border (`.currentJourneyCard`), the only such card on the page:
   its name, its worst status (`JourneyStatusGroupBadge`), the leg under
@@ -893,7 +897,7 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
 Stations, a station, Trains (empty and searched), a train, Incidents, the
-plan form (Depart at and Arrive by), New journey, Account (logged in),
+Plan a journey (Depart at, Arrive by, and opened on "I know my route"), Account (logged in),
 Preferences (logged out, logged in and with a pride flag), home logged in, a tracked train
 not in the timetable, a planned tracked train, a journey with an untracked
 walk, the Journeys page and a group with shared trains and journeys (all
@@ -984,6 +988,13 @@ Journeys (DS-115, 21 Oct 2026): the Track entry and page became Journeys
 home page's "Upcoming journeys", and `/journeys/new` took its words as
 its h1; the Journeys list splits into Upcoming and Past, with "Your
 reliability" between them.
+
+Plan a journey (DS-194, 30 Oct 2026): "New journey" (`/journeys/new`)
+merged into "Plan a journey" (`/plan`), which now offers every way to
+start a journey; `/journeys/new` redirects there permanently with its
+query. "Plan a journey" left the nav: the Journeys page and the home
+page's "Upcoming journeys" lead with it as a button, and Journeys stays
+marked current on `/plan`.
 
 Clickable cards (23 Oct 2026): `ClickableCard` replaces `CardLink` (a
 link around the whole card) and the title-only `<Link data-card-link>`

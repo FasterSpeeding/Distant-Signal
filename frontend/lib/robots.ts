@@ -23,7 +23,7 @@ export const DISALLOWED_PATHS: readonly string[] = [
   '/groups',
   // `/journeys/<id>` and `/journeys/templates` are per-user, and
   // `/journeys/shared/<token>` share links carry a secret token.
-  // `/journeys/new` is re-allowed below.
+  // `/journeys/new` redirects to `/plan` (DS-194), which is crawlable.
   '/journeys/',
   // The Journeys page itself (per-user), anchored so it adds nothing to
   // the prefix above, and its old paths `/track/mine` and
@@ -47,11 +47,11 @@ export const DISALLOWED_PATHS: readonly string[] = [
   '/*?',
 ];
 
-/** Paths re-allowed inside a disallowed prefix above. Google and Bing
- * apply the most specific (longest) matching rule, so this beats
- * `Disallow: /journeys/`. `$` anchors it, so `/journeys/new?...` is still
- * caught by the query-string rule. */
-export const ALLOWED_PATHS: readonly string[] = ['/', '/journeys/new$'];
+/** Paths allowed explicitly. Google and Bing apply the most specific
+ * (longest) matching rule, so a path here beats a shorter disallowed
+ * prefix above. Nothing needs that now: `/journeys/new`, the one path that
+ * did, redirects to `/plan` (DS-194). */
+export const ALLOWED_PATHS: readonly string[] = ['/'];
 
 /** Crawlers that collect content to train AI models. **Blocked**: the
  * owner opted out of AI training (2026-09-27), so `BLOCK_AI_TRAINING_CRAWLERS`
