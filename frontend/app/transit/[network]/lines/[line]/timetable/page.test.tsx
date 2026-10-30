@@ -44,6 +44,9 @@ describe('/transit/[network]/lines/[line]/timetable', () => {
     const eccles = screen.getByRole('rowheader', { name: 'Eccles' }).closest('tr')!;
     expect(eccles.textContent).toContain('07:32');
     expect(eccles.textContent).toContain("Doesn't call");
+    expect(screen.getByRole('rowheader', { name: 'Eccles' }).querySelector('a')?.getAttribute('href')).toBe(
+      '/transit/metrolink/stops/9400ZZMAECC',
+    );
   });
 
   it('links the other direction and the next and previous windows', async () => {

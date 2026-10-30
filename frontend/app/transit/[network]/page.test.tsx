@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cleanup, screen } from '@testing-library/react';
+import { cleanup, screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { cardOf } from '@/test/clickableCard';
 import { MINOR_DELAYS, NETWORK, NOTHING_REPORTED, SITUATIONS, STATUS_UNAVAILABLE, STOPS } from '@/test/transitFixtures';
@@ -43,7 +43,8 @@ describe('/transit/[network]', () => {
     renderWithMantine(await TransitNetworkPage(params('metrolink')));
     expect(screen.getByRole('heading', { level: 1, name: 'Manchester Metrolink' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Blue Line' }).getAttribute('href')).toBe('/transit/metrolink/lines/blue');
-    expect(screen.getByRole('link', { name: 'Piccadilly' }).getAttribute('href')).toBe(
+    const stops = screen.getByRole('list', { name: 'Stops' });
+    expect(within(stops).getByRole('link', { name: 'Piccadilly' }).getAttribute('href')).toBe(
       '/transit/metrolink/stops/9400ZZMAPIC',
     );
     expect(screen.getByText(/We don't have live tram times/)).toBeTruthy();
@@ -73,6 +74,11 @@ describe('/transit/[network]', () => {
     expect(screen.getByRole('heading', { name: 'Disruptions' })).toBeTruthy();
     expect(screen.getByText(SITUATIONS.current[0]!.summary)).toBeTruthy();
     expect(screen.getByText(SITUATIONS.upcoming[0]!.summary)).toBeTruthy();
+    // The lift notice at Piccadilly links the stop, as the stop list does.
+    const now = screen.getByRole('list', { name: 'Disruptions now' });
+    expect(within(now).getByRole('link', { name: 'Piccadilly' }).getAttribute('href')).toBe(
+      '/transit/metrolink/stops/9400ZZMAPIC',
+    );
   });
 
   it('says when the disruptions could not be loaded, and when they are stale', async () => {

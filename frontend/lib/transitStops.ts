@@ -51,13 +51,20 @@ export function transitNetworkName(network: string, fallback = 'tram'): string {
   return TRANSIT_STOP_PREFIXES.find((entry) => entry.network === network)?.name ?? fallback;
 }
 
+/** A timetabled network's stop page: `/transit/metrolink/stops/9400ZZMAPIC`.
+ * `stop` is the station's id (never a platform's), as the stop lists, the
+ * line pages, the timetable and a disruption's `stops` all give it. */
+export function transitStopHref(network: string, stop: string): string {
+  return `/transit/${encodeURIComponent(network)}/stops/${encodeURIComponent(stop)}`;
+}
+
 /** The page for a stop an untracked leg was saved with: a Metrolink
  * station's transit stop page, a TfL stop's page (`940G`, London trams
  * included), or `null` for anything else. */
 export function stopPageHref(id: string | null | undefined): string | null {
   if (!id?.trim()) return null;
   const transit = transitNetworkOf(id);
-  if (transit) return `/transit/${transit.network}/stops/${encodeURIComponent(id.trim().toUpperCase())}`;
+  if (transit) return transitStopHref(transit.network, id.trim().toUpperCase());
   if (/^940G[0-9A-Z]{4,16}$/i.test(id.trim())) return tflStopHref(id.trim().toUpperCase());
   return null;
 }
