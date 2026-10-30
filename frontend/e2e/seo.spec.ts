@@ -31,7 +31,7 @@ test('a lower-case station code redirects permanently to the upper-case page', a
 const LIVE_PREVIEWS: [page: string, missing: string, description: RegExp][] = [
   [`/incidents/${INCIDENT_ID}`, '/incidents/NO-SUCH-INCIDENT', /^(Disruption|Planned work)/],
   [`/lines/${LINE_ID}`, '/lines/no-such-line', /^Live status, disruption/],
-  [`/stations/${CRS}`, '/stations/ZZZ', /^Live departures, disruption and accessibility at /],
+  [`/stations/${CRS}`, '/stations/ZZZ', /^Disruption, accessibility and departures for /],
 ];
 
 for (const [path, missing, description] of LIVE_PREVIEWS) {
