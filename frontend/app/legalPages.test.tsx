@@ -102,7 +102,7 @@ describe('draft legal pages', () => {
     expect(screen.queryByText(/We do not use analytics/)).toBeNull();
   });
 
-  it('discloses the feature counts and the opt-in usage counts, and keeps server logs 7 days (DS-190)', () => {
+  it('discloses the feature counts and the opt-in usage counts, and keeps server logs 31 days (DS-190)', () => {
     vi.mocked(legal.legalPagesMode).mockReturnValue('published');
     renderWithMantine(PrivacyPage());
     expect(screen.getByRole('heading', { level: 3, name: 'Feature counts' })).toBeInTheDocument();
@@ -112,7 +112,7 @@ describe('draft legal pages', () => {
     expect(screen.getByText(/To object, email us/)).toBeInTheDocument();
     expect(screen.getByText(/Daily totals are kept for 13 months/)).toBeInTheDocument();
     expect(screen.getByText(/Global Privacy Control or Do Not Track, nothing is sent/)).toBeInTheDocument();
-    expect(screen.getByText(/Our server logs are kept for up to 7 days/)).toBeInTheDocument();
+    expect(screen.getByText(/Our server logs are kept for up to 31 days/)).toBeInTheDocument();
     expect(screen.queryByText(/rotated within days/)).toBeNull();
   });
 

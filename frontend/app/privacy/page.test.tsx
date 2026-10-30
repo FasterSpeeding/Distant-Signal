@@ -52,7 +52,7 @@ describe('PrivacyPage retention copy', () => {
   it('states the file-transfer server log tiers', () => {
     render();
     const text = retentionText('Connections to our file-transfer server');
-    expect(text).toMatch(/7 days for connections that never try to log in/);
+    expect(text).toMatch(/31 days for connections that never try to log in/);
     expect(text).toMatch(/90 days for failed logins and blocked addresses/);
     expect(text).toMatch(/400 days for successful logins and file transfers/);
   });
@@ -81,7 +81,7 @@ describe('PrivacyPage assistant connection', () => {
     expect(text).toMatch(/Connected apps/);
     expect(text).toMatch(/90 days without use/);
     expect(text).toMatch(/log out of our login service/);
-    expect(text).toMatch(/keep these logs for 7 days/);
+    expect(text).toMatch(/keep these logs for 31 days/);
     expect(text).toMatch(/for 30 days/);
     expect(text).toMatch(/After a connection ends we keep a record of it .* for one year, then delete it\./);
   });

@@ -25,7 +25,9 @@ import { withAbsoluteTitle } from '@/lib/pageMetadata';
 // trains, tickets and journeys after the travel date, push subscriptions
 // after a long absence, and -- only once enabled (DQ7: 730 days, after this
 // notice is published) -- whole inactive accounts.
-// Server logs: Loki keeps the application logs for 7 days.
+// Server logs: Loki keeps the distant-signal namespace's logs for 31 days
+// (Ranma-Config's per-namespace retention rule); the SFTP audit tiers keep
+// 90 and 400 days. See docs/personal-data-retention.md.
 // Usage analytics (DS-190): the api's feature counters (Prometheus, 30 days,
 // no identifiers, legitimate interests) and the opt-in usage counts
 // (`usage_daily`, daily totals, 13 months, consent; GPC and DNT honoured).
@@ -142,7 +144,7 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
       what: 'Your IP address, the pages you request and when, handled by our network provider (Cloudflare), our servers and our login service.',
       why: 'To keep the service secure, prevent abuse and fix faults.',
       basis: LEGITIMATE_INTERESTS,
-      retention: `Our server logs are kept for up to 7 days. Our login service keeps its event logs for ${LEGAL_CONFIG.SSO_LOG_RETENTION}. Cloudflare keeps its logs under its own policy.`,
+      retention: `Our server logs are kept for up to 31 days. Our login service keeps its event logs for ${LEGAL_CONFIG.SSO_LOG_RETENTION}. Cloudflare keeps its logs under its own policy.`,
     },
     {
       title: 'Feature counts',
@@ -166,7 +168,7 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
       why: 'To secure that server against break-in attempts, and to show which files we received from our supplier and when.',
       basis: LEGITIMATE_INTERESTS,
       retention:
-        "7 days for connections that never try to log in, 90 days for failed logins and blocked addresses, and 400 days for successful logins and file transfers (in practice, only our supplier's).",
+        "31 days for connections that never try to log in, 90 days for failed logins and blocked addresses, and 400 days for successful logins and file transfers (in practice, only our supplier's).",
     },
     {
       title: 'Backups',
@@ -263,7 +265,7 @@ export default function PrivacyPage() {
         </Text>
         <Text>
           We log each request your assistant makes (your account, the time, what it asked for and whether it worked),
-          never the journey contents, and keep these logs for 7 days. We keep a list of the journeys it deleted (name,
+          never the journey contents, and keep these logs for 31 days. We keep a list of the journeys it deleted (name,
           date, stations and train) for 30 days, shown in Connected apps so you can save them again. After a connection
           ends we keep a record of it (which app, what it could do, and when it was connected, last used and ended) for
           one year, then delete it.
