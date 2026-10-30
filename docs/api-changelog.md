@@ -19,6 +19,27 @@ and the `fewestChanges` label still use it (DS-205;
   `changeCount` 0, `accessChangeCount` 1. A client that wants every
   change adds the two; DS-MCP can show it as "1 change (on the Tube)".
 
+## 2026-10-30: Tube access rides timed by `TfL`'s timetable
+
+No shape change; some access legs' `minutes` change (DS-206;
+`crates/api/src/data/tfl_access.rs`).
+
+- `GET /Trips/plan` with a `TfL` stop end: a ride's minutes on the train
+  are now `TfL`'s timetabled running times between its stops, from
+  poller-tfl's routes job. A step `TfL`'s timetable has no time for is
+  still its distance at the line's speed (Tube 30 km/h), as every ride
+  was before. The fixed parts are unchanged: 5 minutes in, 3 out to a
+  station, and 5 plus 5 for a change between branches. So
+  `segments[].itineraries[].legs[].minutes` for an access leg, and
+  `access.{origin,destination}.candidates[].minutes`, change. Rides on the
+  outer branches get quicker and rides through central London slower,
+  and the quickest candidate may be a different one. Uxbridge to
+  Heathrow Terminals 2 & 3 is 37 minutes to Acton Town and 26 on, 80 in
+  all (82 before). Paddington to Liverpool Street on the Hammersmith &
+  City is 20 minutes on the train (15 before).
+- Until the routes job has run with this change, and on any line it
+  cannot time, rides are timed as before.
+
 ## 2026-10-30: `results=options` adds alternative routes, with `labels`
 
 Additive. DS-MCP can keep reading the itineraries as before; the list may
