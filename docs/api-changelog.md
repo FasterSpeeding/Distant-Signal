@@ -3,6 +3,38 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-30: `previously_calls_at` and `previously_stops_at` on the `/trains` boards
+
+Additive: two optional query parameters on `GET /public/trains/search`
+and `GET /public/trains/arrivals`, for finding one specific train by
+where it has already been (DS-213; `crates/api/src/data/stop_filters.rs`).
+A request without them is answered exactly as before. They are not on
+`/Trips/plan`.
+
+- They look only at the part of the train's run BEFORE `station` (on the
+  search with `stops_at`, before `station`, the first of the two), the
+  part a passenger does not ride. A call after `station` never counts.
+- `previously_calls_at=A,B`: the train made a passenger call (a public
+  arrival or departure time) at each, in this order, before `station`.
+  The train's origin counts, so `previously_calls_at=X` finds every train
+  `origin=X` finds, and more.
+- `previously_stops_at=A,B`: the same, but the train's origin does not
+  count: it was already running when it stopped there. The origin is the
+  schedule's first location, the one `originCrs` names.
+- A working-only call or a passing point is never a previous call or
+  stop.
+- On the arrivals board every list already looks before `station`, so
+  there `previously_calls_at` means the same as `calls_at`.
+- The same syntax and cap as `calls_at`: at most 3 entries, each a CRS, a
+  `tiploc:` code or an OR choice (`KGX|EUS`, `group:LON`), not the same
+  twice in a row. `400` (plain text naming the parameter) for: too many
+  entries; an unknown code or group; a single-station entry that is
+  `station` or `stops_at`; and, on the arrivals board only, an entry
+  wholly in `avoid` or `avoid_stop`.
+- `origin` is unchanged: it still means "starts at" exactly. The `/trains`
+  page no longer offers it: its old `origin=X` links open with
+  "Previously calls at" set to X.
+
 ## 2026-10-30: stop filters on the `/trains` boards (`calls_at`, `via`, `avoid`, `avoid_stop`)
 
 Additive: four optional query parameters on `GET /public/trains/search`

@@ -27,7 +27,18 @@ const searchWithGroups = withGroupSuggestions(searchPlannerLocations);
  * the same pickers, labels, help text and caps (`AdvancedOptionsDisclosure`,
  * `STOP_LIST_FIELDS`); "Call at", which the planner keeps on its main
  * form, opens the list here. `scope` says which part of the train they
- * look at, which depends on the board. */
+ * look at, which depends on the board.
+ *
+ * First, under `earlierScope`, the two lists for finding one particular
+ * train by where it has already been (DS-213; never in the planner):
+ * Previously calls at (`previously_calls_at`, where it starts counts) and
+ * Previously stops at (`previously_stops_at`, it doesn't). They look at
+ * the route before the station, the rest after it, so they get their own
+ * line. On the arrivals board (`arrivals`) every list looks before the
+ * station: there is one line, and "Previously calls at", which would mean
+ * just what "Call at" does, is left out, unless it holds stations (a link
+ * from the departures board, or an old "Starts at" link), so a filter in
+ * force is never hidden. */
 export function TrainsAdvancedOptions({
   filters,
   onChange,
@@ -37,6 +48,8 @@ export function TrainsAdvancedOptions({
   opened,
   onOpenedChange,
   scope,
+  earlierScope,
+  arrivals = false,
   comboboxProps,
 }: {
   filters: TrainStopFilters;
@@ -48,6 +61,12 @@ export function TrainsAdvancedOptions({
   onOpenedChange: (opened: boolean) => void;
   /** e.g. "These look at the train's route after Reading." */
   scope: string;
+  /** e.g. "To find a particular train: where it has been before
+   * Reading." Not shown on the arrivals board, where `scope` covers every
+   * list. */
+  earlierScope: string;
+  /** The arrivals board: see above. */
+  arrivals?: boolean | undefined;
   /** Each picker's `comboboxProps` (see `StationListPicker`). */
   comboboxProps?: ComboboxProps | undefined;
 }) {
@@ -61,8 +80,55 @@ export function TrainsAdvancedOptions({
     >
       <Stack gap="lg">
         <Text size="sm" c="dimmed">
-          {scope}
+          {arrivals ? scope : earlierScope}
         </Text>
+        {(!arrivals || filters.previouslyCallsAt.length > 0) && (
+          <StationListPicker
+            label="Previously calls at (in order)"
+            description={
+              arrivals
+                ? 'On the arrivals board this is the same as "Call at": the train must stop at each of these, in this order, where it starts included.'
+                : 'The train must already have stopped at each of these, in this order. Where it starts counts.'
+            }
+            values={filters.previouslyCallsAt}
+            onChange={(previouslyCallsAt) => onChange({ ...filters, previouslyCallsAt })}
+            names={names}
+            onNames={onNames}
+            search={searchWithGroups}
+            max={MAX_CALLS_AT}
+            ordered
+            allowStops
+            allowGroups
+            comboboxProps={comboboxProps}
+            error={errors.previouslyCallsAt}
+            itemNoun="previous call"
+          />
+        )}
+        <StationListPicker
+          label="Previously stops at (in order)"
+          description={
+            arrivals
+              ? 'The train must stop at each of these, in this order, after it started. Unlike "Call at", where it starts doesn\'t count.'
+              : "The train must already have stopped at each of these, in this order, after it started. Where it starts doesn't count."
+          }
+          values={filters.previouslyStopsAt}
+          onChange={(previouslyStopsAt) => onChange({ ...filters, previouslyStopsAt })}
+          names={names}
+          onNames={onNames}
+          search={searchWithGroups}
+          max={MAX_CALLS_AT}
+          ordered
+          allowStops
+          allowGroups
+          comboboxProps={comboboxProps}
+          error={errors.previouslyStopsAt}
+          itemNoun="previous stop"
+        />
+        {!arrivals && (
+          <Text size="sm" c="dimmed">
+            {scope}
+          </Text>
+        )}
         <StationListPicker
           label="Call at (in order)"
           description='The train must stop at each of these, in this order. A group such as "Any of the London Terminals" means a stop at any one of its stations.'

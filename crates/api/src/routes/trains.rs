@@ -327,6 +327,14 @@ struct TrainSearchParams {
     via: Option<String>,
     avoid: Option<String>,
     avoid_stop: Option<String>,
+    /// Optional (2026-10-30, DS-213), filters on the part of the train's
+    /// run BEFORE `station` (the part not ridden), for finding one
+    /// specific train: `previously_calls_at` (a passenger call at each, in
+    /// order, the train's origin included) and `previously_stops_at` (the
+    /// same, its origin excluded). Comma-separated like `calls_at`; see
+    /// `data::stop_filters`. `origin` stays, an exact "starts at".
+    previously_calls_at: Option<String>,
+    previously_stops_at: Option<String>,
     /// Optional page size, 1..=`MAX_SEARCH_LIMIT`, defaulting to
     /// `DEFAULT_SEARCH_LIMIT`. Values above the maximum are clamped, not
     /// rejected; zero, negative and unparseable values are a `400`.
@@ -1078,8 +1086,11 @@ async fn get_trains_search(
             via: params.via.as_deref(),
             avoid: params.avoid.as_deref(),
             avoid_stop: params.avoid_stop.as_deref(),
+            previously_calls_at: params.previously_calls_at.as_deref(),
+            previously_stops_at: params.previously_stops_at.as_deref(),
         },
         &anchors,
+        stop_filters::Board::Search,
     )?;
     let across_midnight = parse_across_midnight(params.across_midnight.as_deref())?;
     let limit = normalize_limit(params.limit.as_deref())?;
@@ -4976,6 +4987,120 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
+    async fn trains_search_previously_filters_look_before_the_station() {
+        let (pool, _guards) = connect().await;
+        let date = seed_advanced(&pool).await;
+        let uids = |query: &'static str| {
+            let pool = pool.clone();
+            async move { advanced_uids(&pool, "/trains/search", query, date).await }
+        };
+        // Departures from ZQS. ZQO is where ADV001 and ADV002 start: a
+        // previous call, but not a previous stop.
+        assert_eq!(
+            uids("station=ZQS&previously_calls_at=ZQO").await,
+            ["ADV001", "ADV002"]
+        );
+        assert!(uids("station=ZQS&previously_stops_at=ZQO").await.is_empty());
+        // ADV004 starts at ZQA; ADV001 calls there only AFTER ZQS.
+        assert_eq!(
+            uids("station=ZQS&previously_calls_at=ZQA").await,
+            ["ADV004"]
+        );
+        // Departures from ZQA. ADV001 stopped at ZQS on the way; ADV003
+        // started there.
+        assert_eq!(
+            uids("station=ZQA&previously_stops_at=ZQS").await,
+            ["ADV001"]
+        );
+        assert_eq!(
+            uids("station=ZQA&previously_calls_at=ZQS").await,
+            ["ADV001", "ADV003"]
+        );
+        // In order, and an OR choice.
+        assert_eq!(
+            uids("station=ZQA&previously_calls_at=ZQO,ZQS").await,
+            ["ADV001"]
+        );
+        assert!(
+            uids("station=ZQA&previously_calls_at=ZQS,ZQO")
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            uids("station=ZQA&previously_stops_at=ZQB%7CZQS").await,
+            ["ADV001"]
+        );
+        // ADV003's ZQB call is working-only, and ADV001 only passes ZQJ.
+        assert!(uids("station=ZQA&previously_calls_at=ZQB").await.is_empty());
+        assert!(uids("station=ZQA&previously_calls_at=ZQJ").await.is_empty());
+        // With the ride's own filters too.
+        assert_eq!(
+            uids("station=ZQA&previously_calls_at=ZQS&calls_at=ZQB").await,
+            ["ADV001"]
+        );
+        // The legacy exact origin filter still works beside them.
+        assert_eq!(
+            uids("station=ZQA&origin=ZQS&previously_calls_at=ZQS").await,
+            ["ADV003"]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn trains_between_and_arrivals_previously_filters_look_before_the_first_station() {
+        let (pool, _guards) = connect().await;
+        let date = seed_advanced(&pool).await;
+        let search = |query: &'static str| {
+            let pool = pool.clone();
+            async move { advanced_uids(&pool, "/trains/search", query, date).await }
+        };
+        let arrivals = |query: &'static str| {
+            let pool = pool.clone();
+            async move { advanced_uids(&pool, "/trains/arrivals", query, date).await }
+        };
+        // Between ZQA and ZQT: ADV001, ADV003 and ADV004.
+        assert_eq!(
+            search("station=ZQA&stops_at=ZQT&previously_calls_at=ZQS").await,
+            ["ADV001", "ADV003"]
+        );
+        assert_eq!(
+            search("station=ZQA&stops_at=ZQT&previously_stops_at=ZQS").await,
+            ["ADV001"]
+        );
+        // ZQB lies between the stations on ADV001, not before them.
+        assert!(
+            search("station=ZQA&stops_at=ZQT&previously_calls_at=ZQB")
+                .await
+                .is_empty()
+        );
+        // Arrivals at ZQT: every train came from or through ZQS, but ADV003
+        // started there.
+        assert_eq!(
+            arrivals("station=ZQT&previously_calls_at=ZQS").await.len(),
+            4
+        );
+        assert_eq!(
+            arrivals("station=ZQT&previously_stops_at=ZQS").await,
+            ["ADV001", "ADV002", "ADV004"]
+        );
+        // ZQA: ADV004's origin, a stop on ADV001 and ADV003.
+        assert_eq!(
+            arrivals("station=ZQT&previously_stops_at=ZQA").await,
+            ["ADV001", "ADV003"]
+        );
+        assert_eq!(
+            arrivals("station=ZQS&previously_calls_at=ZQO").await,
+            ["ADV001", "ADV002"]
+        );
+        assert!(
+            arrivals("station=ZQS&previously_stops_at=ZQO")
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
     async fn trains_stop_filters_reject_bad_input_with_a_400() {
         let (pool, _guards) = connect().await;
         let date = seed_advanced(&pool).await;
@@ -5004,6 +5129,33 @@ mod db_tests {
                 "/trains/search",
                 "station=ZQS&via=ZQJ&avoid=ZQJ",
                 "via: 'ZQJ' is also in avoid; a train cannot do both",
+            ),
+            (
+                "/trains/search",
+                "station=ZQS&previously_calls_at=ZQS",
+                "previously_calls_at: 'ZQS' is the station searched; name a station elsewhere on \
+                 the train's route",
+            ),
+            (
+                "/trains/search",
+                "station=ZQA&stops_at=ZQT&previously_stops_at=ZQT",
+                "previously_stops_at: 'ZQT' is the stops_at station; name a station elsewhere \
+                 on the train's route",
+            ),
+            (
+                "/trains/search",
+                "station=ZQS&previously_stops_at=QQQ",
+                "previously_stops_at: 'QQQ' is not a recognised station code",
+            ),
+            (
+                "/trains/search",
+                "station=ZQS&previously_calls_at=ZQA,ZQB,ZQJ,ZQO",
+                "too many previously_calls_at stations: 4 given, at most 3 allowed",
+            ),
+            (
+                "/trains/arrivals",
+                "station=ZQS&previously_stops_at=ZQA&avoid=ZQA",
+                "previously_stops_at: 'ZQA' is also in avoid or avoid_stop; a train cannot do both",
             ),
             (
                 "/trains/arrivals",

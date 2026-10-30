@@ -72,6 +72,12 @@ pub(super) struct ArrivalsParams {
     via: Option<String>,
     avoid: Option<String>,
     avoid_stop: Option<String>,
+    /// Optional (2026-10-30, DS-213), the search's `previously_calls_at`
+    /// and `previously_stops_at`, also before `station`: here
+    /// `previously_calls_at` means what `calls_at` does, and
+    /// `previously_stops_at` leaves out the train's origin.
+    previously_calls_at: Option<String>,
+    previously_stops_at: Option<String>,
     /// Page size, as the search's.
     limit: Option<String>,
     /// A previous page's `nextCursor`.
@@ -367,7 +373,10 @@ impl ArrivalsFilter<'_> {
                     .then_some((arrival.row.scheduled, arrival.row.day_offset));
                 let passes = calls.get(&arrival.row.train_uid).is_some_and(|calls| {
                     stop_filters::arrival_span(calls, &stop_filter.station_tiplocs, departure)
-                        .is_some_and(|span| stop_filter.filters.accepts(span))
+                        .is_some_and(|span| {
+                            stop_filter.filters.accepts(span)
+                                && stop_filter.filters.accepts_earlier(span)
+                        })
                 });
                 if passes {
                     page.push(arrival);
@@ -569,11 +578,14 @@ pub(super) async fn get_trains_arrivals(
             via: params.via.as_deref(),
             avoid: params.avoid.as_deref(),
             avoid_stop: params.avoid_stop.as_deref(),
+            previously_calls_at: params.previously_calls_at.as_deref(),
+            previously_stops_at: params.previously_stops_at.as_deref(),
         },
         &[super::stop_filters::Anchor {
             crs: &station,
             role: "the station searched",
         }],
+        super::stop_filters::Board::Arrivals,
     )?;
     let from_time = non_empty(&params.from)
         .map(|s| normalize_time("from", s))

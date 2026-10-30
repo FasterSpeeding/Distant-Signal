@@ -21,7 +21,31 @@ describe('parseStopFilterParams', () => {
       via: ['DID'],
       avoid: ['BHM', 'tiploc:STAFBUS'],
       avoidStop: ['OXF'],
+      previouslyCallsAt: [],
+      previouslyStopsAt: [],
     });
+  });
+
+  it('reads the two Previously lists like Call at', () => {
+    const params = new URLSearchParams('previously_calls_at=eus,group:lon&previously_stops_at=cre,cre,AAA,BBB,CCC');
+    const parsed = parseStopFilterParams(params);
+    expect(parsed.previouslyCallsAt).toEqual(['EUS', 'group:LON']);
+    expect(parsed.previouslyStopsAt).toEqual(['CRE', 'AAA', 'BBB']);
+  });
+
+  it("reads an old link's origin (the removed Starts at) as Previously calls at, on the station view only", () => {
+    const old = new URLSearchParams('station=MAN&origin=eus');
+    expect(parseStopFilterParams(old, { legacyOrigin: true }).previouslyCallsAt).toEqual(['EUS']);
+    // Between two stations "Starts at" never applied.
+    expect(parseStopFilterParams(old).previouslyCallsAt).toEqual([]);
+    // A previously_calls_at of its own wins; a malformed origin is dropped.
+    expect(
+      parseStopFilterParams(new URLSearchParams('origin=EUS&previously_calls_at=CRE'), { legacyOrigin: true })
+        .previouslyCallsAt,
+    ).toEqual(['CRE']);
+    expect(parseStopFilterParams(new URLSearchParams('origin=EUSX'), { legacyOrigin: true }).previouslyCallsAt).toEqual(
+      [],
+    );
   });
 
   it('drops what it cannot read and cuts each list to its cap', () => {
@@ -45,11 +69,18 @@ describe('parseStopFilterParams', () => {
 
 describe('stopFilterEntries', () => {
   it('round-trips through the URL', () => {
-    const set = filters({ callsAt: ['SWI', 'group:LON'], avoidStop: ['OXF'] });
+    const set = filters({
+      callsAt: ['SWI', 'group:LON'],
+      avoidStop: ['OXF'],
+      previouslyCallsAt: ['EUS'],
+      previouslyStopsAt: ['CRE', 'group:LON'],
+    });
     const entries = stopFilterEntries(set);
     expect(entries).toEqual([
       ['calls_at', 'SWI,group:LON'],
       ['avoid_stop', 'OXF'],
+      ['previously_calls_at', 'EUS'],
+      ['previously_stops_at', 'CRE,group:LON'],
     ]);
     expect(parseStopFilterParams(new URLSearchParams(entries))).toEqual(set);
   });
@@ -58,10 +89,22 @@ describe('stopFilterEntries', () => {
     expect(stopFilterEntries(NO_STOP_FILTERS)).toEqual([]);
     expect(countStopFilters(filters({ via: ['DID'], avoid: ['BHM', 'CRE'] }))).toBe(2);
     expect(setStopFilterParams(filters({ via: ['DID'], avoid: ['BHM'] }))).toEqual(['via', 'avoid']);
+    expect(setStopFilterParams(filters({ previouslyCallsAt: ['EUS'], previouslyStopsAt: ['CRE'] }))).toEqual([
+      'previously_calls_at',
+      'previously_stops_at',
+    ]);
   });
 
   it('are /trains URL params, so switching view clears them', () => {
-    for (const param of ['calls_at', 'via', 'avoid', 'avoid_stop']) {
+    for (const param of [
+      'calls_at',
+      'via',
+      'avoid',
+      'avoid_stop',
+      'previously_calls_at',
+      'previously_stops_at',
+      'origin',
+    ]) {
       expect(TRAIN_URL_PARAMS).toContain(param);
     }
   });
@@ -80,6 +123,9 @@ describe('stopFiltersSummary', () => {
       stopFiltersSummary(filters({ callsAt: ['SWI'], via: ['DID'], avoid: ['BHM'], avoidStop: ['OXF'] }), names),
     ).toBe("Call at Swindon · Pass through DID · Avoid BHM · Don't stop at OXF");
     expect(stopFiltersSummary(NO_STOP_FILTERS)).toBe('');
+    expect(
+      stopFiltersSummary(filters({ previouslyCallsAt: ['SWI'], previouslyStopsAt: ['DID'], via: ['BHM'] }), names),
+    ).toBe('Previously calls at Swindon · Previously stops at DID · Pass through BHM');
   });
 });
 
@@ -117,6 +163,23 @@ describe('stopFilterErrors', () => {
     );
     expect(stopFilterErrors(filters({ via: ['DID'], avoid: ['DID'] }), between).via).toBe(
       'DID is also in "Avoid completely": a train can\'t both pass through it and avoid it.',
+    );
+  });
+
+  it('refuses a searched station as a Previously entry', () => {
+    expect(stopFilterErrors(filters({ previouslyCallsAt: ['RDG'] }), between).previouslyCallsAt).toBe(
+      'RDG is where you get on: list a station elsewhere on the route.',
+    );
+    expect(stopFilterErrors(filters({ previouslyStopsAt: ['PAD'] }), between).previouslyStopsAt).toBe(
+      'PAD is where you get off: list a station elsewhere on the route.',
+    );
+  });
+
+  it('lets a Previously entry be avoided after the station, but not on the arrivals board', () => {
+    const set = filters({ previouslyStopsAt: ['SWI'], avoid: ['SWI'] });
+    expect(stopFilterErrors(set, between)).toEqual({});
+    expect(stopFilterErrors(set, { ...between, arrivals: true }).previouslyStopsAt).toBe(
+      'SWI is also in "Avoid completely" or "Don\'t stop at": a train can\'t both stop there and not.',
     );
   });
 
