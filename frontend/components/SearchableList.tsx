@@ -38,7 +38,9 @@ export function matchingItems<T extends { text: string }>(items: readonly T[], q
  *
  * `layout` picks the container, here rather than passed in, because a
  * Server Component page can hand this its rendered items but not a render
- * function: `grid` is the cards' 1/2/3-column grid, `list` a plain `<ul>`. */
+ * function: `grid` is the cards' 1/2/3-column grid, `list` a plain `<ul>`,
+ * named `listLabel` ("Stops") so it reads apart from the page's other
+ * lists. */
 export function SearchableList({
   items,
   searchLabel,
@@ -46,6 +48,7 @@ export function SearchableList({
   titlePrefix,
   initialQuery = '',
   layout,
+  listLabel,
 }: {
   items: SearchableListItem[];
   /** "Find an operator". */
@@ -55,6 +58,8 @@ export function SearchableList({
   titlePrefix: string;
   initialQuery?: string | undefined;
   layout: 'grid' | 'list';
+  /** The `list` layout's accessible name. */
+  listLabel?: string | undefined;
 }) {
   // From the address bar when there is one, so Back restores the last
   // search (see `useInitialSearchParams`).
@@ -100,7 +105,7 @@ export function SearchableList({
           {nodes}
         </SimpleGrid>
       ) : (
-        <Stack component="ul" gap={4} className="ds-plain-list">
+        <Stack component="ul" gap={4} className="ds-plain-list" aria-label={listLabel}>
           {nodes}
         </Stack>
       )}
