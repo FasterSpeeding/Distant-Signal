@@ -2523,8 +2523,8 @@ svg[data-icon='external-link'] {
      which saves a whole column and its "Delay" header. From `sm` up the
      Delay column is back and the stacked copy hidden; only one of the two
      is ever displayed, so a screen reader meets it once.
-   - Delay and platform badges use their short forms ("+4 min", "9 (was
-     6)"), from `DelayBadge`'s and `PlatformBadge`'s `compact`.
+   - Delay and platform badges use their short forms ("+4 min", "9 was
+     ~~6~~"), from `DelayBadge`'s and `PlatformBadge`'s `compact`.
    - Cell padding is 6px a side, as `.linesTableWrap`'s. */
 /* A booked, not yet confirmed platform (DS-127, `PlatformBadge`): the
    number underlined in dots on an outline badge, so "provisional" is not
@@ -2542,15 +2542,19 @@ svg[data-icon='external-link'] {
   text-decoration-thickness: 1.5px;
 }
 
-/* The old number sits a little apart from the new one, so "6 9" never
-   reads as "69" when the strike-through is hard to see. */
-.platformBadge__previous {
-  margin-inline-end: 0.15em;
+/* A changed platform's superseded one, "was ~~6~~" after the new "9":
+   set apart from it and in lighter type than the badge's bold, so the new
+   number is the one that stands out. Dimmed by weight, not opacity, which
+   would drop the label under the badge's measured contrast. */
+.platformBadge__was {
+  margin-inline-start: 0.15em;
+  font-weight: 500;
 }
 
-/* ...and the two never part: where the progress line's narrow node wraps
-   the badge, it breaks after "Platform", not between 6 and 9. */
-.platformBadge__numbers {
+/* Where the progress line's narrow node wraps the badge, it breaks
+   between the two, "Platform 9" over "was 6", never inside either. */
+.platformBadge__current,
+.platformBadge__was {
   white-space: nowrap;
 }
 

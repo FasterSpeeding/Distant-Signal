@@ -283,7 +283,7 @@ describe('JourneyTimeline', () => {
     const badge = document.querySelector('[data-platform-state="changed"]');
     const short = badge?.querySelector('.phoneLabel__compact');
     expect(short).toHaveAttribute('aria-hidden', 'true');
-    expect(short).toHaveTextContent('6 9');
+    expect(short).toHaveTextContent('9 was 6');
     expect(short?.querySelector('s')).toHaveTextContent('6');
     expect(spokenText(badge ?? null)).toBe('Platform 9 (changed from 6)');
 

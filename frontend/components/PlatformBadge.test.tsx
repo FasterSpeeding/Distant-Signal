@@ -102,16 +102,24 @@ describe('PlatformBadge', () => {
   });
 
   describe('changed', () => {
-    it('is a blue light badge with the old number struck through before the new one', () => {
+    // The report this fixes: a struck "4" before "5" read as "4 5", the
+    // strike lost in the 4's crossbar, so nothing said which was current.
+    it('is a blue light badge: the new number first, then "was" and the old one struck through', () => {
       const root = badge(CHANGED);
       expect(root).toHaveAttribute('data-platform-state', 'changed');
       expect(root).toHaveAttribute('data-platform-changed', 'true');
       expect(root).toHaveAttribute('data-variant', 'light');
-      expect(drawnText(root)).toBe('Platform 6 9');
+      expect(drawnText(root)).toBe('Platform 9 was 6');
       const struck = root.querySelectorAll('s');
       expect(struck).toHaveLength(1);
       expect(struck[0]).toHaveTextContent('6');
       expect(struck[0]).toHaveClass('platformBadge__previous');
+      expect(struck[0]?.closest('.platformBadge__was')).toHaveTextContent('was 6');
+    });
+
+    it('never names the old platform before the new one', () => {
+      const text = drawnText(badge({ ...CHANGED, platform: '5', plannedPlatform: '4' }));
+      expect(text.indexOf('5')).toBeLessThan(text.indexOf('4'));
     });
 
     // WCAG 1.4.1: never colour alone, and never a bare struck number for a
@@ -119,7 +127,7 @@ describe('PlatformBadge', () => {
     it('says the change in words: spoken, and in its tooltip', () => {
       const root = badge(CHANGED);
       expect(spokenText(root)).toBe('Platform 9 (changed from 6)');
-      expect(root).toHaveAttribute('title', 'Changed from platform 6');
+      expect(root).toHaveAttribute('title', 'Platform 9, changed from 6 (expected, not yet confirmed)');
       expect(root.querySelector('s')?.closest('[aria-hidden="true"]')).not.toBeNull();
     });
 
@@ -143,6 +151,22 @@ describe('PlatformBadge', () => {
       expect(root).toHaveAttribute('data-platform-confirmed', 'true');
       expect(colourOf(root)).toMatch(/--ds-status-badge-planned-fill/);
       expect(spokenText(root)).toBe('Platform 9 (confirmed, changed from 6)');
+      expect(root).toHaveAttribute('title', 'Platform 9, changed from 6 (confirmed)');
+    });
+
+    it('stays light (expected) for a changed platform only a board shows', () => {
+      const root = badge({ ...CHANGED, bookedPlatform: '6', platformBasis: 'board' });
+      expect(root).toHaveAttribute('data-variant', 'light');
+      expect(root).not.toHaveAttribute('data-platform-confirmed');
+      expect(root).toHaveAttribute('title', 'Platform 9, changed from 6 (expected, not yet confirmed)');
+    });
+
+    it('reads as an ordinary live platform when no booked platform is known to compare', () => {
+      const root = badge({ ...CHANGED, plannedPlatform: null, bookedPlatform: null, platformBasis: 'board' });
+      expect(root).toHaveAttribute('data-platform-state', 'live');
+      expect(drawnText(root)).toBe('Platform 9');
+      expect(spokenText(root)).toBe('Platform 9');
+      expect(root.querySelector('.platformBadge__was')).toBeNull();
     });
   });
 
@@ -180,7 +204,7 @@ describe('PlatformBadge', () => {
       ['booked', BOOKED, '4', 'Platform 4 (booked, not confirmed)'],
       ['live', LIVE, '4', 'Platform 4'],
       ['confirmed', { ...LIVE, platformBasis: 'confirmed' }, '4', 'Platform 4 (confirmed)'],
-      ['changed', CHANGED, '6 9', 'Platform 9 (changed from 6)'],
+      ['changed', CHANGED, '9 was 6', 'Platform 9 (changed from 6)'],
       ['cancelled', { ...LIVE, platformStatus: 'cancelled' }, '4', 'Platform 4 (cancelled)'],
     ];
 
