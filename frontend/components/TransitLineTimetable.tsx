@@ -11,14 +11,15 @@ import {
   VisuallyHidden,
 } from '@mantine/core';
 import { ServiceListNotice } from '@/components/ServiceRow';
-import { SCHEDULED_CAPTION } from '@/lib/transit';
+import { TextLink } from '@/components/TextLink';
+import { SCHEDULED_CAPTION, transitStopHref } from '@/lib/transitStops';
 import type { TransitLineTimetable as Timetable } from '@/lib/types';
 
 /** A tram line's timetable for one direction and time window: stops down
  * the side, one column per tram, its scheduled time at each stop (an en
- * dash where it doesn't call). Scrolls sideways in its own container, so
- * the page never does. */
-export function TransitLineTimetable({ timetable }: { timetable: Timetable }) {
+ * dash where it doesn't call). Each stop's name links to its stop page.
+ * Scrolls sideways in its own container, so the page never does. */
+export function TransitLineTimetable({ network, timetable }: { network: string; timetable: Timetable }) {
   if (timetable.outsideHorizon) {
     return <ServiceListNotice>The timetable for this date isn&apos;t published yet.</ServiceListNotice>;
   }
@@ -47,7 +48,9 @@ export function TransitLineTimetable({ timetable }: { timetable: Timetable }) {
             {timetable.stations.map((station, row) => (
               <TableTr key={station.id}>
                 <TableTh scope="row" ff="text">
-                  {station.name}
+                  <TextLink href={transitStopHref(network, station.id)} size="sm">
+                    {station.name}
+                  </TextLink>
                 </TableTh>
                 {timetable.trips.map((trip) => {
                   const time = trip.times[row] ?? null;

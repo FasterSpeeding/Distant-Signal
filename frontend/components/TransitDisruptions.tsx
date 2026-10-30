@@ -1,8 +1,10 @@
+import { Fragment } from 'react';
 import { Stack, Text } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import { TextLink } from '@/components/TextLink';
 import { formatDateTime, formatTime } from '@/lib/dateFormat';
 import { describeFailure } from '@/lib/failure';
+import { transitStopHref } from '@/lib/transitStops';
 import type { TransitSituation, TransitSituations } from '@/lib/types';
 
 /** When a current situation runs: until its end, or since its start. */
@@ -23,18 +25,46 @@ function upcomingPeriod(situation: TransitSituation): string | null {
   return period?.end ? `${from} to ${formatDateTime(period.end)}` : from;
 }
 
+/** Where a situation's stops link: the network, and each station id's
+ * name. Stops it doesn't name (or with no network) stay unlinked. */
+interface StopLinks {
+  network?: string | undefined;
+  stopNames?: Record<string, string> | undefined;
+}
+
+/** "At Piccadilly", "At Piccadilly and Eccles", "At A, B and C": each a
+ * link to the stop's page. */
+function StopList({ network, stops }: { network: string; stops: { id: string; name: string }[] }) {
+  return (
+    <Text size="sm">
+      At{' '}
+      {stops.map((stop, i) => (
+        <Fragment key={stop.id}>
+          {i > 0 && (i === stops.length - 1 ? ' and ' : ', ')}
+          <TextLink href={transitStopHref(network, stop.id)} inline underline="always" size="sm">
+            {stop.name}
+          </TextLink>
+        </Fragment>
+      ))}
+    </Text>
+  );
+}
+
 function Situation({
   situation,
   when,
   lineNames,
+  network,
+  stopNames,
 }: {
   situation: TransitSituation;
   when: string | null;
   lineNames?: Record<string, string> | undefined;
-}) {
+} & StopLinks) {
   const lines = lineNames
     ? situation.lines.map((id) => lineNames[id]).filter((name): name is string => Boolean(name))
     : [];
+  const stops = stopNames ? situation.stops.flatMap((id) => (stopNames[id] ? [{ id, name: stopNames[id] }] : [])) : [];
   return (
     <Stack component="li" gap={2}>
       <Text fw={600}>{situation.summary}</Text>
@@ -43,6 +73,7 @@ function Situation({
           {lines.join(', ')}
         </Text>
       )}
+      {network && stops.length > 0 && <StopList network={network} stops={stops} />}
       {when && (
         <Text size="sm" c="dimmed">
           {when}
@@ -68,14 +99,18 @@ function Situation({
 /** A network's or a line's published disruptions: those happening now,
  * then those coming up within a week. Nothing while the network has no
  * disruptions feed; "Status unavailable" once they are over 30 minutes
- * old, since stale disruption news reads as current. */
+ * old, since stale disruption news reads as current. With `network` and
+ * `stopNames`, each one links the stops it names (a lift out of service at
+ * Piccadilly links Piccadilly's page). */
 export function TransitDisruptions({
   situations,
   empty,
   lineNames,
+  network,
+  stopNames,
   failed = false,
   title = 'Disruptions',
-}: {
+}: StopLinks & {
   situations: TransitSituations | null | undefined;
   /** What an empty "now" list says. */
   empty: string;
@@ -109,7 +144,14 @@ export function TransitDisruptions({
           ) : (
             <Stack component="ul" gap="md" className="ds-plain-list" aria-label="Disruptions now">
               {situations.current.map((s) => (
-                <Situation key={s.id} situation={s} when={currentPeriod(s)} lineNames={lineNames} />
+                <Situation
+                  key={s.id}
+                  situation={s}
+                  when={currentPeriod(s)}
+                  lineNames={lineNames}
+                  network={network}
+                  stopNames={stopNames}
+                />
               ))}
             </Stack>
           )}
@@ -120,7 +162,14 @@ export function TransitDisruptions({
               </Text>
               <Stack component="ul" gap="md" className="ds-plain-list" aria-label="Disruptions coming up">
                 {situations.upcoming.map((s) => (
-                  <Situation key={s.id} situation={s} when={upcomingPeriod(s)} lineNames={lineNames} />
+                  <Situation
+                    key={s.id}
+                    situation={s}
+                    when={upcomingPeriod(s)}
+                    lineNames={lineNames}
+                    network={network}
+                    stopNames={stopNames}
+                  />
                 ))}
               </Stack>
             </Stack>
