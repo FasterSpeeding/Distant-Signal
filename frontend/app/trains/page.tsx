@@ -1,6 +1,7 @@
 import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { TrainsLookup } from '@/components/TrainsLookup';
+import { parseStopFilterParams } from '@/lib/trainStopFilters';
 import { getAllTocs, getTrainSearchDates, getTrainSearchOperators } from '@/lib/api';
 import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 import { trainsViewFor } from '@/lib/trainSearch';
@@ -121,6 +122,7 @@ export default async function TrainsPage({ searchParams }: { searchParams: Promi
           initialArrivalFromDayOffset: first('arrival_from_day_offset'),
           initialArrivalToDayOffset: first('arrival_to_day_offset'),
           initialOperator: first('operator'),
+          initialStopFilters: parseStopFilterParams(params),
           attachTicketId,
           operatorNames,
           unnamedOperatorCodes,

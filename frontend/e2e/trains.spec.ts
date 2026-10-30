@@ -92,6 +92,42 @@ test.describe('/trains views', () => {
   });
 });
 
+// The advanced options (DS-210) run against the seed's W62003 on the same
+// date: ZGA 10:00, a call at ZGB, through ZGJ without stopping, to ZGC.
+test.describe('/trains advanced options', () => {
+  const NONE = 'No scheduled trains match those filters right now.';
+
+  test('on the departures board, "Avoid completely" drops a train that runs through, and the URL keeps it', async ({
+    page,
+  }) => {
+    await page.goto(`/trains?station=ZGA&date=${DATE}`);
+    await expect(page.getByRole('link', { name: /^10:00 to ZGC\b/ })).toBeVisible();
+    await page.getByRole('button', { name: /^Filters/ }).click();
+    await page.getByRole('button', { name: /^Advanced options/ }).click();
+    await expect(page.getByText("They look at the train's route after ZGA.")).toBeVisible();
+    const avoid = page.getByRole('combobox', { name: 'Avoid completely' });
+    await avoid.fill('ZGJ');
+    await avoid.press('Enter');
+    await expect(page.getByText(NONE)).toBeVisible();
+    await expect(page).toHaveURL(/[?&]avoid=ZGJ(&|$)/);
+  });
+
+  test('on the arrivals board, "Don\'t stop at" looks at the calls before the station', async ({ page }) => {
+    await page.goto(`/trains?station=ZGC&board=arrivals&date=${DATE}&avoid_stop=ZGJ`);
+    // Running through ZGJ is not stopping there.
+    await expect(page.getByRole('link', { name: /^10:50 from ZGA\b/ })).toBeVisible();
+    await page.goto(`/trains?station=ZGC&board=arrivals&date=${DATE}&avoid_stop=ZGB`);
+    await expect(page.getByText(NONE)).toBeVisible();
+  });
+
+  test('between two stations, "Pass through" counts a pass and "Call at" does not', async ({ page }) => {
+    await page.goto(`/trains?from=ZGA&to=ZGC&date=${DATE}&via=ZGJ`);
+    await expect(page.getByRole('link', { name: /^10:00 to ZGC\b/ })).toBeVisible();
+    await page.goto(`/trains?from=ZGA&to=ZGC&date=${DATE}&calls_at=ZGJ`);
+    await expect(page.getByText(NONE)).toBeVisible();
+  });
+});
+
 test.describe('/trains links from before the section', () => {
   test('an old-shape search redirects permanently to the same search, keeping every param', async ({ request }) => {
     const response = await request.get('/trains?station=ZFX&date=2099-01-05&from=22:00&to=01:30&operator=CC', {

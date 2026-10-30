@@ -143,6 +143,7 @@ use crate::data::train_resolve;
 use crate::render::calling_point_departure_json;
 
 mod boards;
+mod stop_filters;
 
 /// Page size when the caller does not ask for one.
 pub(crate) const DEFAULT_SEARCH_LIMIT: i64 = 50;
@@ -314,6 +315,18 @@ struct TrainSearchParams {
     /// on `date`'s clock (see this module's doc comment). Absent is
     /// `false`: `date`'s own services only.
     across_midnight: Option<String>,
+    /// Optional (2026-10-30), the advanced stop filters over the part of
+    /// the train ridden from `station` -- to the end of the train, or with
+    /// `stops_at` to the call there the search matched: `calls_at` (a
+    /// passenger call at each, in order), `via` (a call at or a pass of
+    /// each, in order), `avoid` (no call or pass) and `avoid_stop` (no
+    /// call). Comma-separated, as `/Trips/plan`'s `waypoints`, `via`,
+    /// `avoid` and `avoidStop`; see `stop_filters` and
+    /// `data::stop_filters`.
+    calls_at: Option<String>,
+    via: Option<String>,
+    avoid: Option<String>,
+    avoid_stop: Option<String>,
     /// Optional page size, 1..=`MAX_SEARCH_LIMIT`, defaulting to
     /// `DEFAULT_SEARCH_LIMIT`. Values above the maximum are clamped, not
     /// rejected; zero, negative and unparseable values are a `400`.
@@ -1049,6 +1062,25 @@ async fn get_trains_search(
         )?,
     };
     let operators = parse_operators(params.operator.as_deref())?;
+    let mut anchors = vec![stop_filters::Anchor {
+        crs: &station,
+        role: "the station searched",
+    }];
+    if let Some(stops_at) = stops_at.as_deref() {
+        anchors.push(stop_filters::Anchor {
+            crs: stops_at,
+            role: "the stops_at station",
+        });
+    }
+    let stop_filters = stop_filters::parse_checked(
+        stop_filters::StopFilterParams {
+            calls_at: params.calls_at.as_deref(),
+            via: params.via.as_deref(),
+            avoid: params.avoid.as_deref(),
+            avoid_stop: params.avoid_stop.as_deref(),
+        },
+        &anchors,
+    )?;
     let across_midnight = parse_across_midnight(params.across_midnight.as_deref())?;
     let limit = normalize_limit(params.limit.as_deref())?;
     let after = params
@@ -1087,6 +1119,13 @@ async fn get_trains_search(
     if let Some(codes) = &operators {
         check_known_operators(&app, codes, &service_dates).await?;
     }
+    let stop_filter = match &stop_filters {
+        Some(filters) => Some(
+            stop_filters::search_filter(&app.database, filters, &station, stops_at.as_deref())
+                .await?,
+        ),
+        None => None,
+    };
 
     // The `now`-forward floor is a DEFAULT, not a filter: it only ever
     // fills in for a lower bound the caller didn't supply at all. An
@@ -1126,6 +1165,7 @@ async fn get_trains_search(
         arrive_from: window.arrival_from.map(WindowBound::minutes),
         arrive_to: window.arrival_to.map(WindowBound::minutes),
         operators: operators.as_deref(),
+        stop_filter: stop_filter.as_ref(),
         across_midnight,
         after: after.as_ref(),
         limit,
@@ -1625,6 +1665,11 @@ mod db_tests {
                 "DELETE FROM schedule_destination_departures WHERE train_uid LIKE 'RSLV%'"
                     .to_string(),
                 "DELETE FROM trains WHERE train_uid LIKE 'RSLV%'".to_string(),
+                format!(
+                    "DELETE FROM schedule_calling_points_full \
+                     WHERE service_date BETWEEN '{first}' AND '{last}'"
+                ),
+                "DELETE FROM tiploc_crs WHERE tiploc LIKE 'ZQADV%'".to_string(),
             ],
         )
         .await;
@@ -4634,6 +4679,347 @@ mod db_tests {
         ] {
             let (status, body) = get(&pool, &uri).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+        }
+    }
+
+    // ---- Advanced stop filters (2026-10-30) ----
+
+    /// How a fixture train meets a location: a passenger call, a call not
+    /// in the public timetable, or a pass (no booked time).
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Meet {
+        Public,
+        Working,
+        Pass,
+    }
+
+    /// One location of a fixture train: its CRS (its TIPLOC is
+    /// `ZQADV` + the CRS's last letter), how the train meets it, and the
+    /// time ("HH:MM", as arrival and departure alike, the ends' as their
+    /// only time).
+    type AdvancedCall = (&'static str, Meet, &'static str);
+
+    /// The stop-filter fixture, on today + 2 (a whole fixture day). Every
+    /// train runs to ZQT; ZQS is the station searched.
+    ///
+    /// * `ADV001`: ZQO, ZQS 12:30, ZQA 12:40, passes ZQJ, ZQB 12:50, ZQT.
+    /// * `ADV002`: ZQO, ZQS 12:35, ZQJ 12:45 (a call), ZQT.
+    /// * `ADV003`: ZQS 12:40, ZQB 12:50 (a working-only call), ZQA 12:55,
+    ///   ZQT.
+    /// * `ADV004`: ZQA 12:20, ZQS 12:45, ZQT.
+    const ADVANCED_TRAINS: [(&str, &[AdvancedCall]); 4] = [
+        (
+            "ADV001",
+            &[
+                ("ZQO", Meet::Public, "12:00"),
+                ("ZQS", Meet::Public, "12:30"),
+                ("ZQA", Meet::Public, "12:40"),
+                ("ZQJ", Meet::Pass, "12:45"),
+                ("ZQB", Meet::Public, "12:50"),
+                ("ZQT", Meet::Public, "13:00"),
+            ],
+        ),
+        (
+            "ADV002",
+            &[
+                ("ZQO", Meet::Public, "12:05"),
+                ("ZQS", Meet::Public, "12:35"),
+                ("ZQJ", Meet::Public, "12:45"),
+                ("ZQT", Meet::Public, "13:05"),
+            ],
+        ),
+        (
+            "ADV003",
+            &[
+                ("ZQS", Meet::Public, "12:40"),
+                ("ZQB", Meet::Working, "12:50"),
+                ("ZQA", Meet::Public, "12:55"),
+                ("ZQT", Meet::Public, "13:10"),
+            ],
+        ),
+        (
+            "ADV004",
+            &[
+                ("ZQA", Meet::Public, "12:20"),
+                ("ZQS", Meet::Public, "12:45"),
+                ("ZQT", Meet::Public, "13:15"),
+            ],
+        ),
+    ];
+
+    fn advanced_tiploc(crs: &str) -> String {
+        format!("ZQADV{}", &crs[2..])
+    }
+
+    async fn seed_advanced(pool: &PgPool) -> chrono::NaiveDate {
+        let date = crate::routes::london_today() + chrono::Duration::days(2);
+        delete_days(pool, &[date]).await;
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE service_date = $1")
+            .bind(date)
+            .execute(pool)
+            .await
+            .expect("clear calling points");
+        for crs in ["ZQO", "ZQS", "ZQA", "ZQJ", "ZQB", "ZQT"] {
+            sqlx::query(
+                "INSERT INTO tiploc_crs (tiploc, crs, station_name, stanox, source_sequence) \
+                 VALUES ($1, $2, $3, '00000', 0) ON CONFLICT (tiploc) DO NOTHING",
+            )
+            .bind(advanced_tiploc(crs))
+            .bind(crs)
+            .bind(format!("Fixture {crs}"))
+            .execute(pool)
+            .await
+            .expect("seed tiploc_crs");
+        }
+        let hm = |raw: &str| chrono::NaiveTime::parse_from_str(raw, "%H:%M").unwrap();
+        for (uid, calls) in ADVANCED_TRAINS {
+            let (first, last) = (calls[0], calls[calls.len() - 1]);
+            for (seq, &(crs, meet, at)) in calls.iter().enumerate() {
+                let time = hm(at);
+                let is_first = seq == 0;
+                let is_last = seq == calls.len() - 1;
+                let timed = meet != Meet::Pass;
+                let public = meet == Meet::Public;
+                let arrival = (timed && !is_first).then_some(time);
+                let departure = (timed && !is_last).then_some(time);
+                let kind = if is_first {
+                    "origin"
+                } else if is_last {
+                    "terminate"
+                } else {
+                    "intermediate"
+                };
+                sqlx::query(
+                    "INSERT INTO schedule_calling_points_full \
+                        (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, \
+                         day_offset, public_arrival, public_departure, can_board, can_alight) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11)",
+                )
+                .bind(date)
+                .bind(uid)
+                .bind(i16::try_from(seq).unwrap())
+                .bind(advanced_tiploc(crs))
+                .bind(kind)
+                .bind(arrival)
+                .bind(departure)
+                .bind(arrival.filter(|_| public))
+                .bind(departure.filter(|_| public))
+                .bind(public && !is_last)
+                .bind(public && !is_first)
+                .execute(pool)
+                .await
+                .expect("seed calling point");
+                // The departure-bearing passenger calls, as the publish
+                // writes them.
+                if public && !is_last {
+                    sqlx::query(
+                        "INSERT INTO schedule_destination_departures \
+                            (service_date, destination_crs, scheduled, train_uid, origin_crs, \
+                             true_origin_crs, calling_point_arrival, destination_arrival, \
+                             public_departure, public_calling_point_arrival, \
+                             public_destination_arrival, can_board, can_alight) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $3, $7, $8, TRUE, $9)",
+                    )
+                    .bind(date)
+                    .bind(last.0)
+                    .bind(time)
+                    .bind(uid)
+                    .bind(crs)
+                    .bind(first.0)
+                    .bind(arrival)
+                    .bind(hm(last.2))
+                    .bind(!is_first)
+                    .execute(pool)
+                    .await
+                    .expect("seed departure row");
+                }
+            }
+        }
+        date
+    }
+
+    /// The uids a board returns for `query` on the fixture date.
+    async fn advanced_uids(
+        pool: &PgPool,
+        path: &str,
+        query: &str,
+        date: chrono::NaiveDate,
+    ) -> Vec<String> {
+        let (status, body) = get(pool, &format!("{path}?{query}&date={date}")).await;
+        assert_eq!(status, StatusCode::OK, "{query}: {body}");
+        results(&body)
+            .iter()
+            .map(|row| row["uid"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn trains_search_calls_at_needs_a_passenger_call_after_the_station_in_order() {
+        let (pool, _guards) = connect().await;
+        let date = seed_advanced(&pool).await;
+        let uids = |query: &'static str| {
+            let pool = pool.clone();
+            async move { advanced_uids(&pool, "/trains/search", query, date).await }
+        };
+        // ADV004 calls at ZQA BEFORE ZQS: not reachable from there.
+        assert_eq!(uids("station=ZQS&calls_at=ZQA").await, ["ADV001", "ADV003"]);
+        // ADV001 only passes ZQJ.
+        assert_eq!(uids("station=ZQS&calls_at=zqj").await, ["ADV002"]);
+        // ADV003's ZQB call is not in the public timetable.
+        assert_eq!(uids("station=ZQS&calls_at=ZQB").await, ["ADV001"]);
+        assert_eq!(uids("station=ZQS&calls_at=ZQA,ZQB").await, ["ADV001"]);
+        assert!(uids("station=ZQS&calls_at=ZQB,ZQA").await.is_empty());
+        // An OR choice: either station.
+        assert_eq!(
+            uids("station=ZQS&calls_at=ZQJ%7CZQB").await,
+            ["ADV001", "ADV002"]
+        );
+        // With no filter, all four.
+        assert_eq!(uids("station=ZQS").await.len(), 4);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn trains_search_via_counts_a_pass_or_any_call_and_avoid_lists_tell_them_apart() {
+        let (pool, _guards) = connect().await;
+        let date = seed_advanced(&pool).await;
+        let uids = |query: &'static str| {
+            let pool = pool.clone();
+            async move { advanced_uids(&pool, "/trains/search", query, date).await }
+        };
+        // Passing ZQJ (ADV001) or calling there (ADV002).
+        assert_eq!(uids("station=ZQS&via=ZQJ").await, ["ADV001", "ADV002"]);
+        // A working-only call is still running through.
+        assert_eq!(uids("station=ZQS&via=ZQB,ZQA").await, ["ADV003"]);
+        // Avoid completely: neither calling nor passing.
+        assert_eq!(uids("station=ZQS&avoid=ZQJ").await, ["ADV003", "ADV004"]);
+        // Don't stop at: passing is fine.
+        assert_eq!(
+            uids("station=ZQS&avoid_stop=ZQJ").await,
+            ["ADV001", "ADV003", "ADV004"]
+        );
+        // A working-only call is a stop.
+        assert_eq!(
+            uids("station=ZQS&avoid_stop=ZQB").await,
+            ["ADV002", "ADV004"]
+        );
+        // Only the part after the station counts: ADV004 called at ZQA
+        // before reaching ZQS.
+        assert_eq!(uids("station=ZQS&avoid=ZQA").await, ["ADV002", "ADV004"]);
+        // Through the whole set in pages of one.
+        let (status, body) = get(
+            &pool,
+            &format!("/trains/search?station=ZQS&avoid_stop=ZQJ&limit=1&date={date}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(results(&body)[0]["uid"], "ADV001");
+        let cursor = next_cursor(&body).expect("more pages");
+        let (_, body) = get(
+            &pool,
+            &format!(
+                "/trains/search?station=ZQS&avoid_stop=ZQJ&limit=1&date={date}&after={cursor}"
+            ),
+        )
+        .await;
+        assert_eq!(results(&body)[0]["uid"], "ADV003", "skips ADV002");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn trains_search_between_two_stations_filters_only_the_ride_between_them() {
+        let (pool, _guards) = connect().await;
+        let date = seed_advanced(&pool).await;
+        let uids = |query: &'static str| {
+            let pool = pool.clone();
+            async move { advanced_uids(&pool, "/trains/search", query, date).await }
+        };
+        assert_eq!(uids("station=ZQO&stops_at=ZQT").await, ["ADV001", "ADV002"]);
+        // ZQS lies between ZQO and ZQT on both.
+        assert_eq!(uids("station=ZQO&stops_at=ZQT&calls_at=ZQS").await.len(), 2);
+        assert_eq!(
+            uids("station=ZQO&stops_at=ZQT&avoid_stop=ZQA").await,
+            ["ADV002"]
+        );
+        // ZQB is after ZQA on ADV001, so a ride from ZQO to ZQA never
+        // reaches it.
+        assert_eq!(
+            uids("station=ZQO&stops_at=ZQA&avoid_stop=ZQB").await,
+            ["ADV001"]
+        );
+        assert!(uids("station=ZQO&stops_at=ZQA&via=ZQJ").await.is_empty());
+        assert_eq!(uids("station=ZQO&stops_at=ZQB&via=ZQJ").await, ["ADV001"]);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn trains_arrivals_filters_the_run_before_the_station() {
+        let (pool, _guards) = connect().await;
+        let date = seed_advanced(&pool).await;
+        let uids = |query: &'static str| {
+            let pool = pool.clone();
+            async move { advanced_uids(&pool, "/trains/arrivals", query, date).await }
+        };
+        // Arrivals at ZQS: ADV001, ADV002 and ADV004 arrive from somewhere.
+        assert_eq!(uids("station=ZQS").await, ["ADV001", "ADV002", "ADV004"]);
+        assert_eq!(uids("station=ZQS&calls_at=ZQA").await, ["ADV004"]);
+        assert_eq!(uids("station=ZQS&avoid=ZQO").await, ["ADV004"]);
+        // At the terminus, the whole run before it.
+        assert_eq!(uids("station=ZQT&via=ZQJ").await, ["ADV001", "ADV002"]);
+        assert_eq!(
+            uids("station=ZQT&avoid_stop=ZQJ").await,
+            ["ADV001", "ADV003", "ADV004"]
+        );
+        assert_eq!(uids("station=ZQT&calls_at=ZQS,ZQB").await, ["ADV001"]);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn trains_stop_filters_reject_bad_input_with_a_400() {
+        let (pool, _guards) = connect().await;
+        let date = seed_advanced(&pool).await;
+        for (path, query, expected) in [
+            (
+                "/trains/search",
+                "station=ZQS&avoid=ZQS",
+                "avoid: 'ZQS' is the station searched; a train cannot avoid it",
+            ),
+            (
+                "/trains/search",
+                "station=ZQO&stops_at=ZQT&calls_at=ZQT",
+                "calls_at: 'ZQT' is the stops_at station; name a station elsewhere on the train's route",
+            ),
+            (
+                "/trains/search",
+                "station=ZQS&calls_at=QQQ",
+                "calls_at: 'QQQ' is not a recognised station code",
+            ),
+            (
+                "/trains/search",
+                "station=ZQS&via=ZQA,ZQB,ZQJ,ZQT",
+                "too many via stations: 4 given, at most 3 allowed",
+            ),
+            (
+                "/trains/search",
+                "station=ZQS&via=ZQJ&avoid=ZQJ",
+                "via: 'ZQJ' is also in avoid; a train cannot do both",
+            ),
+            (
+                "/trains/arrivals",
+                "station=ZQS&avoid_stop=ZQS",
+                "avoid_stop: 'ZQS' is the station searched; a train cannot avoid it",
+            ),
+            (
+                "/trains/arrivals",
+                "station=ZQS&avoid=ZQA%7CZQB",
+                "avoid: 'ZQA|ZQB' uses '|', which only via takes; avoid already applies to every \
+                 station it lists, so separate them with commas",
+            ),
+        ] {
+            let (status, body) = get(&pool, &format!("{path}?{query}&date={date}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {body}");
+            assert_eq!(body, expected, "{query}");
         }
     }
 }

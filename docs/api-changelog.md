@@ -3,6 +3,37 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-30: stop filters on the `/trains` boards (`calls_at`, `via`, `avoid`, `avoid_stop`)
+
+Additive: four optional query parameters on `GET /public/trains/search`
+and `GET /public/trains/arrivals`, the trip planner's `waypoints`, `via`,
+`avoid` and `avoidStop` applied to one train (DS-210;
+`crates/api/src/data/stop_filters.rs`). Rows and response fields are
+unchanged; a request without them is answered exactly as before.
+
+- They look only at the part of the train a passenger rides: after
+  `station` on the search (to the end of the train), between `station`
+  and `stops_at` when `stops_at` is set (to the call the search matched,
+  both ends excluded), and before `station` on the arrivals board.
+- `calls_at=A,B`: the train makes a passenger call (a public arrival or
+  departure time) at each, in this order. `via=A,B`: it calls at or runs
+  through each, in order, a working-only call included; running through
+  is only visible where the timetable records a passing point (timing
+  points), as for `/Trips/plan`'s `via`. `avoid=A,B`: it neither calls at
+  nor runs through any of them. `avoid_stop=A,B`: it makes no call there,
+  passenger or working-only; running through is fine.
+- Comma-separated, as `/Trips/plan`'s lists. `calls_at` and `via` take at
+  most 3 entries, each a CRS, a `tiploc:` code or an OR choice (`KGX|EUS`,
+  `group:LON`), not the same twice in a row; `avoid` and `avoid_stop` take
+  at most 8 stations or groups each, and no `|`.
+- `400` (plain text naming the parameter) for: too many entries; an
+  unknown code or group; an avoided `station` or `stops_at`; a
+  single-station `calls_at` or `via` that is `station` or `stops_at`; a
+  `via` entry wholly in `avoid`; a `calls_at` entry wholly in `avoid` or
+  `avoid_stop`; `|` in an avoid list.
+- Paging is unchanged (`limit`, `nextCursor`, `after`): a page holds up to
+  `limit` trains that pass the filters.
+
 ## 2026-10-30: `accessChangeCount`, changes within `TfL` access legs
 
 Additive. `changeCount` is unchanged: it still counts changes between

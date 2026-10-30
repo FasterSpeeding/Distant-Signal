@@ -88,6 +88,9 @@ export const FEATURE_STEPS = {
   /** `/trains`: a search in one of its views (the step names the view),
    * then what came back. A UID opens its train's page instead. */
   trains: ['station_departures', 'station_arrivals', 'between', 'headcode', 'uid', 'results', 'no_results', 'failed'],
+  /** A `/trains` search with that advanced option set (its kind only,
+   * never the stations), one step per option. */
+  trains_filters: ['calls_at', 'via', 'avoid', 'avoid_stop'],
   /** The planner's "Compare options": a search with it on, an option other
    * than the fastest chosen, and that saved as a journey. */
   compare_options: ['searched', 'alternative_selected', 'alternative_saved'],
@@ -108,6 +111,7 @@ export const FEATURES = [
   'chat',
   'connected_app',
   'trains',
+  'trains_filters',
   'compare_options',
   'shared_journeys',
   'leg_stops',

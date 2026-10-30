@@ -33,6 +33,7 @@ use super::{
 };
 use crate::app::App;
 use crate::data::queries;
+use crate::data::stop_filters;
 use crate::render::calling_point_departure_json;
 
 /// The most trains `by-headcode` returns. A headcode is reused across the
@@ -64,6 +65,13 @@ pub(super) struct ArrivalsParams {
     /// Optional comma-separated ATOC codes: only trains run by one of them
     /// (the search's `operator`, validated the same way).
     operator: Option<String>,
+    /// Optional (2026-10-30), the search's advanced stop filters, over the
+    /// part of the train's run BEFORE it reaches `station`: `calls_at`,
+    /// `via`, `avoid` and `avoid_stop` (see `super::stop_filters`).
+    calls_at: Option<String>,
+    via: Option<String>,
+    avoid: Option<String>,
+    avoid_stop: Option<String>,
     /// Page size, as the search's.
     limit: Option<String>,
     /// A previous page's `nextCursor`.
@@ -321,19 +329,91 @@ impl ArrivalsFilter<'_> {
     /// The first `limit` arrivals kept, in order, and the cursor after the
     /// last of them when more follow.
     fn page(&self, arrivals: Vec<Arrival>, limit: usize) -> (Vec<Arrival>, Option<String>) {
-        let mut page: Vec<Arrival> = arrivals
+        let page: Vec<Arrival> = arrivals
             .into_iter()
             .filter(|arrival| self.keeps(arrival))
             .take(limit.saturating_add(1))
             .collect();
-        let has_more = page.len() > limit;
-        page.truncate(limit);
-        let next_cursor = has_more.then(|| page.last()).flatten().map(|arrival| {
-            let (minute, uid) = arrival.key();
-            encode_arrivals_cursor(minute, uid)
-        });
-        (page, next_cursor)
+        finish_page(page, limit)
     }
+
+    /// [`Self::page`] with the advanced stop filters too: the arrivals
+    /// kept so far are checked in chunks, each one read of its trains'
+    /// calling points, until a page is full.
+    async fn stop_filtered_page(
+        &self,
+        pool: &PgPool,
+        service_date: chrono::NaiveDate,
+        stop_filter: &ArrivalsStopFilter,
+        arrivals: Vec<Arrival>,
+        limit: usize,
+    ) -> anyhow::Result<(Vec<Arrival>, Option<String>)> {
+        let mut candidates = arrivals
+            .into_iter()
+            .filter(|arrival| self.keeps(arrival))
+            .peekable();
+        let mut page: Vec<Arrival> = Vec::new();
+        while page.len() <= limit && candidates.peek().is_some() {
+            let chunk: Vec<Arrival> = candidates.by_ref().take(STOP_FILTER_CHUNK).collect();
+            let mut uids: Vec<String> = chunk.iter().map(|a| a.row.train_uid.clone()).collect();
+            uids.sort_unstable();
+            uids.dedup();
+            let calls = stop_filters::fetch_calls(pool, service_date, &uids).await?;
+            for arrival in chunk {
+                if page.len() > limit {
+                    break;
+                }
+                let departure = (!arrival.terminates)
+                    .then_some((arrival.row.scheduled, arrival.row.day_offset));
+                let passes = calls.get(&arrival.row.train_uid).is_some_and(|calls| {
+                    stop_filters::arrival_span(calls, &stop_filter.station_tiplocs, departure)
+                        .is_some_and(|span| stop_filter.filters.accepts(span))
+                });
+                if passes {
+                    page.push(arrival);
+                }
+            }
+        }
+        Ok(finish_page(page, limit))
+    }
+}
+
+/// How many arrivals [`ArrivalsFilter::stop_filtered_page`] checks per
+/// read of calling points.
+const STOP_FILTER_CHUNK: usize = 200;
+
+/// The arrivals board's stop filters, with the station's TIPLOCs.
+struct ArrivalsStopFilter {
+    filters: stop_filters::StopFilters,
+    station_tiplocs: std::collections::HashSet<String>,
+}
+
+impl ArrivalsStopFilter {
+    async fn resolve(
+        pool: &PgPool,
+        filters: &super::stop_filters::ParsedStopFilters,
+        station: &str,
+    ) -> Result<Self, (StatusCode, String)> {
+        Ok(Self {
+            filters: filters.resolve(pool).await?,
+            station_tiplocs: super::stop_filters::station_tiplocs(pool, &[station])
+                .await?
+                .pop()
+                .unwrap_or_default(),
+        })
+    }
+}
+
+/// `page` (at most `limit + 1` arrivals, in order) cut to `limit`, and the
+/// cursor after its last row when one more followed.
+fn finish_page(mut page: Vec<Arrival>, limit: usize) -> (Vec<Arrival>, Option<String>) {
+    let has_more = page.len() > limit;
+    page.truncate(limit);
+    let next_cursor = has_more.then(|| page.last()).flatten().map(|arrival| {
+        let (minute, uid) = arrival.key();
+        encode_arrivals_cursor(minute, uid)
+    });
+    (page, next_cursor)
 }
 
 /// Every arrival at `station` on `service_date`: each call there with an
@@ -470,6 +550,10 @@ async fn render_rows(
 /// `200 {"results", "nextCursor", "serviceDate", "window"}` plus the
 /// timetable-certainty fields; `404` when nothing is published for the
 /// date; `400` for a malformed parameter.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear, as `get_trains_search`: validate, read, page, render"
+)]
 pub(super) async fn get_trains_arrivals(
     State(app): State<App>,
     Query(params): Query<ArrivalsParams>,
@@ -479,6 +563,18 @@ pub(super) async fn get_trains_arrivals(
         .map(|s| normalize_crs("origin", s))
         .transpose()?;
     let operators = parse_operators(params.operator.as_deref())?;
+    let parsed_stop_filters = super::stop_filters::parse_checked(
+        super::stop_filters::StopFilterParams {
+            calls_at: params.calls_at.as_deref(),
+            via: params.via.as_deref(),
+            avoid: params.avoid.as_deref(),
+            avoid_stop: params.avoid_stop.as_deref(),
+        },
+        &[super::stop_filters::Anchor {
+            crs: &station,
+            role: "the station searched",
+        }],
+    )?;
     let from_time = non_empty(&params.from)
         .map(|s| normalize_time("from", s))
         .transpose()?;
@@ -507,6 +603,10 @@ pub(super) async fn get_trains_arrivals(
     if let Some(codes) = &operators {
         check_known_operators(&app, codes, &[service_date]).await?;
     }
+    let stop_filter = match &parsed_stop_filters {
+        Some(filters) => Some(ArrivalsStopFilter::resolve(&app.database, filters, &station).await?),
+        None => None,
+    };
     let default_from = if service_date == today {
         london_now.time()
     } else {
@@ -540,7 +640,14 @@ pub(super) async fn get_trains_arrivals(
         operators: operators.as_deref(),
         after: after.as_ref().map(|(minute, uid)| (*minute, uid.as_str())),
     };
-    let (page, next_cursor) = filter.page(arrivals, usize::try_from(limit).unwrap_or(usize::MAX));
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let (page, next_cursor) = match &stop_filter {
+        Some(stop_filter) => filter
+            .stop_filtered_page(&app.database, service_date, stop_filter, arrivals, limit)
+            .await
+            .map_err(internal_error)?,
+        None => filter.page(arrivals, limit),
+    };
     let rows = page
         .into_iter()
         .map(|arrival| arrival.render_parts(service_date, &station))
