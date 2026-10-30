@@ -19,7 +19,6 @@ import { IssueList } from '@/components/IssueList';
 import { PinToggle } from '@/components/PinToggle';
 import { ShareButton } from '@/components/ShareButton';
 import { StationAccessibilitySection } from '@/components/StationAccessibilitySection';
-import { StationTimetable } from '@/components/StationTimetable';
 import { TextLink } from '@/components/TextLink';
 import { StationTramLinks } from '@/components/TransitRailLinks';
 import { NationalRailCredit } from '@/components/NationalRailCredit';
@@ -30,6 +29,7 @@ import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport, Preferences, StationAccessibilityData, StationOperatorSampleStats } from '@/lib/types';
 import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 import { stationJsonLd } from '@/lib/jsonLd';
+import { stationDeparturesHref } from '@/lib/stationDepartures';
 import { JsonLd, structuredDataOrigin } from '@/components/JsonLd';
 
 /** Three outcomes, not two. The previous version collapsed "there is no
@@ -165,7 +165,7 @@ export async function generateMetadata({ params }: { params: Promise<{ crs: stri
   }
 
   const heading = lookup.outcome === 'found' ? `${lookup.name} (${crs})` : crs;
-  const description = `Live departures, disruption and accessibility at ${heading}.`;
+  const description = `Disruption, accessibility and departures for ${heading}.`;
   return pageMetadata(heading, description, { ...OWN_PREVIEW_IMAGE, path: `/stations/${crs}` });
 }
 
@@ -203,6 +203,9 @@ export default async function StationDisruptionPage({ params }: { params: Promis
       structuredDataOrigin(),
     ]);
   const heading = lookup.outcome === 'found' ? `${lookup.name} (${crs})` : crs;
+  // The page shows no departures itself: "Departures" goes to the train
+  // search, pre-filled with this station.
+  const departuresHref = stationDeparturesHref(crs);
 
   // Stamped once for the whole page (all per-line IssueLists share it) so
   // their buckets don't depend on a `Date.now()` that differs between the
@@ -267,7 +270,7 @@ export default async function StationDisruptionPage({ params }: { params: Promis
         <Text span c="dimmed">
           ·
         </Text>
-        <TextLink href="#departures" underline="always" inline>
+        <TextLink href={departuresHref} underline="always" inline>
           Departures
         </TextLink>
         <Text span c="dimmed">
@@ -354,15 +357,17 @@ export default async function StationDisruptionPage({ params }: { params: Promis
           ))}
         {/* LEG-23: these figures come from National Rail's live departure
             boards (LDBWS), so the National Rail credit sits right under
-            them. The "Departures" section below is the CIF timetable (RSP),
-            not Darwin, so it takes no National Rail credit. */}
+            them. */}
         {sampleStatsResult.coverage === 'sampled' && <NationalRailCredit />}
       </Stack>
 
       <Divider />
-      <div id="departures">
-        <StationTimetable crs={crs} operatorNames={Object.fromEntries(tocNameByCode)} />
-      </div>
+      {/* No board here: departures live on the train search. The id stays
+          so an old `#departures` link still lands on the way there. */}
+      <Stack gap="xs" id="departures">
+        <SectionTitle>Departures</SectionTitle>
+        <TextLink href={departuresHref}>See departures from {lookup.outcome === 'found' ? lookup.name : crs}</TextLink>
+      </Stack>
 
       {/* Accessibility & facilities -- a fourth independent block, keyed by
           a third, orthogonal coverage question again: whether this app has
