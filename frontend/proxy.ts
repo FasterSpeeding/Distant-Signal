@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { buildContentSecurityPolicy, generateNonce, NONCE_HEADER, runtimeRailMcpPublicUrl } from '@/lib/csp';
+import { nowInLondon } from '@/lib/londonWallClock';
+import { trainsRedirect } from '@/lib/trainSearch';
 
 // Mints a per-request CSP nonce, following Next's documented pattern
 // (node_modules/next/dist/docs/01-app/02-guides/content-security-policy.md).
@@ -13,7 +15,22 @@ import { buildContentSecurityPolicy, generateNonce, NONCE_HEADER, runtimeRailMcp
 //
 // Reading the request headers makes every page dynamically rendered: a
 // nonce is per request, so no HTML can be prerendered at build time.
+//
+// It also answers the `/trains` links that `next.config.mjs`'s redirects
+// can't express, because they depend on a query value (`trainsRedirect`):
+// the old query shape gets a permanent redirect to the same search, and
+// `?uid=` a temporary one to that train's page.
 export function proxy(request: NextRequest) {
+  if (request.nextUrl.pathname === '/trains') {
+    const target = trainsRedirect(request.nextUrl.searchParams, nowInLondon().format('YYYY-MM-DD'));
+    if (target !== null) {
+      const url = request.nextUrl.clone();
+      const [pathname = '/trains', search = ''] = target.location.split('?');
+      url.pathname = pathname;
+      url.search = search;
+      return NextResponse.redirect(url, target.status);
+    }
+  }
   const nonce = generateNonce();
   const csp = buildContentSecurityPolicy({
     nonce,

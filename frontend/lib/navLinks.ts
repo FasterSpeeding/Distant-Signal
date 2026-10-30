@@ -19,6 +19,9 @@ export interface NavDestination {
    * ending at a segment boundary: `/trains` matches `/trains` and
    * `/trains/x`, not `/trainsx`. */
   section?: readonly string[];
+  /** Paths inside `section` that belong to another entry instead, as the
+   * same kind of prefix. */
+  except?: readonly string[];
 }
 
 /** The one journeys entry: "Journeys", `/journeys` (DS-115, 21 Oct 2026).
@@ -28,11 +31,27 @@ export interface NavDestination {
  * with "Plan a journey", "Find a train", "Add a ticket" and journey
  * templates one tap away. The other tracking pages, the planner included,
  * keep their URLs (deep links and pre-fill query params depend on them) and
- * mark this entry as the current section. */
+ * mark this entry as the current section: `/track`, `/plan`, and a tracked
+ * train's own page (`/train/by-id/...`). `/trains` is not one of them since
+ * it became the Trains section (2026-10-30). */
 export const JOURNEYS_DESTINATION: NavDestination = {
   href: '/journeys',
   label: 'Journeys',
-  section: ['/track', '/trains', '/journeys', '/plan'],
+  section: ['/track', '/journeys', '/plan', '/train/by-id'],
+};
+
+/** The Trains section, `/trains` (2026-10-30): the timetable for seeing
+ * schedules and finding a specific train (a station's departures and
+ * arrivals, the trains between two stations, a train by headcode or UID),
+ * with no tracking or journey steps in the way. It was "Find a train",
+ * reached from the Journeys page and marked as part of Journeys. Its
+ * results open a train's page (`/train/[uid]/[date]`), which is marked as
+ * part of it too; a tracked train's page (`/train/by-id/...`) is Journeys'. */
+export const TRAINS_DESTINATION: NavDestination = {
+  href: '/trains',
+  label: 'Trains',
+  section: ['/train'],
+  except: ['/train/by-id'],
 };
 
 /** `/plan`, "Plan a journey": where every journey starts (DS-194). It
@@ -52,9 +71,12 @@ export const PLAN_JOURNEY_LABEL = 'Plan a journey';
 
 /** Always visible to everyone, logged in or not. Rendered inline in the
  * bar at `md` and up, and in the drawer below it. Each label is the h1 of
- * the page it opens (docs/style-guide.md, "Tone"). */
+ * the page it opens (docs/style-guide.md, "Tone"). The travel entries come
+ * first (your journeys, then the timetable), then the network's
+ * state and reference pages. */
 export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
   JOURNEYS_DESTINATION,
+  TRAINS_DESTINATION,
   { href: '/status', label: 'Status', section: ['/network'] },
   { href: '/lines', label: 'Lines' },
   { href: '/operators', label: 'Operators' },
@@ -63,15 +85,17 @@ export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
 ];
 
 /** Whether a nav entry marks the current page: an exact match on its own
- * href, or a match on one of its `section` prefixes. Exact, not
- * `startsWith`, for the href itself: `/` would otherwise light up on every
- * route, and `/lines` on a single line's page. Shared by the bar
- * (`PrimaryNavLink`) and the drawer so the two agree. */
+ * href, or a match on one of its `section` prefixes that none of its
+ * `except` prefixes also matches. Exact, not `startsWith`, for the href
+ * itself: `/` would otherwise light up on every route, and `/lines` on a
+ * single line's page. Shared by the bar (`PrimaryNavLink`) and the drawer
+ * so the two agree. */
 export function isActiveNavHref(pathname: string | null, destination: NavDestination | string): boolean {
   if (pathname === null) return false;
-  const { href, section = [] } = typeof destination === 'string' ? { href: destination } : destination;
+  const { href, section = [], except = [] } = typeof destination === 'string' ? { href: destination } : destination;
   if (pathname === href) return true;
-  return section.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+  const under = (prefix: string) => pathname === prefix || pathname.startsWith(`${prefix}/`);
+  return section.some(under) && !except.some(under);
 }
 
 /** Visible only to authenticated users: a group has no useful anonymous

@@ -142,6 +142,8 @@ use crate::data::queries::CallingPointDepartureCursor;
 use crate::data::train_resolve;
 use crate::render::calling_point_departure_json;
 
+mod boards;
+
 /// Page size when the caller does not ask for one.
 pub(crate) const DEFAULT_SEARCH_LIMIT: i64 = 50;
 
@@ -333,6 +335,14 @@ pub fn router() -> Router {
             axum::routing::get(get_trains_search_operators),
         )
         .route("/trains/resolve", axum::routing::get(get_trains_resolve))
+        .route(
+            "/trains/arrivals",
+            axum::routing::get(boards::get_trains_arrivals),
+        )
+        .route(
+            "/trains/by-headcode",
+            axum::routing::get(boards::get_trains_by_headcode),
+        )
 }
 
 /// Query parameters of `GET /public/trains/resolve`. Unknown names are a
@@ -4398,5 +4408,232 @@ mod db_tests {
         assert_eq!(second[1]["dayOffset"], 1);
 
         clear_live_fixtures(&pool).await;
+    }
+
+    /// One `schedule_destination_departures` row for the board tests: a
+    /// call at `origin_crs` departing at `scheduled`, on a train from
+    /// `true_origin` to `destination`, with an optional arrival at the call
+    /// and at the terminus.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one fixture row, every column named"
+    )]
+    async fn seed_board_row(
+        pool: &PgPool,
+        date: chrono::NaiveDate,
+        uid: &str,
+        origin_crs: &str,
+        scheduled: &str,
+        call_arrival: Option<&str>,
+        true_origin: &str,
+        destination: &str,
+        destination_arrival: &str,
+        headcode: &str,
+    ) {
+        let time = |t: &str| chrono::NaiveTime::parse_from_str(t, "%H:%M").unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, \
+                 calling_point_arrival, destination_arrival, headcode, operator_atoc) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'GW')",
+        )
+        .bind(date)
+        .bind(destination)
+        .bind(time(scheduled))
+        .bind(uid)
+        .bind(origin_crs)
+        .bind(true_origin)
+        .bind(call_arrival.map(time))
+        .bind(time(destination_arrival))
+        .bind(headcode)
+        .execute(pool)
+        .await
+        .expect("seed board row");
+    }
+
+    async fn clear_board_services(pool: &PgPool, date: chrono::NaiveDate) {
+        crate::test_support::assert_synthetic_date(date);
+        sqlx::query("DELETE FROM schedule_services WHERE service_date = $1")
+            .bind(date)
+            .execute(pool)
+            .await
+            .expect("clear schedule_services fixtures");
+    }
+
+    /// Two trains on tomorrow (a whole fixture day): `BRDA01` Bristol to
+    /// Paddington calling at Reading, `BRDA02` Oxford to Reading,
+    /// terminating there. Headcodes `1A10` and `2R20`.
+    async fn seed_boards(pool: &PgPool) -> chrono::NaiveDate {
+        let date = crate::routes::london_today() + chrono::Duration::days(1);
+        delete_days(pool, &[date]).await;
+        clear_board_services(pool, date).await;
+        // BRDA01: BRI 08:00, RDG arr 09:10 dep 09:12, PAD arr 09:40.
+        seed_board_row(
+            pool, date, "BRDA01", "BRI", "08:00", None, "BRI", "PAD", "09:40", "1A10",
+        )
+        .await;
+        seed_board_row(
+            pool,
+            date,
+            "BRDA01",
+            "RDG",
+            "09:12",
+            Some("09:10"),
+            "BRI",
+            "PAD",
+            "09:40",
+            "1A10",
+        )
+        .await;
+        // BRDA02: OXF 08:30, RDG arr 09:05 (terminates).
+        seed_board_row(
+            pool, date, "BRDA02", "OXF", "08:30", None, "OXF", "RDG", "09:05", "2R20",
+        )
+        .await;
+        for (uid, headcode) in [("BRDA01", "1A10"), ("BRDA02", "2R20")] {
+            sqlx::query(
+                "INSERT INTO schedule_services (service_date, uid, mode, headcode, stp) \
+                 VALUES ($1, $2, 'train', $3, 'P')",
+            )
+            .bind(date)
+            .bind(uid)
+            .bind(headcode)
+            .execute(pool)
+            .await
+            .expect("seed schedule_services row");
+        }
+        date
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn trains_arrivals_lists_calls_and_terminating_trains_in_arrival_order() {
+        let (pool, _guards) = connect().await;
+        let date = seed_boards(&pool).await;
+
+        let (status, body) = get(&pool, &format!("/trains/arrivals?station=rdg&date={date}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let rows = results(&body);
+        let summary: Vec<(String, String, bool)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row["uid"].as_str().unwrap().to_string(),
+                    row["arrival"].as_str().unwrap().to_string(),
+                    row["terminates"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("BRDA02".to_string(), "09:05".to_string(), true),
+                ("BRDA01".to_string(), "09:10".to_string(), false),
+            ]
+        );
+        assert!(rows[0]["scheduled"].is_null(), "{}", rows[0]);
+        assert_eq!(rows[0]["originCrs"], "OXF");
+        assert_eq!(rows[1]["scheduled"], "09:12");
+        assert_eq!(rows[1]["destinationCrs"], "PAD");
+        assert_eq!(rows[1]["stationCrs"], "RDG");
+        assert_eq!(rows[1]["serviceDate"], date.to_string());
+
+        // A window, and paging.
+        let (_, body) = get(
+            &pool,
+            &format!("/trains/arrivals?station=RDG&date={date}&from=09:06"),
+        )
+        .await;
+        assert_eq!(results(&body).len(), 1);
+        let (_, first) = get(
+            &pool,
+            &format!("/trains/arrivals?station=RDG&date={date}&limit=1"),
+        )
+        .await;
+        assert_eq!(results(&first)[0]["uid"], "BRDA02");
+        let cursor = next_cursor(&first).expect("a second page");
+        let (_, second) = get(
+            &pool,
+            &format!("/trains/arrivals?station=RDG&date={date}&limit=1&after={cursor}"),
+        )
+        .await;
+        assert_eq!(results(&second)[0]["uid"], "BRDA01");
+        assert!(next_cursor(&second).is_none());
+
+        // An origin is not an arrival.
+        let (_, body) = get(&pool, &format!("/trains/arrivals?station=BRI&date={date}")).await;
+        assert!(results(&body).is_empty(), "{body}");
+
+        for bad in [
+            "station=RD",
+            "station=RDG&from=9",
+            "station=RDG&after=junk",
+            "station=RDG&bogus=1",
+        ] {
+            let (status, body) = get(&pool, &format!("/trains/arrivals?{bad}&date={date}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+        }
+        clear_board_services(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn trains_by_headcode_lists_each_train_at_its_origin() {
+        let (pool, _guards) = connect().await;
+        let date = seed_boards(&pool).await;
+
+        let (status, body) = get(
+            &pool,
+            &format!("/trains/by-headcode?headcode=1a10&date={date}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: Value = serde_json::from_str(&body).unwrap();
+        let rows = json["results"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{body}");
+        assert_eq!(rows[0]["uid"], "BRDA01");
+        assert_eq!(rows[0]["stationCrs"], "BRI");
+        assert_eq!(rows[0]["scheduled"], "08:00");
+        assert_eq!(rows[0]["identity"], "1A10");
+        assert_eq!(json["serviceDate"], date.to_string());
+
+        let (status, body) = get(
+            &pool,
+            &format!("/trains/by-headcode?headcode=9Z99&date={date}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            serde_json::from_str::<Value>(&body).unwrap()["results"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        for bad in [
+            "headcode=1A1",
+            "headcode=W12345",
+            "headcode=1A10&station=RDG",
+        ] {
+            let (status, body) =
+                get(&pool, &format!("/trains/by-headcode?{bad}&date={date}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+        }
+        clear_board_services(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn trains_boards_are_a_404_for_an_unpublished_date() {
+        let (pool, _guards) = connect().await;
+        let date = crate::routes::london_today() + chrono::Duration::days(2);
+        delete_days(&pool, &[date]).await;
+        for uri in [
+            format!("/trains/arrivals?station=RDG&date={date}"),
+            format!("/trains/by-headcode?headcode=1A10&date={date}"),
+        ] {
+            let (status, body) = get(&pool, &uri).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+        }
     }
 }

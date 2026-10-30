@@ -83,6 +83,10 @@ export interface ServiceRowProps {
   arrivalDayOffset?: number | undefined;
   /** A dimmed second line, e.g. "From Reading · South Western Railway". */
   details?: string | undefined;
+  /** What the row is headed by: where the train goes (the default), or on
+   * an arrivals board where it comes from. A screen reader hears "to" or
+   * "from" before it. */
+  headline?: 'destination' | 'origin' | undefined;
   /** Controls of the row's own (a "Track this train" button). With
    * actions, the destination is the link rather than the whole row, so no
    * control is nested in a link. */
@@ -108,11 +112,13 @@ export function ServiceRow({
   arrivalDayOffset,
   details,
   actions,
+  headline = 'destination',
 }: ServiceRowProps) {
   const minute = lineTimeMinute(train.lineDue);
   const time = timeOverride !== undefined ? timeOverride : minute === null ? null : formatClock(minute);
-  const destination =
-    train.destination?.name ?? train.destination?.crs ?? `${serviceNoun(train.serviceMode)} ${train.uid}`;
+  const place = headline === 'origin' ? train.origin : train.destination;
+  const destination = place?.name ?? place?.crs ?? `${serviceNoun(train.serviceMode)} ${train.uid}`;
+  const placePrefix = headline === 'origin' ? 'from ' : 'to ';
   const status = liveStatusLabel(train.live, train.serviceMode);
   // Why it is cancelled (DS-181), in words after the status.
   const cancelReason =
@@ -201,7 +207,7 @@ export function ServiceRow({
                 {time ?? NO_TIME}
                 {nextDay && ` (${nextDay.spoken})`}{' '}
               </VisuallyHidden>
-              <VisuallyHidden>to </VisuallyHidden>
+              <VisuallyHidden>{placePrefix}</VisuallyHidden>
               {destination}
             </Link>
             {afterDestination}
@@ -213,7 +219,7 @@ export function ServiceRow({
         <Link href={href} className={classes.row} data-details={details ? true : undefined}>
           {timeCell}{' '}
           <span className={classes.dest}>
-            <VisuallyHidden>to </VisuallyHidden>
+            <VisuallyHidden>{placePrefix}</VisuallyHidden>
             {destination}
             {afterDestination}
           </span>{' '}

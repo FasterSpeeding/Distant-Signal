@@ -29,23 +29,145 @@ import type { ServiceModeFields, TrainSearchResult } from '@/lib/types';
  * whatsoever. */
 export const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-/** The URL params `TrainSearchForm` owns; `ticketId` and anything else in
- * the URL are left alone. */
+/** The `/trains` page's views: a station's departures or arrivals, the
+ * trains between two stations, or one train by its headcode or UID. */
+export type TrainsView = 'station' | 'between' | 'service';
+
+/** Which board the station view shows (`?board=`; departures by default). */
+export type StationBoard = 'departures' | 'arrivals';
+
+/** The URL params the `/trains` views own, every view's. Switching view
+ * clears them all; `ticketId` and anything else in the URL are left alone.
+ *
+ * Each describes the timetable on screen, so a view is a shareable link:
+ * `station` (and `board=arrivals`), or `from` and `to` (two stations), or
+ * `headcode`/`uid`; `date`; `time` and `until`, the window on the board's
+ * own times (a departure, or on the arrivals board an arrival), with
+ * `time_day_offset`/`until_day_offset` for a time after midnight; between
+ * two stations, `arrival_from`/`arrival_to` (and their day offsets) for
+ * the arrival at `to`; `origin` (where the train starts) and `operator`. */
 export const TRAIN_URL_PARAMS = [
   'station',
-  'origin',
-  'stops_at',
-  'date',
+  'board',
   'from',
   'to',
+  'headcode',
+  'uid',
+  'origin',
+  'date',
+  'time',
+  'until',
+  'time_day_offset',
+  'until_day_offset',
   'arrival_from',
   'arrival_to',
-  'from_day_offset',
-  'to_day_offset',
   'arrival_from_day_offset',
   'arrival_to_day_offset',
   'operator',
 ] as const;
+
+/** A 3-letter station code. */
+export const STATION_CODE_PATTERN = /^[A-Za-z]{3}$/;
+
+/** A headcode (the 4-character signalling ID): a digit, a letter, two
+ * digits ("1S00"). */
+export const HEADCODE_PATTERN = /^[0-9][A-Za-z][0-9]{2}$/;
+
+/** A UID (the timetable's 6-character ID): a letter and five digits
+ * ("W12345"). */
+export const UID_PATTERN = /^[A-Za-z][0-9]{5}$/;
+
+/** `"YYYY-MM-DD"`. */
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A legacy `from`/`to` value: a time of day, from before those two named
+ * the between-stations view's stations (2026-10-30). */
+const LEGACY_TIME_PARAM = /^\d{1,2}:\d{2}$/;
+
+/** The `/trains` query string from before 2026-10-30 (`stops_at`, and
+ * `from`/`to` as times), rewritten into today's names, or `null` when
+ * `params` is not in the old shape. `station` with `stops_at` becomes
+ * `from` and `to`; `from`/`to` and their day offsets become `time`/`until`
+ * and `time_day_offset`/`until_day_offset`. Every other param is kept as
+ * it is, `ticketId` included. The page answers an old link with a
+ * permanent redirect to this. */
+export function legacyTrainsParams(params: URLSearchParams): URLSearchParams | null {
+  const isTime = (key: string) => LEGACY_TIME_PARAM.test(params.get(key)?.trim() ?? '');
+  const fromIsTime = isTime('from');
+  const toIsTime = isTime('to');
+  const stopsAt = params.get('stops_at');
+  const legacy =
+    stopsAt !== null || params.has('from_day_offset') || params.has('to_day_offset') || fromIsTime || toIsTime;
+  if (!legacy) return null;
+  const station = params.get('station');
+  const next = new URLSearchParams();
+  for (const [key, value] of params) {
+    switch (key) {
+      case 'from':
+        if (fromIsTime) next.append('time', value);
+        break;
+      case 'to':
+        if (toIsTime) next.append('until', value);
+        break;
+      case 'from_day_offset':
+        next.append('time_day_offset', value);
+        break;
+      case 'to_day_offset':
+        next.append('until_day_offset', value);
+        break;
+      case 'station':
+        if (stopsAt === null) next.append('station', value);
+        break;
+      case 'stops_at':
+        break;
+      default:
+        next.append(key, value);
+    }
+  }
+  if (stopsAt !== null) {
+    if (station !== null) next.set('from', station);
+    next.set('to', stopsAt);
+  }
+  return next;
+}
+
+/** Where a `/trains` request with `params` is sent instead, or `null` to
+ * render the page: an old-shape query string (`legacyTrainsParams`) to
+ * the same search in today's names, permanently (308); a `?uid=` to that
+ * train's page (`uidTrainHref`), temporarily (307), since with no date it
+ * depends on `today`. `proxy.ts` answers with it. */
+export function trainsRedirect(params: URLSearchParams, today: string): { location: string; status: 307 | 308 } | null {
+  const legacy = legacyTrainsParams(params);
+  if (legacy !== null) {
+    const query = legacy.toString();
+    return { location: query ? `/trains?${query}` : '/trains', status: 308 };
+  }
+  const train = uidTrainHref(params, today);
+  return train === null ? null : { location: train, status: 307 };
+}
+
+/** The view a `/trains` query string opens on: a headcode or UID is the
+ * one-train view, `from`/`to` the between-stations view, anything else the
+ * station view. */
+export function trainsViewFor(params: URLSearchParams): TrainsView {
+  if (params.get('headcode') || params.get('uid')) return 'service';
+  if (params.get('from') || params.get('to')) return 'between';
+  return 'station';
+}
+
+/** `?board=`: `arrivals`, else departures. */
+export function parseBoardParam(raw: string | null | undefined): StationBoard {
+  return raw?.trim().toLowerCase() === 'arrivals' ? 'arrivals' : 'departures';
+}
+
+/** The train page `?uid=` names (on `?date=`, else `today`), or `null`
+ * when the URL has no valid UID. */
+export function uidTrainHref(params: URLSearchParams, today: string): string | null {
+  const uid = params.get('uid')?.trim() ?? '';
+  if (!UID_PATTERN.test(uid)) return null;
+  const date = params.get('date')?.trim() ?? '';
+  return `/train/${uid.toUpperCase()}/${DATE_PATTERN.test(date) ? date : today}`;
+}
 
 /** A two-character ATOC operator code, as `operator=` takes them. */
 const OPERATOR_CODE = /^[A-Z0-9]{2}$/;

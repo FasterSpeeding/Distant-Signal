@@ -2593,8 +2593,9 @@ svg[data-icon='external-link'] {
   white-space: normal;
 }
 
-/* `JourneyCreationFlow`'s "How do you want to start this journey?" choice.
-   Three options side by side need about 430px, so below `xs` they stack,
+/* `JourneyCreationFlow`'s "How do you want to start this journey?" choice,
+   and `TrainsLookup`'s view switch on /trains (Station, Between stations,
+   Headcode or UID). Three options side by side need about 430px, so below `xs` they stack,
    one full-width row each, the way `AddJourneyLegButton`'s dialog shows
    the same choice. The floating indicator follows: Mantine re-measures it
    whenever an option resizes. Mantine keeps each label on one line and

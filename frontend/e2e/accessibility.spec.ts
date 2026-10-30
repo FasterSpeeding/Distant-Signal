@@ -217,6 +217,11 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   ['/incidents', '/incidents'],
   [`/incidents/${REAL_INCIDENT_ID}`, `/incidents/${REAL_INCIDENT_ID}`],
   ['/trains', '/trains'],
+  // The Trains section's other views, with results (the seed's W62001).
+  ['/trains (departures)', '/trains?station=ZFA&date=2099-01-05'],
+  ['/trains (arrivals)', '/trains?station=ZFC&board=arrivals&date=2099-01-05'],
+  ['/trains (between stations)', '/trains?from=ZFA&to=ZFC&date=2099-01-05'],
+  ['/trains (headcode)', '/trains?headcode=2Z42&date=2099-01-05'],
   ['/track', '/track'],
   // Plan a journey (DS-194, which merged New journey into it): opens on
   // the planner; `?mode=known` is the train form, `?mode=untracked` the

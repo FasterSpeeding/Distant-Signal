@@ -2,15 +2,81 @@ import { describe, expect, it } from 'vitest';
 import {
   apiSearchQuery,
   clockMinutes,
+  legacyTrainsParams,
   nextDateLabel,
   operatorChoices,
+  parseBoardParam,
   parseNextDayParam,
   parseOperatorParam,
   serviceDateLabel,
   splitAtMidnight,
   splitSearchRows,
+  trainsViewFor,
+  uidTrainHref,
   upperBoundNextDay,
 } from './trainSearch';
+
+describe('legacyTrainsParams', () => {
+  const legacy = (query: string) => legacyTrainsParams(new URLSearchParams(query))?.toString() ?? null;
+
+  it('leaves a current query string alone', () => {
+    expect(legacy('')).toBeNull();
+    expect(legacy('station=RDG&time=09%3A00&until=10%3A00&date=2026-10-30')).toBeNull();
+    expect(legacy('from=RDG&to=PAD')).toBeNull();
+    expect(legacy('headcode=1S00')).toBeNull();
+  });
+
+  it('renames the time window and its day offsets', () => {
+    expect(legacy('station=ZFX&date=2099-01-05&from=22:00&to=01:30&operator=CC')).toBe(
+      'station=ZFX&date=2099-01-05&time=22%3A00&until=01%3A30&operator=CC',
+    );
+    expect(legacy('station=MAN&from=00:30&from_day_offset=1&to_day_offset=1&to=02:00')).toBe(
+      'station=MAN&time=00%3A30&time_day_offset=1&until_day_offset=1&until=02%3A00',
+    );
+  });
+
+  it('turns station and stops_at into the between-stations view, keeping everything else', () => {
+    expect(legacy('station=man&origin=EUS&stops_at=wat&arrival_from=10:00&ticketId=7')).toBe(
+      'origin=EUS&arrival_from=10%3A00&ticketId=7&from=man&to=wat',
+    );
+    expect(legacy('stops_at=WAT')).toBe('to=WAT');
+  });
+});
+
+describe('trainsViewFor', () => {
+  it('reads the view from the params', () => {
+    expect(trainsViewFor(new URLSearchParams(''))).toBe('station');
+    expect(trainsViewFor(new URLSearchParams('station=RDG&board=arrivals'))).toBe('station');
+    expect(trainsViewFor(new URLSearchParams('from=RDG&to=PAD'))).toBe('between');
+    expect(trainsViewFor(new URLSearchParams('to=PAD'))).toBe('between');
+    expect(trainsViewFor(new URLSearchParams('headcode=1S00'))).toBe('service');
+    expect(trainsViewFor(new URLSearchParams('uid=W12345&date=2026-10-30'))).toBe('service');
+  });
+});
+
+describe('parseBoardParam', () => {
+  it('is departures unless it says arrivals', () => {
+    expect(parseBoardParam('arrivals')).toBe('arrivals');
+    expect(parseBoardParam(' Arrivals ')).toBe('arrivals');
+    expect(parseBoardParam('departures')).toBe('departures');
+    expect(parseBoardParam(null)).toBe('departures');
+    expect(parseBoardParam('junk')).toBe('departures');
+  });
+});
+
+describe('uidTrainHref', () => {
+  it('links a valid UID to its train page, on the date given or today', () => {
+    expect(uidTrainHref(new URLSearchParams('uid=w12345&date=2026-10-31'), '2026-10-30')).toBe(
+      '/train/W12345/2026-10-31',
+    );
+    expect(uidTrainHref(new URLSearchParams('uid=W12345'), '2026-10-30')).toBe('/train/W12345/2026-10-30');
+    expect(uidTrainHref(new URLSearchParams('uid=W12345&date=tomorrow'), '2026-10-30')).toBe(
+      '/train/W12345/2026-10-30',
+    );
+    expect(uidTrainHref(new URLSearchParams('uid=1S00'), '2026-10-30')).toBeNull();
+    expect(uidTrainHref(new URLSearchParams(''), '2026-10-30')).toBeNull();
+  });
+});
 
 describe('parseOperatorParam', () => {
   it('trims, uppercases and drops repeats and anything that is not a code', () => {
