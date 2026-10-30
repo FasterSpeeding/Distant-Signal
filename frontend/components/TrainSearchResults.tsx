@@ -1,6 +1,7 @@
 import { Fragment, useId } from 'react';
 import { Alert, Text } from '@mantine/core';
 import { LoadMoreControl } from './LoadMoreControl';
+import { TrackEmptyState } from '@/components/TrackEmptyState';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import { ServiceRow, ServiceRowList } from './ServiceRow';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
@@ -119,6 +120,7 @@ export function TrainSearchResults({
     return (
       <Text size="sm" c="dimmed">
         No scheduled trains match those filters right now.
+        <TrackEmptyState kind={view === 'between' ? 'trains_between_none' : 'trains_station_board_none'} />
       </Text>
     );
   }

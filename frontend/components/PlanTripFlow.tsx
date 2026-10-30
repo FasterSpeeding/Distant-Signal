@@ -27,6 +27,14 @@ import { codeRouteLabel, codeStationLabel, isGroupCode } from '@/lib/stationLabe
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import type { CreateJourneyResponse, TrainSearchDates, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { trackFeature } from '@/lib/usageAnalytics';
+
+/** Whether a "Compare options" result is an option other than the fastest
+ * (labelled, but not "Fastest"), for the usage counts (DS-190). */
+function isOtherOption(itinerary: TripPlanItinerary): boolean {
+  const labels = itinerary.labels ?? [];
+  return labels.length > 0 && !labels.some((label) => label.kind === 'fastest');
+}
 
 /** A failure already worded for the visitor (`describeFailure` or the API's own sentence). */
 class JourneyCreationError extends Error {}
@@ -174,10 +182,16 @@ export function PlanTripFlow({
     // never mentions could keep rendering the old plan's name for the
     // brief window before `getStationNames` below resolves.
     setStationNames(new Map());
+    trackFeature('plan', 'searched');
+    if (query.results === 'options') trackFeature('compare_options', 'searched');
     try {
       const sent = apiQuery(query);
       const result = await fetchTripPlan(sent);
       if (searchRequestId.current !== requestId) return; // superseded by a newer search
+      trackFeature(
+        'plan',
+        result.segments.some((segment) => segment.itineraries.length === 0) ? 'no_route' : 'results',
+      );
       setSearchedPlan(result);
       setList(startList(query, sent.date, result));
       setAnsweredQuery(query);
@@ -192,6 +206,7 @@ export function PlanTripFlow({
       });
     } catch (error) {
       if (searchRequestId.current !== requestId) return;
+      trackFeature('plan', 'failed');
       if (error instanceof TripPlanError && isTooLargeSearchError(error)) {
         setTooLarge(true);
         return;
@@ -203,6 +218,9 @@ export function PlanTripFlow({
   }
 
   function selectItinerary(segmentIndex: number, itinerary: TripPlanItinerary) {
+    if (isOtherOption(itinerary) && selections[segmentIndex]?.itinerary !== itinerary) {
+      trackFeature('compare_options', 'alternative_selected');
+    }
     // With waypoints, the segments' itineraries are parts of whole
     // journeys (`plan.journeys`): choosing one part chooses its journey.
     const index = plan?.segments[segmentIndex]?.itineraries.indexOf(itinerary) ?? -1;
@@ -269,6 +287,8 @@ export function PlanTripFlow({
       if (!response.ok) {
         throw new JourneyCreationError(await failureFromResponse('create', 'this journey', response));
       }
+      trackFeature('plan', 'saved_journey');
+      if (chosen.some(isOtherOption)) trackFeature('compare_options', 'alternative_saved');
       onCreated((await response.json()) as CreateJourneyResponse);
     } catch (error) {
       setCreationError(

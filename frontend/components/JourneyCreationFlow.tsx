@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import Link from 'next/link';
 import { Alert, Button, Card, Group, SegmentedControl, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { AddJourneyLegButton } from './AddJourneyLegButton';
@@ -25,6 +25,7 @@ import {
   type KnownRouteMode,
 } from '@/lib/journeyEntryMode';
 import { TextLink } from '@/components/TextLink';
+import { trackFeature } from '@/lib/usageAnalytics';
 import { LoadingText } from '@/components/LoadingText';
 
 /** The body of `/plan`, "Plan a journey" (it was `/journeys/new`'s until
@@ -106,6 +107,12 @@ export function JourneyCreationFlow({
   const [journeyLoadError, setJourneyLoadError] = useState(false);
   const [entryMode, setEntryMode] = useState<JourneyEntryMode>(untrackedOrigin ? 'untracked' : initialEntryMode);
   const entryModeLabelId = useId();
+
+  // Usage counts (DS-190): which way in is shown, on arrival and on each
+  // switch, until the journey's first leg exists.
+  useEffect(() => {
+    if (journeyId === null) trackFeature('journey_start', entryMode);
+  }, [entryMode, journeyId]);
 
   async function refreshJourney(id: number) {
     setLoadingJourney(true);

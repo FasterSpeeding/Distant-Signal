@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, Group, Skeleton, Stack, Text } from '@mantine/core';
+import { TrackEmptyState } from '@/components/TrackEmptyState';
 import { useMounted } from '@mantine/hooks';
 import { searchNearbyStations } from '@/lib/suggestions';
 import { searchStationsAndStops } from '@/lib/stationSearch';
@@ -216,6 +217,7 @@ export function StationSearchForm() {
           {nearby.status === 'success' && nearby.stations.length === 0 && (
             <Text size="sm" c="dimmed" role="status">
               No stations found near you. Search by name above.
+              <TrackEmptyState kind="station_search_no_results" />
             </Text>
           )}
           {nearby.status === 'success' && nearby.stations.length > 0 && (

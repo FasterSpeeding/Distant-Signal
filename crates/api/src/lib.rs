@@ -45,3 +45,4 @@ pub mod shutdown;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod unavailable;
+pub mod usage_events;

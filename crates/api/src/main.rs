@@ -316,6 +316,8 @@ async fn server_main() -> anyhow::Result<()> {
         // a rare route's first request after a restart is visible to
         // increase()/rate(). See `api::route_metrics`.
         api::route_metrics::register();
+        // Usage analytics' feature and event counters at 0 (DS-190).
+        api::usage_events::register();
         tokio::spawn(data::db_health::probe_loop(app.database.clone()));
     }
 

@@ -342,6 +342,8 @@ async fn create_grant(
                 session_hash = %log_hash(&session_id),
                 "a user connected an app"
             );
+            // Usage analytics, phase 1 (DS-190).
+            crate::usage_events::FeatureEvent::ConnectedAppEnabled.record();
             (StatusCode::CREATED, Json(grant_view(&app, grant))).into_response()
         }
         Ok(CreateGrantOutcome::ConfirmationRequired) => {
@@ -393,6 +395,7 @@ async fn revoke_grant(
                     session_hash = session_id(&headers).as_deref().map(log_hash),
                     "a user disconnected an app"
                 );
+                crate::usage_events::FeatureEvent::ConnectedAppRevoked.record();
             }
             StatusCode::NO_CONTENT.into_response()
         }

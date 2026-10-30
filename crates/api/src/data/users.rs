@@ -637,6 +637,8 @@ pub struct SessionUser {
     pub name: Option<String>,
     pub username: Option<String>,
     pub groups: Vec<String>,
+    /// The user's usage-analytics choice (DS-190), off by default.
+    pub analytics_opt_in: bool,
 }
 
 /// Looks up a session by its *hashed* token and joins the owning user, but
@@ -662,7 +664,7 @@ pub async fn get_session_with_user(
     hashed_token: &str,
 ) -> Result<Option<SessionUser>> {
     let row = sqlx::query_as::<_, SessionUser>(
-        "SELECT u.id, u.name, u.username, u.groups \
+        "SELECT u.id, u.name, u.username, u.groups, u.analytics_opt_in \
          FROM sessions s JOIN users u ON u.id = s.user_id \
          WHERE s.id = $1 AND s.expires_at > NOW() \
            AND (u.sessions_invalidated_at IS NULL OR s.created_at >= u.sessions_invalidated_at)",

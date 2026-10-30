@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Group, Stack, Text } from '@mantine/core';
+import { TrackEmptyState } from '@/components/TrackEmptyState';
 import dayjs from 'dayjs';
 import { NationalRailCredit } from './NationalRailCredit';
 import { ScheduleRow } from './ScheduleRow';
@@ -201,6 +202,7 @@ export function DeparturePicker({
     return (
       <Text size="sm" c="dimmed">
         No live departures currently on the board for this station right now.
+        <TrackEmptyState kind="departures_none" />
       </Text>
     );
   }

@@ -11,6 +11,12 @@ import type { JourneyShareLink } from '@/lib/types';
 import { readShareLinkBody } from '@/lib/freshLinkToken';
 import { formatDate } from '@/lib/dateFormat';
 import { describeFailure } from '@/lib/failure';
+import { trackFeature } from '@/lib/usageAnalytics';
+
+/** Opt-in usage counts (DS-190): the link was copied or shared. */
+function trackShareLinkCopied() {
+  trackFeature('share_link', 'copied');
+}
 
 /** The journey-detail-page "unlisted link" control -- a deliberate hybrid
  * of two existing precedents, per the plan's Task 4 brief
@@ -98,6 +104,7 @@ export function ShareJourneyLinkButton({
         return;
       }
       const body = await readShareLinkBody(response);
+      trackFeature('share_link', 'created');
       setFreshToken(body.token);
       setFreshExpiresAt(body.expiresAt);
       router.refresh();
@@ -171,6 +178,7 @@ export function ShareJourneyLinkButton({
               hideLabel
               share
               shareTitle="View my journey on Distant Signal"
+              onCopied={trackShareLinkCopied}
             />
           ) : hasActiveLink ? (
             <Text size="sm" c="dimmed">

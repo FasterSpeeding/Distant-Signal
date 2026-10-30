@@ -2,12 +2,14 @@ import { Stack, Title } from '@mantine/core';
 import type { Metadata } from 'next';
 import { ConnectedApps } from '@/components/ConnectedApps';
 import { getConnectedApps, getSessionOrLoggedOut } from '@/lib/api';
+import { legalPagesVisible } from '@/lib/legal';
 import { pageMetadata } from '@/lib/pageMetadata';
 import { AccountSettingsLoginPrompt } from './AccountSettingsLoginPrompt';
 import { AppearanceSection } from './AppearanceSection';
 import { ClaudeKeySection } from './ClaudeKeySection';
 import { NotificationsSection } from './NotificationsSection';
 import { PreferencesSection } from './PreferencesSection';
+import { UsageAnalyticsSection } from './UsageAnalyticsSection';
 
 // Session-dependent: never prerender (see app/page.tsx's own comment).
 export const revalidate = 0;
@@ -27,6 +29,9 @@ export const metadata: Metadata = {
  *
  * - Device-local, saved in this browser, no account needed:
  *   `AppearanceSection` (colour theme, pride flag).
+ * - Either way: `UsageAnalyticsSection` (the usage-counts opt-in,
+ *   DS-190), saved to the account when logged in and in this browser
+ *   when not.
  * - Account-backed, logged in only: `NotificationsSection`,
  *   `ClaudeKeySection`, then Connected apps (`ConnectedApps`, the apps
  *   that can work with the visitor's journeys; also at
@@ -52,6 +57,11 @@ export default async function PreferencesPage() {
     <Stack p="lg" gap="lg" maw={640}>
       <Title order={1}>Preferences</Title>
       <AppearanceSection />
+      <UsageAnalyticsSection
+        signedIn={session.authenticated}
+        accountOptIn={session.analyticsOptIn === true}
+        showPrivacyLink={legalPagesVisible()}
+      />
       {session.authenticated ? (
         <>
           <NotificationsSection />

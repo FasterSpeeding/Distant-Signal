@@ -235,7 +235,13 @@ pub(crate) async fn post_itinerary(
 ) -> Response {
     let delegated = user.is_delegated();
     match save_itinerary(&app, &user, &headers, &body).await {
-        Ok(response) => response,
+        Ok(response) => {
+            // Usage analytics, phase 1 (DS-190): a planned trip saved.
+            if response.status().is_success() {
+                crate::usage_events::FeatureEvent::TripPlanSavedJourney.record();
+            }
+            response
+        }
         Err(err) => err.render(delegated, "invalid_itinerary"),
     }
 }

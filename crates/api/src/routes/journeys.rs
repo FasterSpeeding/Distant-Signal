@@ -1592,6 +1592,7 @@ async fn create_journey_share_link(
         .await
         .map_err(internal_error("end follows through the old share link"))?;
 
+    crate::usage_events::FeatureEvent::ShareLinkCreated.record();
     Ok(Json(ShareLinkResponse {
         token: Some(link.token),
         expires_at: link.expires_at,
@@ -1777,7 +1778,24 @@ async fn get_journey_by_share_token(
     State(app): State<App>,
     Path(token): Path<String>,
 ) -> Result<Json<JourneyDetailResponse>, (StatusCode, String)> {
-    let resolved = unlisted_links::resolve_link(&app.database, &token)
+    let result = journey_by_share_token(&app, &token).await;
+    // Usage analytics, phase 1 (DS-190): opened or not, never which.
+    match &result {
+        Ok(_) => crate::usage_events::FeatureEvent::ShareLinkViewed.record(),
+        Err((StatusCode::NOT_FOUND, _)) => {
+            crate::usage_events::FeatureEvent::ShareLinkNotFound.record();
+        }
+        Err(_) => {}
+    }
+    result
+}
+
+/// [`get_journey_by_share_token`]'s work.
+async fn journey_by_share_token(
+    app: &App,
+    token: &str,
+) -> Result<Json<JourneyDetailResponse>, (StatusCode, String)> {
+    let resolved = unlisted_links::resolve_link(&app.database, token)
         .await
         .map_err(internal_error("resolve journey share link"))?
         .ok_or((
@@ -1798,7 +1816,7 @@ async fn get_journey_by_share_token(
     })?;
 
     Ok(Json(
-        build_journey_detail_response(&app, journey_id, false).await?,
+        build_journey_detail_response(app, journey_id, false).await?,
     ))
 }
 

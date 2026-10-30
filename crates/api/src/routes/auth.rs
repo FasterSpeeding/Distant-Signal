@@ -642,6 +642,9 @@ struct SessionResponse {
     /// docs/superpowers/specs/2026-09-02-mcp-server-oauth-access-groups-design.md
     /// Decision 2's "one existing read-back point" framing.
     groups: Vec<String>,
+    /// The user's usage-analytics choice (DS-190); `false` when logged
+    /// out, where the browser keeps its own choice.
+    analytics_opt_in: bool,
 }
 
 async fn session(
@@ -654,6 +657,7 @@ async fn session(
             name: u.name,
             username: u.username,
             groups: u.groups,
+            analytics_opt_in: u.analytics_opt_in,
         }),
         None => Json(SessionResponse {
             authenticated: false,
@@ -661,6 +665,7 @@ async fn session(
             name: None,
             username: None,
             groups: vec![],
+            analytics_opt_in: false,
         }),
     }
 }
@@ -758,12 +763,14 @@ mod tests {
             name: Some("Ada Rider".to_string()),
             username: Some("ada".to_string()),
             groups: vec!["mcp-users".to_string(), "mcp-live-boards".to_string()],
+            analytics_opt_in: true,
         };
         let json = serde_json::to_value(&response).expect("serializes");
         assert_eq!(
             json["groups"],
             serde_json::json!(["mcp-users", "mcp-live-boards"])
         );
+        assert_eq!(json["analyticsOptIn"], serde_json::json!(true));
     }
 
     #[test]
@@ -774,6 +781,7 @@ mod tests {
             name: None,
             username: None,
             groups: vec![],
+            analytics_opt_in: false,
         };
         let json = serde_json::to_value(&response).expect("serializes");
         assert_eq!(json["groups"], serde_json::json!([]));

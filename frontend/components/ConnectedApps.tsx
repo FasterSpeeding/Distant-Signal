@@ -6,6 +6,7 @@ import { ConfirmActionButton } from './ConfirmActionButton';
 import { SectionTitle } from './SectionTitle';
 import { deletionSummary, scopeSentence } from '@/lib/connectedApps';
 import { formatDate, formatDateTime } from '@/lib/dateFormat';
+import { trackFeature } from '@/lib/usageAnalytics';
 import type { ConnectedAppsData } from '@/lib/types';
 
 /** The Connected apps list (docs/connected-apps.md): each app the visitor
@@ -71,9 +72,13 @@ export function ConnectedApps({
                 label="Disconnect"
                 actionName={`disconnect ${grant.displayName}`}
                 title={`Disconnect ${grant.displayName}?`}
-                request={() =>
-                  fetch(`/api/account/connected-apps/${encodeURIComponent(grant.client)}`, { method: 'DELETE' })
-                }
+                request={async () => {
+                  const response = await fetch(`/api/account/connected-apps/${encodeURIComponent(grant.client)}`, {
+                    method: 'DELETE',
+                  });
+                  if (response.ok) trackFeature('connected_app', 'revoked');
+                  return response;
+                }}
                 failure={['disconnect', 'the app']}
                 loginPrompt="Log in to disconnect it"
               >

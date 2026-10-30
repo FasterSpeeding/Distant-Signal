@@ -174,6 +174,24 @@ async fn post_subscribe(
     headers: axum::http::HeaderMap,
     Json(body): Json<SubscribeRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    let result = subscribe(&app, &user, &headers, body).await;
+    // Usage analytics, phase 1 (DS-190).
+    crate::usage_events::FeatureEvent::record_result(
+        &result,
+        |_| crate::usage_events::FeatureEvent::NotificationSubscribeSucceeded,
+        crate::usage_events::FeatureEvent::NotificationSubscribeRejected,
+        crate::usage_events::FeatureEvent::NotificationSubscribeError,
+    );
+    result
+}
+
+/// [`post_subscribe`]'s work.
+async fn subscribe(
+    app: &App,
+    user: &AuthenticatedUser,
+    headers: &axum::http::HeaderMap,
+    body: SubscribeRequest,
+) -> Result<StatusCode, (StatusCode, String)> {
     // SECURITY (2026-09 review): rejects a non-`https` endpoint or one
     // whose host resolves to a private/loopback/link-local/multicast IP,
     // BEFORE it ever reaches the database -- see

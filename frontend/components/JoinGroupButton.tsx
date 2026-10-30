@@ -6,6 +6,7 @@ import { Alert, Button } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginControl } from './LoginControl';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { trackFeature } from '@/lib/usageAnalytics';
 
 /** The confirm page's explicit "Join" action (spec §2.3: "Confirm-before-
  * join, never silent auto-join" -- this component is that explicit
@@ -46,13 +47,16 @@ export function JoinGroupButton({ token, groupId }: { token: string; groupId: st
           router.push(`/groups/${groupId}`);
           return;
         } else {
+          trackFeature('group_join', 'failed');
           setError(await failureFromResponse('join', 'this group', response));
         }
         setJoining(false);
         return;
       }
+      trackFeature('group_join', 'joined');
       router.push(`/groups/${groupId}`);
     } catch {
+      trackFeature('group_join', 'failed');
       setError(describeFailure('join', 'this group'));
       setJoining(false);
     }

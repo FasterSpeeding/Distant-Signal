@@ -5,6 +5,7 @@ import { Alert, Button, Checkbox, Group, Loader, Stack, Text } from '@mantine/co
 import { ButtonLink } from './ButtonLink';
 import { preselectedScopes, scopeSentence } from '@/lib/connectedApps';
 import { describeFailure } from '@/lib/failure';
+import { trackFeature } from '@/lib/usageAnalytics';
 import type { ConnectAppConsent as ConsentData } from '@/lib/types';
 
 type State =
@@ -121,6 +122,7 @@ export function ConnectAppConsent({
         body: JSON.stringify({ scopes, confirmationToken: consent.confirmationToken }),
       });
       if (response.ok) {
+        trackFeature('connected_app', 'enabled');
         setState({ kind: 'connected', displayName: app.displayName });
         return;
       }

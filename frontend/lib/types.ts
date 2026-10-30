@@ -648,6 +648,10 @@ export interface SessionInfo {
   id: string | null;
   name: string | null;
   username: string | null;
+  /** The account's "Help improve Distant Signal" choice (DS-190); false
+   * when logged out. Optional: an older api leaves it out, which reads as
+   * off. */
+  analyticsOptIn?: boolean;
 }
 
 export type ResolutionStatus = 'pending' | 'schedule_matched' | 'resolved' | 'unresolved';

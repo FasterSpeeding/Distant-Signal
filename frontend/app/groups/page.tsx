@@ -1,4 +1,5 @@
 import { Group, Stack, Text, Title } from '@mantine/core';
+import { TrackEmptyState } from '@/components/TrackEmptyState';
 import { groupRoleLabel } from '@/lib/memberLabel';
 import type { Metadata } from 'next';
 import { getMyGroups } from '@/lib/api';
@@ -112,6 +113,7 @@ export default async function GroupsPage() {
             group member to send you their invite link if you&apos;re joining an existing one.
           </Text>
           <ButtonLink href="/groups/new">Create a group</ButtonLink>
+          <TrackEmptyState kind="groups_none" />
         </Stack>
       ) : (
         <Stack gap="xs">
