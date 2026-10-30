@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { Button, Text } from '@mantine/core';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { trackFeature } from '@/lib/usageAnalytics';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import {
@@ -131,6 +132,7 @@ export function NotificationsToggle({
         throw new EnableNotificationsError('permission', error);
       }
       if (permission === 'denied') {
+        trackFeature('notifications', 'denied');
         logEnableFailure(
           new EnableNotificationsError('permission', new DOMException('Permission is denied', 'NotAllowedError')),
         );
@@ -141,6 +143,7 @@ export function NotificationsToggle({
         // The prompt was dismissed: nothing to report.
         return;
       }
+      trackFeature('notifications', 'granted');
 
       // Both were started before the click, so these normally settle at
       // once and `subscribe()` runs while the tap still counts as one.
@@ -162,6 +165,7 @@ export function NotificationsToggle({
         return;
       }
       if (!response.ok) {
+        trackFeature('notifications', 'failed');
         const error = new EnableNotificationsError('save', new Error(`subscribe returned HTTP ${response.status}`));
         logEnableFailure(error);
         setFailure({
@@ -170,9 +174,11 @@ export function NotificationsToggle({
         });
         return;
       }
+      trackFeature('notifications', 'subscribed');
       setEnabled(true);
       onChange?.(true);
     } catch (error) {
+      trackFeature('notifications', 'failed');
       logEnableFailure(error);
       setFailure(describeEnableFailure(error));
     }
@@ -183,6 +189,7 @@ export function NotificationsToggle({
     // or state update can yield: Firefox only allows the prompt during the
     // tap's user activation.
     const permissionRequest = requestNotificationPermission();
+    trackFeature('notifications', 'prompted');
     setFailure(null);
     needsLoginState.reset();
     setBusy(true);

@@ -384,7 +384,12 @@ describe('ItineraryOption: station groups (2026-10-07)', () => {
     const heathrow = tube('940GZZLUHR4', 'Heathrow Terminal 4');
     const actonTown = tube('940GZZLUACT', 'Acton Town');
 
-    function renderAccess(access: TripPlanAccessLeg, stopAccess?: TripPlanResponse['access'], line = 'Piccadilly') {
+    function renderAccess(
+      access: TripPlanAccessLeg,
+      stopAccess?: TripPlanResponse['access'],
+      line = 'Piccadilly',
+      accessChangeCount?: number,
+    ) {
       renderWithMantine(
         <ItineraryOption
           itinerary={{
@@ -403,6 +408,7 @@ describe('ItineraryOption: station groups (2026-10-07)', () => {
               },
             ],
             changeCount: 0,
+            ...(accessChangeCount !== undefined && { accessChangeCount }),
             totalDurationMinutes: 95,
           }}
           selected={false}
@@ -423,9 +429,25 @@ describe('ItineraryOption: station groups (2026-10-07)', () => {
       expect(screen.getByRole('radio', { name: /change at Acton Town/ })).toBeInTheDocument();
     });
 
+    // DS-205: the badge counts the ride's change with National Rail's,
+    // and says which it is in its tooltip and to screen readers.
+    it("counts the ride's change in the changes badge", () => {
+      renderAccess(
+        { end: 'destination', basis: 'line', distanceMetres: 20_100, changeAt: actonTown },
+        undefined,
+        'Piccadilly',
+        1,
+      );
+      const badge = screen.getByText('1 change');
+      expect(badge.closest('[data-state-badge]')).toHaveAttribute('data-state-badge', 'neutral');
+      expect(badge.closest('[data-state-badge]')).toHaveAttribute('title', '1 Tube change');
+      expect(screen.getByText('(1 Tube change)')).toBeInTheDocument();
+    });
+
     it('reads as one train without a change', () => {
-      renderAccess({ end: 'destination', basis: 'line', distanceMetres: 20_100 });
+      renderAccess({ end: 'destination', basis: 'line', distanceMetres: 20_100 }, undefined, 'Piccadilly', 0);
       expect(screen.queryByText(/change at/)).not.toBeInTheDocument();
+      expect(screen.getByText('0 changes').closest('[data-state-badge]')).not.toHaveAttribute('title');
     });
 
     it("counts the stops from the leg's candidate", () => {

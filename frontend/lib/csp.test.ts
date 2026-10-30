@@ -51,6 +51,18 @@ describe('buildContentSecurityPolicy', () => {
     expect(directive(csp, 'connect-src')).toBe("connect-src 'self' https://api.anthropic.com");
   });
 
+  // DS-190: the opt-in usage events go by `navigator.sendBeacon` (governed
+  // by connect-src) to the app's own `/api/events`, so 'self' already
+  // covers them and the policy names no analytics host.
+  it('allows the same-origin usage events with no extra source', async () => {
+    const { EVENTS_PATH } = await import('./usageAnalytics');
+    expect(EVENTS_PATH.startsWith('/')).toBe(true);
+    expect(EVENTS_PATH.startsWith('//')).toBe(false);
+    expect(directive(buildContentSecurityPolicy({ nonce: 'n' }), 'connect-src')).toBe(
+      "connect-src 'self' https://api.anthropic.com",
+    );
+  });
+
   it('refuses a nonce that could break out of the header', () => {
     expect(() => buildContentSecurityPolicy({ nonce: "x'; script-src *" })).toThrow();
     expect(() => buildContentSecurityPolicy({ nonce: '' })).toThrow();

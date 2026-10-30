@@ -91,9 +91,14 @@ async fn cleanup(pool: &PgPool) {
         .execute(pool)
         .await
         .ok();
+    sqlx::query("DELETE FROM tfl_stops WHERE stop_id LIKE '940GZZTP%'")
+        .execute(pool)
+        .await
+        .ok();
     sqlx::query(
         "DELETE FROM tfl_line_routes \
-         WHERE line_id IN ('testmet135', 'testpic135', 'testcircle191', 'testhc191')",
+         WHERE line_id IN ('testmet135', 'testpic135', 'testcircle191', 'testhc191', \
+                           'testpiccadilly204')",
     )
     .execute(pool)
     .await
@@ -104,6 +109,7 @@ async fn cleanup(pool: &PgPool) {
         .chain([BRANCH_CRS])
         .chain(CIRCLE_STATIONS.iter().map(|(crs, _, _)| *crs))
         .chain(OLD_STREET_STATIONS.iter().map(|(crs, _, _)| *crs))
+        .chain(PICCADILLY_STATIONS.iter().map(|(crs, _, _)| *crs))
     {
         // Only this file's rows: `EUS` is a real code.
         sqlx::query("DELETE FROM stations WHERE crs = $1 AND name LIKE 'Test station %'")
@@ -504,6 +510,11 @@ async fn branch_change_costs_a_change_at_the_junction() {
         describe(&after["segments"][0]["itineraries"][0]),
         [format!("TUBE {UXB}-ZTH origin"), "TTUP1".to_string()]
     );
+    assert_eq!(
+        after["segments"][0]["itineraries"][0]["accessChangeCount"],
+        0
+    );
+    assert_eq!(after["journeys"][0]["accessChangeCount"], 0);
     let branched = candidate(&after, "ZTR");
     assert_eq!(branched["changeAt"]["id"], "940GZZTSHOH", "{branched:?}");
     assert_eq!(branched["stopCount"], 3);
@@ -526,6 +537,11 @@ async fn branch_change_costs_a_change_at_the_junction() {
         itinerary["legs"][0]["access"]["changeAt"]["name"],
         "Test Harrow"
     );
+    // The change is counted apart from National Rail's.
+    assert_eq!(itinerary["changeCount"], 0);
+    assert_eq!(itinerary["accessChangeCount"], 1);
+    assert_eq!(body["journeys"][0]["changeCount"], 0);
+    assert_eq!(body["journeys"][0]["accessChangeCount"], 1);
     cleanup(&pool).await;
 }
 
@@ -1097,5 +1113,152 @@ async fn paddington_to_liverpool_street_takes_the_short_way() {
     let ztl = candidate(&body, "ZTL");
     assert_eq!(ztl["boardStop"]["id"], CIRCLE_PAH, "{ztl:?}");
     assert!(ztl["minutes"].as_i64().expect("minutes") <= 25, "{ztl:?}");
+    cleanup(&pool).await;
+}
+
+/// DS-205: a Piccadilly-shaped line in the North Sea. Its routes, as
+/// `TfL`'s: Uxbridge - Rayners Lane - Acton Town - King's Cross, and
+/// Heathrow - Hatton Cross - Acton Town - King's Cross, each both ways. No
+/// train runs Uxbridge to Heathrow: the branches meet at Acton Town.
+const PICCADILLY_LINE: &str = "testpiccadilly204";
+const PICCADILLY_UXB: &str = "940GZZTPUXB";
+const PICCADILLY_HRC: &str = "940GZZTPHRC";
+const PICCADILLY_ACT: &str = "940GZZTPACT";
+
+/// `(stop id, name, (latitude, longitude), hub CRS)`.
+const PICCADILLY_STOPS: [OldStreetStop<'static>; 6] = [
+    (PICCADILLY_UXB, "Test Uxbridge", (57.0, 3.0), None),
+    ("940GZZTPRYL", "Test Rayners Lane", (57.0, 3.08), None),
+    (
+        PICCADILLY_ACT,
+        "Test Acton Town",
+        (56.95, 3.15),
+        Some("ZPA"),
+    ),
+    ("940GZZTPHNX", "Test Hatton Cross", (56.9, 3.05), None),
+    (PICCADILLY_HRC, "Test Heathrow", (56.88, 2.98), Some("ZPH")),
+    ("940GZZTPKSX", "Test King's Cross", (57.0, 3.3), None),
+];
+
+/// `(crs, tiploc, (latitude, longitude))`.
+const PICCADILLY_STATIONS: [(&str, &str, (f64, f64)); 2] = [
+    ("ZPA", "TTACTON", (56.95, 3.15)),
+    ("ZPH", "TTHTHRW", (56.88, 2.98)),
+];
+
+async fn seed_piccadilly(pool: &PgPool) {
+    let lines = serde_json::json!([{ "id": PICCADILLY_LINE, "name": "Piccadilly" }]);
+    for (id, name, (lat, lon), hub) in PICCADILLY_STOPS {
+        sqlx::query(
+            "INSERT INTO tfl_stops (stop_id, name, search_name, modes, lines, latitude, longitude, fetched_at) \
+             VALUES ($1, $2, lower($2), ARRAY['tube'], $3, $4, $5, now())",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(&lines)
+        .bind(lat)
+        .bind(lon)
+        .execute(pool)
+        .await
+        .expect("seed tfl_stops");
+        if let Some(crs) = hub {
+            sqlx::query("INSERT INTO tfl_stop_crs (stop_id, crs, source) VALUES ($1, $2, 'hub')")
+                .bind(id)
+                .bind(crs)
+                .execute(pool)
+                .await
+                .expect("seed tfl_stop_crs");
+        }
+    }
+    for (crs, tiploc, (lat, lon)) in PICCADILLY_STATIONS {
+        sqlx::query(
+            "INSERT INTO stations (crs, name, latitude, longitude) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(crs)
+        .bind(format!("Test station {crs}"))
+        .bind(lat)
+        .bind(lon)
+        .execute(pool)
+        .await
+        .expect("seed stations");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ($1, $2, $3, $2, 1) ON CONFLICT (stanox) DO NOTHING",
+        )
+        .bind(format!("TESTTFLACC-{crs}"))
+        .bind(crs)
+        .bind(tiploc)
+        .execute(pool)
+        .await
+        .expect("seed stanox_crs");
+    }
+    let uxbridge = [PICCADILLY_UXB, "940GZZTPRYL", PICCADILLY_ACT, "940GZZTPKSX"];
+    let heathrow = [PICCADILLY_HRC, "940GZZTPHNX", PICCADILLY_ACT, "940GZZTPKSX"];
+    let rows: [(&str, Vec<&str>); 4] = [
+        ("outbound", uxbridge.to_vec()),
+        ("inbound", uxbridge.iter().rev().copied().collect()),
+        ("outbound", heathrow.to_vec()),
+        ("inbound", heathrow.iter().rev().copied().collect()),
+    ];
+    for (index, (direction, stops)) in (0_i16..).zip(rows) {
+        sqlx::query(
+            "INSERT INTO tfl_line_routes (line_id, direction, route_index, name, stop_ids, fetched_at) \
+             VALUES ($1, $2, $3, 'Test', $4, now())",
+        )
+        .bind(PICCADILLY_LINE)
+        .bind(direction)
+        .bind(index)
+        .bind(stops)
+        .execute(pool)
+        .await
+        .expect("seed a route");
+    }
+}
+
+/// DS-205: Uxbridge to Heathrow, stop to stop, is one access leg that
+/// changes at Acton Town. `changeCount` stays National Rail's (none);
+/// `accessChangeCount` counts the change, on the itinerary and the journey.
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api \
+            routes::trips -- --ignored --test-threads=1`"]
+async fn uxbridge_to_heathrow_counts_its_access_change() {
+    let pool = connect().await;
+    seed(&pool).await;
+    seed_piccadilly(&pool).await;
+    let router = test_router(test_app(pool.clone()));
+    for (from, to) in [
+        (PICCADILLY_UXB, PICCADILLY_HRC),
+        (PICCADILLY_HRC, PICCADILLY_UXB),
+    ] {
+        let (status, body) = get(router.clone(), plan_uri(from, to, "departAfter=10:00")).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let itinerary = &body["segments"][0]["itineraries"][0];
+        assert_eq!(
+            describe(itinerary),
+            [format!("TUBE {from}-{to} both")],
+            "{body:?}"
+        );
+        let leg = &itinerary["legs"][0];
+        assert_eq!(leg["access"]["changeAt"]["id"], PICCADILLY_ACT, "{leg:?}");
+        assert_eq!(itinerary["changeCount"], 0);
+        assert_eq!(itinerary["accessChangeCount"], 1);
+        assert_eq!(body["journeys"][0]["changeCount"], 0);
+        assert_eq!(body["journeys"][0]["accessChangeCount"], 1);
+    }
+
+    // To Acton Town's own stop: one train, nothing to count.
+    let (status, body) = get(
+        router,
+        plan_uri(PICCADILLY_UXB, PICCADILLY_ACT, "departAfter=10:00"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let itinerary = &body["segments"][0]["itineraries"][0];
+    assert!(
+        itinerary["legs"][0]["access"].get("changeAt").is_none(),
+        "{body:?}"
+    );
+    assert_eq!(itinerary["accessChangeCount"], 0);
+    assert_eq!(body["journeys"][0]["accessChangeCount"], 0);
     cleanup(&pool).await;
 }

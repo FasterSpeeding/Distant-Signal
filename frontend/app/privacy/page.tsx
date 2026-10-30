@@ -25,6 +25,12 @@ import { withAbsoluteTitle } from '@/lib/pageMetadata';
 // trains, tickets and journeys after the travel date, push subscriptions
 // after a long absence, and -- only once enabled (DQ7: 730 days, after this
 // notice is published) -- whole inactive accounts.
+// Server logs: Loki keeps the application logs for 7 days.
+// Usage analytics (DS-190): the api's feature counters (Prometheus, 30 days,
+// no identifiers, legitimate interests) and the opt-in usage counts
+// (`usage_daily`, daily totals, 13 months, consent; GPC and DNT honoured).
+// Keep both rows in step with crates/api/src/usage_events.rs and
+// docs/personal-data-retention.md.
 // ============================================================================
 
 // Reads the legal-pages flags per request (see lib/legal.ts).
@@ -50,6 +56,8 @@ interface DataCategory {
 
 const CONTRACT = 'Contract (UK GDPR Art. 6(1)(b)): we need it to provide the service you asked for.';
 const LEGITIMATE_INTERESTS = 'Legitimate interests (UK GDPR Art. 6(1)(f)): keeping the service secure and working.';
+const IMPROVING =
+  'Legitimate interests (UK GDPR Art. 6(1)(f)): understanding how the service is used, in a way that cannot identify you.';
 
 /** One entry per row of the audit's "Lawful basis by data category" table.
  * Built per request from the live retention settings. */
@@ -134,7 +142,23 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
       what: 'Your IP address, the pages you request and when, handled by our network provider (Cloudflare), our servers and our login service.',
       why: 'To keep the service secure, prevent abuse and fix faults.',
       basis: LEGITIMATE_INTERESTS,
-      retention: `Server logs are rotated within days. Our login service keeps its event logs for ${LEGAL_CONFIG.SSO_LOG_RETENTION}. Cloudflare keeps its logs under its own policy.`,
+      retention: `Our server logs are kept for up to 7 days. Our login service keeps its event logs for ${LEGAL_CONFIG.SSO_LOG_RETENTION}. Cloudflare keeps its logs under its own policy.`,
+    },
+    {
+      title: 'Feature counts',
+      what: 'Our servers count how often features are used and how they turn out, such as how many trains are tracked, trips planned or share links opened. These are running totals with no account, IP address or other identifier attached, and they never name a station, line, train or journey.',
+      why: 'To see which features are used and whether they work, so we can fix and improve them.',
+      basis: `${IMPROVING} To object, email us (see "Your rights").`,
+      retention: 'Kept in our monitoring system for 30 days.',
+    },
+    {
+      title: 'Usage counts (only if you turn them on)',
+      what: 'If you turn on "Help improve Distant Signal", your browser tells us which kinds of page you open (such as "a line page", never which line), which steps of a feature you reach and which of its options you use (such as searching for a trip and getting results, which kind of timetable you look up, or opening a list of earlier stops), when a search finds nothing, when a request or page fails (with only its error reference), whether you use the installed app, and when the offline page was shown. Never a specific station, line, train or journey. It uses no cookies, and goes only to us. We add each one to a daily total, split only by whether you were logged in, and store nothing that identifies you: no IP address, account, device or browser details.',
+      why: 'To learn which features are used and where people run into problems, so we can improve them.',
+      basis:
+        'Consent (UK GDPR Art. 6(1)(a)): it is off unless you turn it on, in Preferences or on the cookies page. If your browser sends Global Privacy Control or Do Not Track, nothing is sent even if it is on.',
+      retention:
+        'Daily totals are kept for 13 months, then deleted. Turning it off stops any more counts straight away. Totals already counted cannot be linked to you or anyone else.',
     },
     {
       title: 'Connections to our file-transfer server',
@@ -171,7 +195,8 @@ export default function PrivacyPage() {
       <LegalSection title="What we collect, why, and for how long">
         <Text>
           You can look at live rail information without an account. We only hold personal data about you if you log in,
-          or in the technical logs every website produces.
+          or in the technical logs every website produces. If you turn on usage counts, we keep only anonymous daily
+          totals.
         </Text>
         {categories.map((category) => (
           <Stack key={category.title} gap={4}>

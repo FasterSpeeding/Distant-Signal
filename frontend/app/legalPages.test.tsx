@@ -92,6 +92,30 @@ describe('draft legal pages', () => {
     expect(screen.getByText('distant_signal_session')).toBeInTheDocument();
   });
 
+  it('offers the usage-counts opt-in on the cookies page and lists its browser storage (DS-190)', () => {
+    vi.mocked(legal.legalPagesMode).mockReturnValue('published');
+    renderWithMantine(CookiesPage());
+    expect(screen.getByRole('heading', { level: 2, name: 'Usage counts' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Help improve Distant Signal' })).not.toBeChecked();
+    expect(screen.getByText('ds-analytics-opt-in')).toBeInTheDocument();
+    expect(screen.getByText('ds-analytics-offline-pending')).toBeInTheDocument();
+    expect(screen.queryByText(/We do not use analytics/)).toBeNull();
+  });
+
+  it('discloses the feature counts and the opt-in usage counts, and keeps server logs 7 days (DS-190)', () => {
+    vi.mocked(legal.legalPagesMode).mockReturnValue('published');
+    renderWithMantine(PrivacyPage());
+    expect(screen.getByRole('heading', { level: 3, name: 'Feature counts' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 3, name: 'Usage counts (only if you turn them on)' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/To object, email us/)).toBeInTheDocument();
+    expect(screen.getByText(/Daily totals are kept for 13 months/)).toBeInTheDocument();
+    expect(screen.getByText(/Global Privacy Control or Do Not Track, nothing is sent/)).toBeInTheDocument();
+    expect(screen.getByText(/Our server logs are kept for up to 7 days/)).toBeInTheDocument();
+    expect(screen.queryByText(/rotated within days/)).toBeNull();
+  });
+
   it('gives a content reporting route in the terms (Online Safety Act)', () => {
     vi.mocked(legal.legalPagesMode).mockReturnValue('published');
     renderWithMantine(TermsPage());

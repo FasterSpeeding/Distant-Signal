@@ -1,4 +1,4 @@
-import type { Suggestion, TripPlanAccessLeg } from './types';
+import type { Suggestion, TripPlanAccessLeg, TripPlanItinerary } from './types';
 import { ownValue } from './ownValue';
 
 /** Human labels for the `category` a `LineSummary`/`CustomLineDetail`
@@ -118,6 +118,33 @@ export function accessLegNote(access: TripPlanAccessLeg, stopCount?: number): st
 export function accessChangeClause(access: TripPlanAccessLeg): string | undefined {
   const name = access.changeAt?.name.trim();
   return name ? `change at ${name}` : undefined;
+}
+
+/** An itinerary's changes for its badge (DS-205): every change, National
+ * Rail's (`changeCount`) and those within TfL access rides
+ * (`accessChangeCount`), as "1 change"; and, when some are on a TfL ride,
+ * what they are ("1 Tube change", "1 train change, 1 Tube change") for the
+ * badge's tooltip and screen readers. */
+export function changesBadge(itinerary: TripPlanItinerary): { total: number; label: string; breakdown?: string } {
+  const plural = (n: number, what: string) => `${n} ${what}${n === 1 ? '' : 's'}`;
+  const access = Math.max(0, itinerary.accessChangeCount ?? 0);
+  const total = itinerary.changeCount + access;
+  const label = plural(total, 'change');
+  if (access === 0) return { total, label };
+  // Each changing access ride's mode ("Tube"), in leg order.
+  const byMode = new Map<string, number>();
+  for (const leg of itinerary.legs) {
+    if (leg.kind === 'transfer' && leg.access?.changeAt) {
+      const mode = transferModeLabel(leg.mode);
+      byMode.set(mode, (byMode.get(mode) ?? 0) + 1);
+    }
+  }
+  const counted = [...byMode.values()].reduce((sum, n) => sum + n, 0);
+  // The legs should name every one; if not, say only that they are TfL's.
+  const accessParts =
+    counted === access ? [...byMode].map(([mode, n]) => plural(n, `${mode} change`)) : [plural(access, 'TfL change')];
+  const parts = [...(itinerary.changeCount > 0 ? [plural(itinerary.changeCount, 'train change')] : []), ...accessParts];
+  return { total, label, breakdown: parts.join(', ') };
 }
 
 /** Where an access ride is boarded or left when that is another stop area

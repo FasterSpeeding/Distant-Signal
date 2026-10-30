@@ -648,6 +648,10 @@ export interface SessionInfo {
   id: string | null;
   name: string | null;
   username: string | null;
+  /** The account's "Help improve Distant Signal" choice (DS-190); false
+   * when logged out. Optional: an older api leaves it out, which reads as
+   * off. */
+  analyticsOptIn?: boolean;
 }
 
 export type ResolutionStatus = 'pending' | 'schedule_matched' | 'resolved' | 'unresolved';
@@ -2042,7 +2046,12 @@ export interface TripPlanStopAccess {
  * own doc comment) -- absent (not `false`) for a `results=options` entry. */
 export interface TripPlanItinerary {
   legs: TripPlanLeg[];
+  /** Changes between National Rail trains only. */
   changeCount: number;
+  /** Changes within TfL access legs (2026-10-30, DS-205): one per leg
+   * whose `access` has `changeAt`. Not in `changeCount`; absent from an
+   * older API. */
+  accessChangeCount?: number;
   totalDurationMinutes: number;
   exceedsRecommendedChanges?: boolean;
   /** Live overlay only: no cancelled leg and every change still works. */
@@ -2071,6 +2080,8 @@ export type TripPlanOptionLabel =
  * with its end-to-end change count. */
 export interface TripPlanJourney {
   changeCount: number;
+  /** See `TripPlanItinerary.accessChangeCount`. */
+  accessChangeCount?: number;
   departure: { time: string; dayOffset: number };
   arrival: { time: string; dayOffset: number };
   totalDurationMinutes: number;

@@ -247,7 +247,16 @@ impl PlannedLeg {
 #[serde(rename_all = "camelCase")]
 pub struct PlannedItinerary {
     pub legs: Vec<PlannedLeg>,
+    /// Changes between National Rail trains (rides less one): what
+    /// `maxChanges`, `exceedsRecommendedChanges` and the options' change
+    /// trade-off count.
     pub change_count: u32,
+    /// Changes made within `TfL` access legs (additive, 2026-10-30): one
+    /// per access leg with `access.changeAt` (Uxbridge to Heathrow changes
+    /// at Acton Town). Not part of `change_count`; a client wanting every
+    /// change adds the two. Set by [`count_access_changes`] once the legs
+    /// are final.
+    pub access_change_count: u32,
     pub total_duration_minutes: u32,
     /// `results=fastest` only -- see this plan's Judgment Call 3.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -345,6 +354,7 @@ impl PlannedItinerary {
                 .map(|leg| planned_leg(leg, date, interchange))
                 .collect(),
             change_count,
+            access_change_count: 0,
             total_duration_minutes: arrival_min - departure_min,
             exceeds_recommended_changes,
             departure_min,
@@ -2199,6 +2209,25 @@ fn explain_infeasible_joint_plan(
     Ok(())
 }
 
+/// Sets every itinerary's [`PlannedItinerary::access_change_count`] from
+/// its legs: run once the legs are final (after
+/// `tfl_access::AccessEnds::finish_legs` and the `TfL` ride merge).
+pub fn count_access_changes(segments: &mut [SegmentResult]) {
+    for itinerary in segments.iter_mut().flat_map(|s| &mut s.itineraries) {
+        let changes = itinerary
+            .legs
+            .iter()
+            .filter(|leg| {
+                matches!(
+                    leg,
+                    PlannedLeg::Transfer { access: Some(access), .. } if access.change_at.is_some()
+                )
+            })
+            .count();
+        itinerary.access_change_count = u32::try_from(changes).unwrap_or(u32::MAX);
+    }
+}
+
 /// One whole journey of a plan: `segments[s].itineraries[j]` for every `s`,
 /// summarised. Served as the response's `journeys[j]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2206,6 +2235,9 @@ pub struct JourneySummary {
     /// Changes over the whole journey, a train continuing through a
     /// waypoint counted once.
     pub change_count: u32,
+    /// Changes within `TfL` access legs over the whole journey: the sum of
+    /// its parts' [`PlannedItinerary::access_change_count`].
+    pub access_change_count: u32,
     pub departure_min: u32,
     pub arrival_min: u32,
     /// `results=fastest` only: `change_count` is over `maxChanges`.
@@ -2264,6 +2296,7 @@ pub fn journey_summaries(
             };
             JourneySummary {
                 change_count: rides.saturating_sub(1),
+                access_change_count: parts.iter().map(|part| part.access_change_count).sum(),
                 departure_min: first.departure_min,
                 arrival_min: final_part.arrival_min,
                 exceeds_recommended_changes: first.exceeds_recommended_changes,
@@ -4523,6 +4556,7 @@ mod tests {
         let itinerary = |legs: Vec<PlannedLeg>, from: &str, to: &str| PlannedItinerary {
             legs,
             change_count: 0,
+            access_change_count: 0,
             total_duration_minutes: 10,
             exceeds_recommended_changes: None,
             departure_min: 0,
@@ -4598,5 +4632,92 @@ mod tests {
                 ],
             ]
         );
+    }
+
+    /// DS-205: a change within a `TfL` access leg is counted apart from
+    /// National Rail's, per itinerary and over the whole journey.
+    #[test]
+    fn access_changes_are_counted_apart_from_train_changes() {
+        use crate::data::tfl_access::{AccessBasis, AccessLeg, AccessLegEnd};
+        use crate::data::tfl_stops::TflStopSummary;
+        let tube = |change_at: Option<&str>| PlannedLeg::Transfer {
+            mode: "TUBE".to_string(),
+            origin_crs: None,
+            destination_crs: None,
+            minutes: 40,
+            line: Some("Piccadilly".to_string()),
+            origin_stop: None,
+            destination_stop: None,
+            access: Some(Box::new(AccessLeg {
+                end: AccessLegEnd::Both,
+                basis: AccessBasis::Line,
+                distance_metres: 20_000,
+                change_at: change_at.map(|name| TflStopSummary {
+                    id: "940GZZLUACT".to_string(),
+                    name: name.to_string(),
+                    modes: vec!["tube".to_string()],
+                    lines: Vec::new(),
+                }),
+                board_stop: None,
+                alight_stop: None,
+            })),
+            transit_walk: None,
+        };
+        let itinerary = |legs: Vec<PlannedLeg>| PlannedItinerary {
+            legs,
+            change_count: 0,
+            access_change_count: 0,
+            total_duration_minutes: 40,
+            exceeds_recommended_changes: None,
+            departure_min: 0,
+            arrival_min: 40,
+            arrival_tiploc: None,
+            departure_tiploc: None,
+            live_feasible: None,
+            continues_previous_train: false,
+            via_satisfied_by: Vec::new(),
+            scheduled_only: None,
+            alternative: None,
+            labels: Vec::new(),
+        };
+        let segment = |itineraries| SegmentResult {
+            origin_crs: "A".to_string(),
+            destination_crs: "B".to_string(),
+            itineraries,
+            capped_by_max_changes: false,
+            depart_after_min: None,
+            arrive_by_min: None,
+            no_result_reason: None,
+        };
+        let mut segments = vec![
+            segment(vec![
+                itinerary(vec![tube(Some("Acton Town"))]),
+                itinerary(vec![tube(None)]),
+            ]),
+            segment(vec![
+                itinerary(vec![tube(Some("Acton Town"))]),
+                itinerary(Vec::new()),
+            ]),
+        ];
+        count_access_changes(&mut segments);
+        let counts = |s: &SegmentResult| -> Vec<u32> {
+            s.itineraries
+                .iter()
+                .map(|i| i.access_change_count)
+                .collect()
+        };
+        assert_eq!(counts(&segments[0]), [1, 0]);
+        assert_eq!(counts(&segments[1]), [1, 0]);
+        let journeys = journey_summaries(&segments, &stations());
+        assert_eq!(
+            journeys
+                .iter()
+                .map(|j| (j.change_count, j.access_change_count))
+                .collect::<Vec<_>>(),
+            [(0, 2), (0, 0)]
+        );
+        let json = serde_json::to_value(&segments[0].itineraries[0]).unwrap();
+        assert_eq!(json["accessChangeCount"], 1);
+        assert_eq!(json["changeCount"], 0);
     }
 }

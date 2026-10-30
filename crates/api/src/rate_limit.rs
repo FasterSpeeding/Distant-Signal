@@ -26,6 +26,8 @@
 //! - `/Train/by-uid/*` (anonymous, and a cache miss runs schedule matching),
 //!   and `/public/tfl/stops/{id}/arrivals` in the same budget (a cache miss
 //!   calls `TfL`);
+//! - `POST /public/events` (opt-in usage analytics, DS-190), in a budget of
+//!   its own so a chatty page can't spend a visitor's public-write budget;
 //! - every other public write (non-GET/HEAD/OPTIONS), with a generous
 //!   default, as a backstop for anonymous write amplification.
 //!
@@ -123,6 +125,8 @@ pub enum LimitClass {
     TripPlan,
     TrainByUid,
     PublicWrite,
+    /// `POST /public/events`: usage analytics.
+    Events,
     /// A verified delegated request on a read route.
     DelegatedRead,
     /// ... on the itinerary save route.
@@ -138,6 +142,7 @@ impl LimitClass {
             LimitClass::TripPlan => "trip_plan",
             LimitClass::TrainByUid => "train_by_uid",
             LimitClass::PublicWrite => "public_write",
+            LimitClass::Events => "events",
             LimitClass::DelegatedRead => "delegated_read",
             LimitClass::DelegatedWrite => "delegated_write",
             LimitClass::DelegatedDelete => "delegated_delete",
@@ -219,6 +224,9 @@ pub fn classify(method: &Method, path: &str) -> Option<LimitClass> {
     if path.starts_with("/Train/by-uid/") || is_tfl_arrivals(path) {
         return Some(LimitClass::TrainByUid);
     }
+    if path == "/public/events" {
+        return Some(LimitClass::Events);
+    }
     if !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         return Some(LimitClass::PublicWrite);
     }
@@ -288,6 +296,13 @@ pub struct RateLimitSettings {
     pub public_write_per_minute: u32,
     #[arg(long, env = "API_RATE_LIMIT_PUBLIC_WRITE_BURST", default_value_t = 60)]
     pub public_write_burst: u32,
+
+    /// `POST /public/events`, per client IP (the MCP's too: it has no
+    /// business sending events). A page sends a few per view.
+    #[arg(long, env = "API_RATE_LIMIT_EVENTS_PER_MINUTE", default_value_t = 60)]
+    pub events_per_minute: u32,
+    #[arg(long, env = "API_RATE_LIMIT_EVENTS_BURST", default_value_t = 30)]
+    pub events_burst: u32,
 
     /// The MCP's own budget (one bucket for the whole service, see the
     /// module doc). Login has none: the bearer is ignored there.
@@ -385,6 +400,8 @@ impl Default for RateLimitSettings {
             train_by_uid_burst: 60,
             public_write_per_minute: 120,
             public_write_burst: 60,
+            events_per_minute: 60,
+            events_burst: 30,
             mcp_trip_plan_per_minute: 100,
             mcp_trip_plan_burst: 30,
             mcp_train_by_uid_per_minute: 600,
@@ -425,6 +442,10 @@ impl RateLimitSettings {
             (
                 LimitClass::PublicWrite,
                 (self.public_write_per_minute, self.public_write_burst),
+            ),
+            (
+                LimitClass::Events,
+                (self.events_per_minute, self.events_burst),
             ),
         ] {
             ensure!(
@@ -493,6 +514,7 @@ impl RateLimitSettings {
     fn quota(&self, class: LimitClass, caller: Caller) -> Quota {
         let (per_minute, burst) = match (caller, class) {
             (_, LimitClass::Login) => (self.login_per_minute, self.login_burst),
+            (_, LimitClass::Events) => (self.events_per_minute, self.events_burst),
             (_, LimitClass::DelegatedRead) => {
                 (self.delegated_read_per_minute, self.delegated_read_burst)
             }
@@ -979,6 +1001,7 @@ mod tests {
         let public = axum::Router::new()
             .route("/auth/login", get(|| async { "login" }))
             .route("/auth/callback", get(|| async { "callback" }))
+            .route("/events", post(|| async { "event" }))
             .route(
                 "/lines",
                 post(|| async { "write" }).get(|| async { "read" }),
@@ -1181,6 +1204,36 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    /// Usage events (DS-190) have their own per-IP budget: running it out
+    /// leaves the visitor's public writes alone, and the reverse.
+    #[tokio::test]
+    async fn usage_events_have_their_own_budget() {
+        let router = router(RateLimitSettings {
+            events_per_minute: 60,
+            events_burst: 2,
+            ..settings()
+        });
+        let ip = Some("203.0.113.7");
+        for _ in 0..2 {
+            let response = call(&router, "POST", "/public/events", ip, FRONTEND).await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let limited = call(&router, "POST", "/public/events", ip, FRONTEND).await;
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(limited.headers().contains_key(header::RETRY_AFTER));
+        let write = call(&router, "POST", "/public/lines", ip, FRONTEND).await;
+        assert_eq!(write.status(), StatusCode::OK);
+        let other = call(
+            &router,
+            "POST",
+            "/public/events",
+            Some("203.0.113.8"),
+            FRONTEND,
+        )
+        .await;
+        assert_eq!(other.status(), StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn public_writes_are_limited_but_reads_are_not() {
         let router = router(settings());
@@ -1344,6 +1397,10 @@ mod tests {
         assert_eq!(
             classify(&Method::DELETE, "/public/account"),
             Some(LimitClass::PublicWrite)
+        );
+        assert_eq!(
+            classify(&Method::POST, "/public/events"),
+            Some(LimitClass::Events)
         );
         assert_eq!(classify(&Method::GET, "/public/lines"), None);
         assert_eq!(

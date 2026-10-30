@@ -15,6 +15,7 @@ import type { ChatError } from '@/lib/chatErrors';
 import { loadChatRuntime, type ChatRuntime } from '@/lib/chatRuntime';
 import { ButtonLink } from '@/components/ButtonLink';
 import { PREFERENCES_DESTINATION } from '@/lib/navLinks';
+import { trackFeature } from '@/lib/usageAnalytics';
 
 const PREFERENCES_HREF = PREFERENCES_DESTINATION.href;
 
@@ -144,6 +145,11 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
     setPendingTool(null);
   }
 
+  // Opt-in usage counts (DS-190): the chat was opened.
+  useEffect(() => {
+    trackFeature('chat', 'opened');
+  }, []);
+
   // Never leave the tool loop waiting on a panel that has gone away.
   useEffect(
     () => () => {
@@ -172,6 +178,8 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
       setError({ kind: 'no-key' });
       return;
     }
+    // Only that a message was sent: never its text.
+    trackFeature('chat', 'message_sent');
 
     const provider = chatOAuthProvider();
     const hadTokens = provider.tokens() !== undefined;

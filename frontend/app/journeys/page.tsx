@@ -1,4 +1,5 @@
 import { Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
+import { TrackEmptyState } from '@/components/TrackEmptyState';
 import { SectionTitle } from '@/components/SectionTitle';
 import { CardTitleLink, ClickableCard, StaticCard } from '@/components/ClickableCard';
 import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains, getMyJourneys } from '@/lib/api';
@@ -240,7 +241,10 @@ export default async function JourneysPage() {
     <Stack p="lg" gap="xl">
       <JourneysHeader authenticated />
       {nothingToShow ? (
-        <Text c="dimmed">You have no journeys yet. Plan a journey, or find a train first, and it will show here.</Text>
+        <Text c="dimmed">
+          You have no journeys yet. Plan a journey, or find a train first, and it will show here.
+          <TrackEmptyState kind="journeys_none" />
+        </Text>
       ) : (
         <>
           {(upcomingCount > 0 || pastCount > 0) && (

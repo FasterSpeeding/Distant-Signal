@@ -56,6 +56,7 @@ pub mod train;
 pub mod trains;
 pub mod transit;
 pub mod trips;
+pub mod usage;
 
 /// The current instant on the Europe/London wall clock.
 ///
@@ -162,4 +163,5 @@ pub fn public_router() -> Router {
         .merge(transit::router())
         .merge(tfl_stops::router())
         .merge(tfl_stop_page::router())
+        .merge(usage::router())
 }

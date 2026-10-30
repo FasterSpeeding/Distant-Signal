@@ -45,6 +45,7 @@ use crate::data::{
     delay_repay_rules, eta_blend, journey_leg_proposal, schedule_matching, ticket_extraction,
     ticket_precheck, ticket_subprocess, train_tracking,
 };
+use crate::usage_events::FeatureEvent;
 
 pub fn router() -> Router {
     Router::new()
@@ -675,6 +676,29 @@ async fn post_track(
     State(app): State<App>,
     user: AuthenticatedUser,
     Json(pin): Json<TrackPinRequest>,
+) -> Result<Json<TrackPinResponse>, (StatusCode, String)> {
+    let result = track_pin(app, user, pin).await;
+    // Usage analytics, phase 1 (DS-190): the outcome only.
+    FeatureEvent::record_result(
+        &result,
+        |Json(response)| {
+            if response.resolution_status == "schedule_matched" {
+                FeatureEvent::TrackTrainMatched
+            } else {
+                FeatureEvent::TrackTrainPending
+            }
+        },
+        FeatureEvent::TrackTrainRejected,
+        FeatureEvent::TrackTrainError,
+    );
+    result
+}
+
+/// [`post_track`]'s work.
+async fn track_pin(
+    app: App,
+    user: AuthenticatedUser,
+    pin: TrackPinRequest,
 ) -> Result<Json<TrackPinResponse>, (StatusCode, String)> {
     train_tracking::validate_pin(&pin, Utc::now()).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     enforce_pin_cap(&app, &user.id).await?;
@@ -1326,6 +1350,25 @@ async fn post_track_by_uid(
     State(app): State<App>,
     user: AuthenticatedUser,
     Path((train_uid, date)): Path<(String, NaiveDate)>,
+) -> Result<Json<TrackByUidResponse>, (StatusCode, String)> {
+    let result = track_by_uid(app, user, train_uid, date).await;
+    // Usage analytics, phase 1 (DS-190): a train tracked by its identity
+    // is matched from the start.
+    FeatureEvent::record_result(
+        &result,
+        |_| FeatureEvent::TrackTrainMatched,
+        FeatureEvent::TrackTrainRejected,
+        FeatureEvent::TrackTrainError,
+    );
+    result
+}
+
+/// [`post_track_by_uid`]'s work.
+async fn track_by_uid(
+    app: App,
+    user: AuthenticatedUser,
+    train_uid: String,
+    date: NaiveDate,
 ) -> Result<Json<TrackByUidResponse>, (StatusCode, String)> {
     // 2026-09-26 review, Low finding 11 -- see `get_by_uid_and_date`'s own
     // doc comment, just above: without this, a hand-typed lowercase uid

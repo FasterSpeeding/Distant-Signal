@@ -9,6 +9,7 @@ import { LoginControl } from '@/components/LoginControl';
 import { SectionTitle } from '@/components/SectionTitle';
 import { StatusRow } from '@/components/StatusRow';
 import { TextLink } from '@/components/TextLink';
+import { TrackFeatureArea } from '@/components/TrackFeatureArea';
 import { NoTrainPickedYetBadge, TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
 import { formatTime } from '@/lib/dateFormat';
 import { describeFailure } from '@/lib/failure';
@@ -444,17 +445,20 @@ export function UpcomingJourneysSection({
         </Text>
       )}
       {sharedShown.length > 0 && (
-        <Stack gap="xs">
-          <SectionTitle order={3}>Shared with you</SectionTitle>
-          {sharedShown.map((journey) => (
-            <HomeJourneyRow key={`journey-${journey.item.id}`} journey={journey} />
-          ))}
-          {sharedHidden > 0 && (
-            <Text size="sm" c="dimmed">
-              {sharedHidden} more shared {sharedHidden === 1 ? 'journey is' : 'journeys are'} on the Journeys page.
-            </Text>
-          )}
-        </Stack>
+        // Counted (DS-190) as shown, and when one of its journeys is opened.
+        <TrackFeatureArea feature="shared_journeys" shown="shown" linkOpened="opened">
+          <Stack gap="xs">
+            <SectionTitle order={3}>Shared with you</SectionTitle>
+            {sharedShown.map((journey) => (
+              <HomeJourneyRow key={`journey-${journey.item.id}`} journey={journey} />
+            ))}
+            {sharedHidden > 0 && (
+              <Text size="sm" c="dimmed">
+                {sharedHidden} more shared {sharedHidden === 1 ? 'journey is' : 'journeys are'} on the Journeys page.
+              </Text>
+            )}
+          </Stack>
+        </TrackFeatureArea>
       )}
     </Stack>
   );

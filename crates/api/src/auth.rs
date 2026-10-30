@@ -277,6 +277,10 @@ pub struct AuthenticatedUser {
     /// only (`GET /auth/session`); never shown to other users from here.
     pub username: Option<String>,
     pub groups: Vec<String>,
+    /// Whether the user has turned on usage analytics (DS-190): read with
+    /// the session, so `POST /public/events` and `GET /auth/session` need
+    /// no second query.
+    pub analytics_opt_in: bool,
 }
 
 impl FromRequestParts<App> for AuthenticatedUser {
@@ -307,6 +311,7 @@ impl FromRequestParts<App> for AuthenticatedUser {
             name: session.name,
             username: session.username,
             groups: session.groups,
+            analytics_opt_in: session.analytics_opt_in,
         })
     }
 }

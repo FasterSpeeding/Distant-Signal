@@ -6,6 +6,8 @@ import { useConnectivity } from '@/components/ConnectivityMonitor';
 import { LoadingText } from '@/components/LoadingText';
 import { TextLink } from '@/components/TextLink';
 import { createLogger } from '@/lib/logger';
+import { track } from '@/lib/usageAnalytics';
+import { isDigest } from '@/lib/usageEvents';
 
 const log = createLogger('app/error');
 
@@ -30,6 +32,10 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
     // The only reporting channel this app has. Previously nothing logged
     // the error at all, while the useless half of it was rendered.
     log.error('Unhandled error rendering a page', { digest: error.digest, error });
+    // Opt-in usage counts (DS-190): the digest only, never the message or
+    // stack, and only when it is the opaque hash Next makes.
+    const digest = error.digest;
+    track('error_boundary', digest !== undefined && isDigest(digest) ? { digest } : undefined);
   }, [error]);
 
   // Next's own ErrorBoundaryHandler only clears a tripped error when the

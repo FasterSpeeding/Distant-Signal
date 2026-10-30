@@ -575,13 +575,36 @@ fn default_results() -> String {
 ///    batches of a few queries per pass. All passes run under the same
 ///    permit. The searches now start at their own departure time rather than
 ///    at 00:00, which more than pays for a re-plan on a daytime query.
+async fn get_trip_plan(
+    State(app): State<App>,
+    Query(params): Query<TripPlanParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let result = plan_trip_request(app, params).await;
+    // Usage analytics, phase 1 (DS-190): the outcome only, never the
+    // stations asked about.
+    crate::usage_events::FeatureEvent::record_result(
+        &result,
+        |Json(body)| {
+            if body["journeys"].as_array().is_some_and(|j| !j.is_empty()) {
+                crate::usage_events::FeatureEvent::TripPlanResults
+            } else {
+                crate::usage_events::FeatureEvent::TripPlanNoRoute
+            }
+        },
+        crate::usage_events::FeatureEvent::TripPlanRejected,
+        crate::usage_events::FeatureEvent::TripPlanError,
+    );
+    result
+}
+
+/// [`get_trip_plan`]'s work.
 #[expect(
     clippy::too_many_lines,
     reason = "long but linear; splitting it would scatter its shared state across helpers"
 )]
-async fn get_trip_plan(
-    State(app): State<App>,
-    Query(params): Query<TripPlanParams>,
+async fn plan_trip_request(
+    app: App,
+    params: TripPlanParams,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if params.results != "fastest" && params.results != "options" {
         return Err((
@@ -897,6 +920,9 @@ async fn get_trip_plan(
             .map(|(j, journey)| {
                 let mut value = serde_json::json!({
                     "changeCount": journey.change_count,
+                    // Additive (2026-10-30): changes within `TfL` access
+                    // legs, not in `changeCount`.
+                    "accessChangeCount": journey.access_change_count,
                     "departure": segment_clock(journey.departure_min),
                     "arrival": segment_clock(journey.arrival_min),
                     "totalDurationMinutes": journey.arrival_min - journey.departure_min,
@@ -1302,6 +1328,7 @@ async fn plan_on_date(
         }
         None => Vec::new(),
     };
+    trip_planning_itinerary::count_access_changes(&mut segments);
     Ok(DatePlan {
         request,
         segments,

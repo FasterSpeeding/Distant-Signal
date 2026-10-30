@@ -7,6 +7,7 @@ import { AppNavBar } from '@/components/AppNavBar';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { ColorSchemeMeta } from '@/components/ColorSchemeMeta';
 import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
+import { UsageTracker } from '@/components/UsageTracker';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
 import { LoginConsentProvider } from '@/components/LoginConsentNote';
 import { legalPagesPublished } from '@/lib/legal';
@@ -134,7 +135,15 @@ async function NavBarWithSession({ freshness }: { freshness: DataFreshness }) {
   // `getTransitNetworks()` never throws ([] on failure) and is cached for
   // five minutes, so the "Trams" entry costs no round trip on most renders.
   const [session, transitNetworks] = await Promise.all([getSessionOrLoggedOut(), getTransitNetworks()]);
-  return <AppNavBar session={session} freshness={freshness} transitOn={transitNetworks.length > 0} />;
+  // The opt-in usage tracker (DS-190) rides on this same session fetch:
+  // it needs to know who is logged in and the account's choice, and costs
+  // no round trip of its own. It renders nothing.
+  return (
+    <>
+      <AppNavBar session={session} freshness={freshness} transitOn={transitNetworks.length > 0} />
+      <UsageTracker signedIn={session.authenticated} accountOptIn={session.analyticsOptIn === true} />
+    </>
+  );
 }
 
 /** Because the call below is awaited before RootLayout emits any HTML, an

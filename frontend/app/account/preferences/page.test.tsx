@@ -45,6 +45,20 @@ describe('PreferencesPage', () => {
     expect(screen.queryByLabelText('Claude API key')).toBeNull();
   });
 
+  it('offers the usage-counts switch to everyone, off by default', async () => {
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue(loggedOut);
+    const { unmount } = renderWithMantine(await PreferencesPage());
+    const anonymous = screen.getByRole('switch', { name: 'Help improve Distant Signal' });
+    expect(anonymous).not.toBeChecked();
+    expect(screen.getByText(/more counts\. Saved in this browser\.$/)).toBeInTheDocument();
+    unmount();
+
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ ...loggedIn, analyticsOptIn: true });
+    renderWithMantine(await PreferencesPage());
+    expect(screen.getByRole('switch', { name: 'Help improve Distant Signal' })).toBeChecked();
+    expect(screen.getByText(/more counts\. Saved to your account\.$/)).toBeInTheDocument();
+  });
+
   it('offers the notifications button when logged in', async () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue(loggedIn);
     renderWithMantine(await PreferencesPage());

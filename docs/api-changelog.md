@@ -3,6 +3,22 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-30: `accessChangeCount`, changes within `TfL` access legs
+
+Additive. `changeCount` is unchanged: it still counts changes between
+National Rail trains only, and `maxChanges`, `exceedsRecommendedChanges`
+and the `fewestChanges` label still use it (DS-205;
+`crates/api/src/data/trip_planning_itinerary.rs`).
+
+- `GET /Trips/plan`: every `segments[s].itineraries[j]` and every
+  `journeys[j]` gains `accessChangeCount`, the number of changes made
+  within `TfL` access legs: one per leg whose `access` has `changeAt`.
+  It is `0` when there are none, including for a plan with no `TfL` stop
+  end. Uxbridge (`940GZZLUUXB`) to Heathrow Terminals 2 & 3
+  (`940GZZLUHRC`) is one Piccadilly line leg that changes at Acton Town:
+  `changeCount` 0, `accessChangeCount` 1. A client that wants every
+  change adds the two; DS-MCP can show it as "1 change (on the Tube)".
+
 ## 2026-10-30: Tube access rides timed by `TfL`'s timetable
 
 No shape change; some access legs' `minutes` change (DS-206;
@@ -86,6 +102,30 @@ may be useful to it.
   it (or the date's train list is not published yet); `404` when nothing at
   all is published for the date; `400` for a headcode that is not a
   digit, a letter and two digits.
+
+## 2026-10-30: opt-in usage analytics
+
+Additive. DS-MCP needs no change and should not call the new routes (DS-190;
+[usage-analytics.md](usage-analytics.md)).
+
+- `POST /public/events`: one usage event from a browser that opted in,
+  `{"name", "route_template", "props"?}`, checked against an allowlist
+  (`crates/api/src/usage_events.rs`). Always `204`, counted or not; not
+  counted with `Sec-GPC: 1` or `DNT: 1`, or from a signed-in user who has
+  not opted in. Bodies over 1 KiB get `413`. Its own rate limit,
+  `API_RATE_LIMIT_EVENTS_PER_MINUTE` (60) and `_BURST` (30) per client IP;
+  `429` past it.
+- `GET`/`PUT /public/preferences/analytics`: the signed-in user's choice,
+  `{"optIn": false}` by default. `PUT` answers `204`; both need a session
+  (`401` without).
+- `GET /public/auth/session` gains `analyticsOptIn` (`false` when logged
+  out).
+- The account export's `account` gains `analytics_opt_in`.
+- No other response changes. The api now also counts some outcomes
+  (tracking a train, planning a trip, share links, push subscriptions,
+  group joins, connected apps) in Prometheus, with no identifiers.
+  The new Trains reads (`/public/trains/arrivals`, `/by-headcode`) get no
+  counter of their own: the request metrics already count them by route.
 
 ## 2026-10-30: Tube rides change trains when quicker, and use a station's other stops
 

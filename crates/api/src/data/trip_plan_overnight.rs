@@ -262,6 +262,7 @@ mod tests {
         let (departure_min, arrival_min) = (trains[0].1, trains[trains.len() - 1].2);
         PlannedItinerary {
             change_count: u32::try_from(legs.len()).unwrap() - 1,
+            access_change_count: 0,
             legs,
             total_duration_minutes: arrival_min - departure_min,
             exceeds_recommended_changes: None,

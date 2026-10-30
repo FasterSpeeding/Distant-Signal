@@ -46,6 +46,9 @@ pub struct RetentionOutcome {
     /// Journey follows whose share no longer lets the follower in (an
     /// expired share link, or a cleanup that raced the follow; DS-146).
     pub lapsed_follows: u64,
+    /// `usage_daily` rows older than 13 months (opt-in usage analytics,
+    /// DS-190). Not personal data, but kept no longer than it is useful.
+    pub usage_daily_rows: u64,
 }
 
 impl RetentionOutcome {
@@ -57,6 +60,7 @@ impl RetentionOutcome {
             + self.push_subscriptions
             + self.accounts
             + self.lapsed_follows
+            + self.usage_daily_rows
     }
 }
 
@@ -125,6 +129,9 @@ pub async fn prune_personal_data(
     // honoured while its share is live (`journey_follows::VALID_FOLLOW`),
     // and a share link's expiry is the one lapse no request deletes.
     outcome.lapsed_follows = crate::data::journey_follows::prune_lapsed_follows(pool).await?;
+
+    // Not switchable either: the 13 months the privacy page promises.
+    outcome.usage_daily_rows = crate::data::usage::prune(pool, now).await?;
 
     Ok(outcome)
 }
@@ -239,8 +246,9 @@ mod tests {
             push_subscriptions: 5,
             accounts: 6,
             lapsed_follows: 7,
+            usage_daily_rows: 8,
         };
-        assert_eq!(outcome.total(), 28);
+        assert_eq!(outcome.total(), 36);
     }
 }
 
@@ -549,5 +557,28 @@ mod db_tests {
         .unwrap();
         assert_eq!(role, "owner");
         cleanup(&pool, "ret-inact-").await;
+    }
+
+    /// The usage-analytics sweep runs even with every switchable limit off.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
+    async fn old_usage_counts_are_pruned_with_every_limit_off() {
+        use crate::data::usage::{self, db_tests};
+        let pool = connect().await;
+        db_tests::clear(&pool).await;
+        let now = Utc::now();
+        let cutoff = usage::retention_cutoff(now);
+        let old = cutoff - Duration::days(1);
+        usage::increment(&pool, old, "page_view", db_tests::TEST_DIM, false)
+            .await
+            .unwrap();
+        usage::increment(&pool, cutoff, "page_view", db_tests::TEST_DIM, false)
+            .await
+            .unwrap();
+        let outcome = prune_personal_data(&pool, OFF, now).await.unwrap();
+        assert!(outcome.usage_daily_rows >= 1);
+        assert_eq!(db_tests::count(&pool, old, "page_view", false).await, 0);
+        assert_eq!(db_tests::count(&pool, cutoff, "page_view", false).await, 1);
+        db_tests::clear(&pool).await;
     }
 }
