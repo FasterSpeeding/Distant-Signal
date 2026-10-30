@@ -17,7 +17,7 @@ import { describeFailure, failureFromResponse } from '@/lib/failure';
  * but the journey's id, not its already-fetched leg data (contrast with
  * a hypothetical Phase A "Track this journey again" button, which pre-fills
  * a NEW journey's creation form client-side from data it already has — a
- * different operation entirely, targeting `/journeys/new`, not this
+ * different operation entirely, targeting `/plan`, not this
  * route). On success, navigates to the new template's own detail page —
  * the natural next stop, matching `AddJourneyLegButton`'s
  * `router.refresh()`-on-success posture but going further since a whole

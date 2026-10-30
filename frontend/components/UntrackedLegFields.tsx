@@ -194,7 +194,7 @@ function StopPlaceField({
  * §2): how, line, from and to, date, leaves and arrives. For Tube, DLR and
  * tram, from and to suggest TfL's stops (`StopPlaceField`) and keep the
  * picked stop's id; otherwise they are free text. Shared by "Add a leg" and the "Tube, bus or
- * walk" start on `/journeys/new`, which own the draft and submit
+ * walk" start on `/plan`, which own the draft and submit
  * `untrackedDraftRequest(draft)`. */
 export function UntrackedLegFields({
   draft,

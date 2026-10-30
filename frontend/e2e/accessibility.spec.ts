@@ -218,9 +218,13 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   [`/incidents/${REAL_INCIDENT_ID}`, `/incidents/${REAL_INCIDENT_ID}`],
   ['/trains', '/trains'],
   ['/track', '/track'],
-  // Opens on the planner; `?mode=known` is the train form under it.
-  ['/journeys/new', '/journeys/new'],
-  ['/journeys/new?mode=known', '/journeys/new?mode=known'],
+  // Plan a journey (DS-194, which merged New journey into it): opens on
+  // the planner; `?mode=known` is the train form, `?mode=untracked` the
+  // Tube, bus or walk form. `/journeys/new` redirects here.
+  ['/plan', '/plan'],
+  ['/plan?mode=known', '/plan?mode=known'],
+  ['/plan?mode=untracked', '/plan?mode=untracked'],
+  ['/journeys/new (redirected to /plan)', '/journeys/new?mode=known'],
   ['/groups/new', '/groups/new'],
   ['/connect-claude', '/connect-claude'],
   // The retired consent bridge's "this moved" note.

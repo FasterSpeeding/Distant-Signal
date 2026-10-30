@@ -133,7 +133,7 @@ export function TrackTrainForm({
   initialDepartBefore?: string | undefined;
   initialArriveAfter?: string | undefined;
   initialArriveBefore?: string | undefined;
-  /** `JourneyCreationFlow.tsx`'s (the `/journeys/new` continuous
+  /** `JourneyCreationFlow.tsx`'s (the `/plan` continuous
    * multi-leg creation page) only caller of this prop: this form is
    * reused there verbatim as the "leg 1" step, but that page wants to
    * stay put afterwards and offer an inline "Add a leg" rather than being

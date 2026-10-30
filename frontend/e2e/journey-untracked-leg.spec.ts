@@ -3,7 +3,7 @@ import AxeBuilder from '@axe-core/playwright';
 
 // "Tube, bus or walk" legs (spec
 // docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md
-// §2): adding an untracked Tube leg after a train leg on /journeys/new,
+// §2): adding an untracked Tube leg after a train leg on /plan,
 // and starting a journey with one. Every /api call the page makes from the
 // browser is answered here, as in journey-add-leg.spec.ts, so the spec
 // needs no seeded journey and no session.
@@ -186,7 +186,7 @@ async function mockApi(page: Page, firstLegs: unknown[]): Promise<Record<string,
 test.describe('untracked legs', () => {
   test('adds a Tube leg after a train leg, starting from its arrival', async ({ page }) => {
     const bodies = await mockApi(page, [TRAIN_LEG]);
-    await page.goto('/journeys/new?mode=known');
+    await page.goto('/plan?mode=known');
     await page.getByRole('combobox', { name: 'Origin station' }).fill('MKC');
     await page.getByText('Search a time window', { exact: true }).click();
     await page.getByRole('combobox', { name: 'Destination station' }).fill('EUS');
@@ -229,7 +229,7 @@ test.describe('untracked legs', () => {
 
   test('starts a journey with Tube stops picked from the TfL lookup', async ({ page }) => {
     const bodies = await mockApi(page, []);
-    await page.goto('/journeys/new');
+    await page.goto('/plan');
     await page.getByText('Tube, bus or walk', { exact: true }).click();
     const from = page.getByRole('combobox', { name: 'From (optional)' });
     await from.fill('eus');
@@ -260,7 +260,7 @@ test.describe('untracked legs', () => {
 
   test('starts a journey with a walk', async ({ page }) => {
     const bodies = await mockApi(page, []);
-    await page.goto('/journeys/new');
+    await page.goto('/plan');
     await page.getByText('Tube, bus or walk', { exact: true }).click();
     await page.getByRole('combobox', { name: 'How' }).click();
     await page.getByRole('option', { name: 'Walk' }).click();

@@ -150,8 +150,8 @@ export function PlanTripForm({
   /** A restored search (`/plan`'s own query string, `lib/tripPlanUrl.ts`);
    * only read on mount. Its `originCrs` wins over `initialOriginCrs`. */
   initial?: PlanFormInitial | undefined;
-  /** `GET /public/trains/search/dates`, read by the page (`/plan` or
-   * `/journeys/new`) on the server. Its `to` is the date picker's last day,
+  /** `GET /public/trains/search/dates`, read by the page (`/plan`) on the
+   * server. Its `to` is the date picker's last day,
    * as on `/trains`; `null` (the read failed) falls back to a week ahead
    * (`lib/searchDates.ts`). Absent (a caller that doesn't read the range),
    * the picker has no upper bound. */

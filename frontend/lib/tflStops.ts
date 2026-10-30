@@ -40,11 +40,11 @@ export function arrivalDueSpoken(timeToStationSecs: number): string {
   return minutes === 1 ? 'in 1 minute' : `in ${minutes} minutes`;
 }
 
-/** The query `/journeys/new` reads to start an untracked leg from a TfL
- * stop ("Add as a journey leg"). */
+/** The query `/plan` reads to start an untracked leg from a TfL stop
+ * ("Add as a journey leg"). */
 export const JOURNEY_FROM_TFL_STOP_PARAM = 'fromTflStop';
 
-/** `/journeys/new`, set up for a Tube, DLR or tram leg from `stopId`. */
+/** `/plan`, set up for a Tube, DLR or tram leg from `stopId`. */
 export function journeyFromTflStopHref(stopId: string): string {
-  return `/journeys/new?${new URLSearchParams({ [JOURNEY_FROM_TFL_STOP_PARAM]: stopId }).toString()}`;
+  return `/plan?${new URLSearchParams({ [JOURNEY_FROM_TFL_STOP_PARAM]: stopId }).toString()}`;
 }

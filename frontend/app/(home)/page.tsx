@@ -462,8 +462,8 @@ export default async function DashboardPage() {
 
       {/* The journey under way now leads the page, then the journeys still
           to come. "Current journey" renders only when there is one.
-          "Upcoming journeys" always does: its "New journey" button is one
-          of the two ways in to /journeys/new (the nav has none, DS-115),
+          "Upcoming journeys" always does: its "Plan a journey" button is
+          one of the two ways in to /plan (the nav has none, DS-194),
           so a new user with no journeys finds it here too. */}
       {current !== null && <CurrentJourneySection current={current} alsoInProgress={alsoInProgress} now={now} />}
       <UpcomingJourneysSection upcoming={upcoming} loadFailed={myJourneys === null} />

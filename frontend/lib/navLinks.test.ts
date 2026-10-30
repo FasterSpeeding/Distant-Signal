@@ -6,13 +6,11 @@ import {
   GROUPS_DESTINATION,
   isActiveNavHref,
   navDrawerDestinations,
-  PLAN_JOURNEY_DESTINATION,
+  PLAN_JOURNEY_HREF,
+  PLAN_JOURNEY_LABEL,
   PREFERENCES_DESTINATION,
   PRIMARY_NAV_DESTINATIONS,
   JOURNEYS_DESTINATION,
-  NEW_JOURNEY_LABEL,
-  TRACK_JOURNEY_HREF,
-  TRACK_KNOWN_ROUTE_HREF,
   TRANSIT_DESTINATION,
 } from './navLinks';
 
@@ -31,10 +29,9 @@ describe('TRANSIT_DESTINATION', () => {
 });
 
 describe('the bar', () => {
-  it('has one Journeys entry, first, then Plan a journey, then the browse pages', () => {
+  it('has one Journeys entry, first, then the browse pages', () => {
     expect(PRIMARY_NAV_DESTINATIONS.map((d) => d.label)).toEqual([
       'Journeys',
-      'Plan a journey',
       'Status',
       'Lines',
       'Operators',
@@ -42,14 +39,12 @@ describe('the bar', () => {
       'Incidents',
     ]);
     expect(PRIMARY_NAV_DESTINATIONS[0]).toBe(JOURNEYS_DESTINATION);
-    expect(PRIMARY_NAV_DESTINATIONS[1]).toBe(PLAN_JOURNEY_DESTINATION);
   });
 
-  it('sends Journeys to /journeys, and starts new journeys on /journeys/new', () => {
+  it('sends Journeys to /journeys, and starts new journeys on /plan, "Plan a journey"', () => {
     expect(JOURNEYS_DESTINATION.href).toBe('/journeys');
-    expect(TRACK_JOURNEY_HREF).toBe('/journeys/new');
-    expect(TRACK_KNOWN_ROUTE_HREF).toBe('/journeys/new?mode=known');
-    expect(NEW_JOURNEY_LABEL).toBe('New journey');
+    expect(PLAN_JOURNEY_HREF).toBe('/plan');
+    expect(PLAN_JOURNEY_LABEL).toBe('Plan a journey');
   });
 
   it('lists no tracking page twice', () => {
@@ -59,17 +54,19 @@ describe('the bar', () => {
     }
   });
 
-  // DS-115: a new journey starts from the Journeys page and the home page's
-  // "Upcoming journeys", never from the nav.
-  it('offers no new-journey entry in the bar, the drawer or the account menu', () => {
+  // DS-115, DS-194: a journey starts from the Journeys page and the home
+  // page's "Upcoming journeys", never from the nav.
+  it('offers no Plan a journey or new-journey entry in the bar, the drawer or the account menu', () => {
     for (const list of [
       PRIMARY_NAV_DESTINATIONS,
       navDrawerDestinations(true, true),
       navDrawerDestinations(false),
       accountMenuDestinations(),
     ]) {
-      expect(list.map((d) => d.href)).not.toContain(TRACK_JOURNEY_HREF);
-      expect(list.map((d) => d.label)).not.toContain(NEW_JOURNEY_LABEL);
+      expect(list.map((d) => d.href)).not.toContain(PLAN_JOURNEY_HREF);
+      expect(list.map((d) => d.href)).not.toContain('/journeys/new');
+      expect(list.map((d) => d.label)).not.toContain(PLAN_JOURNEY_LABEL);
+      expect(list.map((d) => d.label)).not.toContain('New journey');
       expect(list.map((d) => d.label)).not.toContain('Track a journey');
     }
   });
@@ -77,16 +74,17 @@ describe('the bar', () => {
 
 describe('isActiveNavHref', () => {
   it('matches a plain href exactly, never as a prefix', () => {
-    expect(isActiveNavHref('/plan', PLAN_JOURNEY_DESTINATION)).toBe(true);
-    expect(isActiveNavHref('/journeys/new', '/plan')).toBe(false);
+    expect(isActiveNavHref('/plan', '/plan')).toBe(true);
+    expect(isActiveNavHref('/plan/x', '/plan')).toBe(false);
     expect(isActiveNavHref('/lines/abc', '/lines')).toBe(false);
     expect(isActiveNavHref('/lines', '/')).toBe(false);
     expect(isActiveNavHref(null, '/plan')).toBe(false);
   });
 
-  it('marks Journeys current on every tracking page', () => {
+  it('marks Journeys current on every tracking page, Plan a journey included', () => {
     for (const path of [
       '/journeys',
+      '/plan',
       '/track/mine',
       '/track',
       '/track/mine/add-ticket',
@@ -98,7 +96,7 @@ describe('isActiveNavHref', () => {
       expect(isActiveNavHref(path, JOURNEYS_DESTINATION), path).toBe(true);
     }
     expect(isActiveNavHref('/trainsx', JOURNEYS_DESTINATION)).toBe(false);
-    expect(isActiveNavHref('/plan', JOURNEYS_DESTINATION)).toBe(false);
+    expect(isActiveNavHref('/planx', JOURNEYS_DESTINATION)).toBe(false);
     expect(isActiveNavHref('/train/W12345/2026-09-17', JOURNEYS_DESTINATION)).toBe(false);
   });
 

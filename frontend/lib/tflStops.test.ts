@@ -20,7 +20,7 @@ describe('tflStops', () => {
   it('builds the stop, line and new-journey links', () => {
     expect(tflStopHref('940GZZLUUXB')).toBe('/tfl/stops/940GZZLUUXB');
     expect(tflLineHref('piccadilly')).toBe('/lines/tfl-piccadilly');
-    expect(journeyFromTflStopHref('940GZZLUUXB')).toBe('/journeys/new?fromTflStop=940GZZLUUXB');
+    expect(journeyFromTflStopHref('940GZZLUUXB')).toBe('/plan?fromTflStop=940GZZLUUXB');
   });
 
   it('names modes as badges say them', () => {
