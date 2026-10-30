@@ -2926,8 +2926,8 @@ mod tests {
     #[test]
     fn sibling_stop_area_rides_its_lines() {
         let (stops, routes) = circle_both_ways();
-        let (pac, pah) = (index(&stops, "940GZZLUPAC"), index(&stops, "940GZZLUPAH"));
-        assert_eq!(with_siblings(&stops, pac), [(pac, 0), (pah, 5)]);
+        let (pac, paddington_hc) = (index(&stops, "940GZZLUPAC"), index(&stops, "940GZZLUPAH"));
+        assert_eq!(with_siblings(&stops, pac), [(pac, 0), (paddington_hc, 5)]);
         // Paddington to Liverpool Street: walk 5 to the Hammersmith & City
         // stop, 5 in, 15 riding; no change.
         let lvt = index(&stops, "940GZZLULVT");
@@ -2954,43 +2954,55 @@ mod tests {
         // out of it and into it.
         for toward in [Toward::Out, Toward::In] {
             let candidates = access_candidates(&stops, &routes, pac, toward, &[]);
-            let lst = candidates.iter().find(|c| c.crs == "LST").unwrap();
+            let to_liverpool = candidates.iter().find(|c| c.crs == "LST").unwrap();
             let sibling = match toward {
-                Toward::Out => &lst.board_stop,
-                Toward::In => &lst.alight_stop,
+                Toward::Out => &to_liverpool.board_stop,
+                Toward::In => &to_liverpool.alight_stop,
             };
-            assert_eq!(id_of(sibling.as_ref()), Some("940GZZLUPAH"), "{lst:?}");
-            assert_eq!(id_of(lst.station_stop.as_ref()), Some("940GZZLULVT"));
-            assert_eq!(lst.change_at, None);
-            assert!(lst.minutes <= 28, "{lst:?}");
+            assert_eq!(
+                id_of(sibling.as_ref()),
+                Some("940GZZLUPAH"),
+                "{to_liverpool:?}"
+            );
+            assert_eq!(
+                id_of(to_liverpool.station_stop.as_ref()),
+                Some("940GZZLULVT")
+            );
+            assert_eq!(to_liverpool.change_at, None);
+            assert!(to_liverpool.minutes <= 28, "{to_liverpool:?}");
         }
         // A station ride to Liverpool Street's own stop, from either.
         let ride = station_ride(&stops, &routes, pac, Toward::Out, "LST").unwrap();
         assert_eq!(id_of(ride.board_stop.as_ref()), Some("940GZZLUPAH"));
         assert!(ride.minutes <= 25, "{ride:?}");
         // The two Paddington stops are one station: no ride between them.
-        assert!(direct_ride(&stops, &routes, pac, pah).is_none());
+        assert!(direct_ride(&stops, &routes, pac, paddington_hc).is_none());
     }
 
     #[test]
     fn distant_same_hub_stops_not_siblings() {
         let (mut stops, routes) = circle_both_ways();
-        let (pac, pah) = (index(&stops, "940GZZLUPAC"), index(&stops, "940GZZLUPAH"));
+        let (pac, paddington_hc) = (index(&stops, "940GZZLUPAC"), index(&stops, "940GZZLUPAH"));
         // Edgware Road's Bakerloo stop, 180 m from its Circle stop, has no
         // hub: not a sibling.
         let erc = index(&stops, "940GZZLUERC");
         assert_eq!(with_siblings(&stops, erc), [(erc, 0)]);
         // Paddington's other stop moved 600 m off: one hub, not one station.
-        stops[pah].position = Some((51.5220, -0.1830));
-        assert!(metres_between(stops[pac].position.unwrap(), stops[pah].position.unwrap()) > 400.0);
+        stops[paddington_hc].position = Some((51.5220, -0.1830));
+        assert!(
+            metres_between(
+                stops[pac].position.unwrap(),
+                stops[paddington_hc].position.unwrap()
+            ) > 400.0
+        );
         assert_eq!(with_siblings(&stops, pac), [(pac, 0)]);
         let ride = direct_ride(&stops, &routes, pac, index(&stops, "940GZZLULVT")).unwrap();
         assert_eq!(ride.board_stop, None);
         assert_eq!(id_of(ride.change_at.as_ref()), Some("940GZZLUERC"));
         assert_eq!(ride.minutes, 30, "{ride:?}");
         // And a stop of another hub close by is not one either.
-        stops[pah].position = Some((51.5182, -0.1783));
-        stops[pah].hub = Some("HUBOTHER".to_owned());
+        stops[paddington_hc].position = Some((51.5182, -0.1783));
+        stops[paddington_hc].hub = Some("HUBOTHER".to_owned());
         assert_eq!(with_siblings(&stops, pac), [(pac, 0)]);
     }
 
