@@ -968,8 +968,12 @@ pub fn raptor_staged(
         let mut current = previous.clone();
         current.touched = false;
         let mut arena = Vec::new();
+        // Target pruning, as `raptor::raptor_search_restricted` does: only
+        // an arrival strictly before the best so far adds to the set.
+        let cutoff = previous.best.as_ref().map_or(u32::MAX, |(time, _)| *time);
         forward.sweep(
-            crate::overlay::connections_from(options.connections, overlay, departure_min),
+            crate::overlay::connections_from(options.connections, overlay, departure_min)
+                .take_while(|connection| connection.departure_min < cutoff),
             round,
             Some(previous),
             &mut current,

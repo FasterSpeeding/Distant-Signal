@@ -508,10 +508,8 @@ test.describe('accessibility: interactive sub-states', () => {
   });
 
   test(`/stations/${REAL_STATION_CRS}, every disclosure expanded`, async ({ page }) => {
-    // Two independent `keepMounted={false}` surfaces here: the scheduled-
-    // departures accordion (which also fires a `/api/trains/search` fetch)
-    // and every `StationAccessibilitySection` disclosure. The latter is
-    // where duplicate `role="region"` landmark names showed up.
+    // Every `StationAccessibilitySection` disclosure is `keepMounted={false}`;
+    // that is where duplicate `role="region"` landmark names showed up.
     await page.goto(`/stations/${REAL_STATION_CRS}`);
     await expandAllAccordions(page);
     await expectNoViolations(page);

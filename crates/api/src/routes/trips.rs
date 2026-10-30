@@ -258,6 +258,11 @@ struct TripPlanParams {
     via: Option<String>,
     #[serde(default = "default_results")]
     results: String,
+    /// `?alternatives=true|false` (default `true`; DS-196): with
+    /// `results=options`, add alternative routes to the Pareto set. Ignored
+    /// with `results=fastest`. Validated by [`parse_alternatives`].
+    #[serde(default)]
+    alternatives: Option<String>,
     /// Optional interchange cap, `?maxChanges=0`..`=12` (inclusive). Absent
     /// or empty means [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (4;
     /// 2 before 2026-10-24), see [`default_max_changes`]. Kept as
@@ -400,7 +405,7 @@ fn default_results() -> String {
 
 /// `GET /Trips/plan?origin=&destination=&date=[&waypoints=][&via=]
 /// [&departAfter=|&arriveBy=][&dayOffset=0|1][&acrossMidnight=true][&avoid=][&avoidStop=][&avoidChange=]
-/// [&results=fastest|options][&maxChanges=0..12][&live=true|false]`.
+/// [&results=fastest|options][&alternatives=true|false][&maxChanges=0..12][&live=true|false]`.
 ///
 /// - `dayOffset=1` (2026-10-19): the `departAfter`/`arriveBy` time is on
 ///   the morning after `date`, still on `date`'s trains -- "arrive by 00:30
@@ -497,7 +502,14 @@ fn default_results() -> String {
 ///   itineraries with at most `maxChanges` changes each (a hard limit;
 ///   over-cap itineraries are never returned), plus
 ///   `cappedByMaxChanges: true` when a strictly faster itinerary needing more
-///   changes exists.
+///   changes exists. Then (2026-10-30, DS-196; `alternatives=false` turns
+///   it off) up to two alternative routes: other corridors or stations
+///   within a detour bound of the best, found by banning the kept routes'
+///   calls and changes (`trip_planner::options`), after the Pareto set.
+///   Every journey carries `labels` (`fastest` or, arrive-by,
+///   `leavesLatest`; `fewestChanges`;
+///   `alternative` with `viaCrs`), on `journeys[j]` and each segment's
+///   `itineraries[j]`.
 /// - `maxChanges`: integer `0..=`[`trip_planning_itinerary::MAX_CHANGES_LIMIT`]
 ///   (12 since 2026-10-24, 6 from 2026-10-06, 4 before); absent/empty =>
 ///   [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (4 since 2026-10-24,
@@ -581,6 +593,7 @@ async fn get_trip_plan(
     let waypoints = parse_waypoints(params.waypoints.as_deref())?;
     let requested_max_changes = parse_max_changes(params.max_changes.as_deref())?;
     let live_requested = parse_live(params.live.as_deref())?;
+    let alternatives = parse_alternatives(params.alternatives.as_deref())?;
     let day_offset = parse_day_offset(
         params.day_offset.as_deref(),
         params.depart_after.is_some() || params.arrive_by.is_some(),
@@ -723,6 +736,7 @@ async fn get_trip_plan(
         vias,
         via_codes,
         results: params.results.clone(),
+        alternatives,
         max_changes,
         live_requested,
         allowed_uids: None,
@@ -765,7 +779,7 @@ async fn get_trip_plan(
         .chain(second.iter().flat_map(|second| &second.transit_skipped))
         .cloned()
         .collect();
-    let (segments, live_outcome, service_dates) = match (second, next_date) {
+    let (mut segments, live_outcome, service_dates) = match (second, next_date) {
         (Some(second), Some(next)) => (
             crate::data::trip_plan_overnight::merge_across_midnight(
                 first.segments,
@@ -778,6 +792,9 @@ async fn get_trip_plan(
         ),
         _ => (first.segments, first.live, vec![date]),
     };
+    if params.results == "options" {
+        trip_planning_itinerary::label_options(&mut segments, request.interchange(&graph), time);
+    }
     let live_summary = live_outcome.map(|outcome| {
         let label = match &outcome {
             Ok(_) => "applied",
@@ -890,6 +907,12 @@ async fn get_trip_plan(
                 if let Some(feasible) = journey.live_feasible {
                     value["liveFeasible"] = feasible.into();
                 }
+                // Additive (2026-10-30, DS-196), `results=options` only:
+                // what this option is (`fastest` or `leavesLatest`, `fewestChanges`,
+                // `alternative` with its `viaCrs`).
+                if params.results == "options" {
+                    value["labels"] = serde_json::json!(journey.labels);
+                }
                 // Additive (2026-10-06), with `via` only: for each via in
                 // order, the leg that passed it.
                 if !request.vias.is_empty() {
@@ -969,6 +992,8 @@ struct DateInputs {
     vias: Vec<String>,
     via_codes: Vec<Vec<String>>,
     results: String,
+    /// `options` only: add alternative routes (DS-196).
+    alternatives: bool,
     max_changes: u32,
     live_requested: bool,
     /// Ride only these trains (a journey alternative's "same operator"
@@ -1169,6 +1194,7 @@ async fn plan_on_date(
         vias: inputs.vias.clone(),
         via_search,
         results: inputs.results.clone(),
+        alternatives: inputs.alternatives,
         max_changes: inputs.max_changes,
     });
     // The live overlay: requested, switched on, and a service date with
@@ -1474,6 +1500,7 @@ struct PlanRequest {
     vias: Vec<String>,
     via_search: Option<Arc<trip_planner::Vias>>,
     results: String,
+    alternatives: bool,
     max_changes: u32,
 }
 
@@ -1512,6 +1539,7 @@ async fn run_plan(
                 max_changes: request.max_changes,
                 overlay: overlay.as_deref(),
                 restrictions: request.restrictions.as_deref(),
+                alternatives: request.alternatives,
             },
             passes: Some(&graph.passes),
             avoid: &request.avoid,
@@ -1817,6 +1845,8 @@ pub(crate) async fn plan_for_journey(
         vias: Vec::new(),
         via_codes: Vec::new(),
         results: query.results.to_string(),
+        // A journey's alternatives keep the bare Pareto set (DS-196).
+        alternatives: false,
         max_changes: query
             .max_changes
             .min(trip_planning_itinerary::MAX_CHANGES_LIMIT),
@@ -2345,6 +2375,18 @@ fn parse_live(raw: Option<&str>) -> Result<bool, (StatusCode, String)> {
         other => Err((
             StatusCode::BAD_REQUEST,
             format!("live must be 'true' or 'false', not '{other}'"),
+        )),
+    }
+}
+
+/// `?alternatives=` (DS-196): absent, empty or `true` is on.
+fn parse_alternatives(raw: Option<&str>) -> Result<bool, (StatusCode, String)> {
+    match raw.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "" | "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err((
+            StatusCode::BAD_REQUEST,
+            format!("alternatives must be 'true' or 'false', not '{other}'"),
         )),
     }
 }
@@ -3915,6 +3957,137 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    /// DS-196: `results=options` adds another corridor to the Pareto set
+    /// and labels both; a later train over the fast route is no option;
+    /// `alternatives=false` is the bare set; arrive-by mirrors it; and
+    /// `fastest` mode is unchanged, with no labels.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    #[expect(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
+    async fn options_mode_adds_a_labelled_alternative_corridor() {
+        let pool = connect().await;
+        let date = NaiveDate::from_ymd_opt(2026, 10, 31).unwrap();
+        let cleanup = || async {
+            sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid LIKE 'TESTALT%'")
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTALT-%'")
+                .execute(&pool)
+                .await
+                .ok();
+        };
+        cleanup().await;
+        // ZAL to ZAM: the fast route via ZAS at 09:00 and 09:30, and a
+        // slower one via ZAC (40 minutes longer, within the bound).
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             VALUES \
+              ($1, 'TESTALTF1', 0, 'TESTALTL', 'origin', NULL, '09:00:00', 0), \
+              ($1, 'TESTALTF1', 1, 'TESTALTS', 'intermediate', '10:00:00', '10:01:00', 0), \
+              ($1, 'TESTALTF1', 2, 'TESTALTM', 'terminate', '11:00:00', NULL, 0), \
+              ($1, 'TESTALTF2', 0, 'TESTALTL', 'origin', NULL, '09:30:00', 0), \
+              ($1, 'TESTALTF2', 1, 'TESTALTS', 'intermediate', '10:30:00', '10:31:00', 0), \
+              ($1, 'TESTALTF2', 2, 'TESTALTM', 'terminate', '11:30:00', NULL, 0), \
+              ($1, 'TESTALTC1', 0, 'TESTALTL', 'origin', NULL, '09:05:00', 0), \
+              ($1, 'TESTALTC1', 1, 'TESTALTC', 'intermediate', '10:20:00', '10:22:00', 0), \
+              ($1, 'TESTALTC1', 2, 'TESTALTM', 'terminate', '11:40:00', NULL, 0)",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TESTALT-ZAL', 'ZAL', 'TESTALTL', 'TEST ALT LONDON', 1), \
+                    ('TESTALT-ZAS', 'ZAS', 'TESTALTS', 'TEST ALT STOKE', 1), \
+                    ('TESTALT-ZAC', 'ZAC', 'TESTALTC', 'TEST ALT CREWE', 1), \
+                    ('TESTALT-ZAM', 'ZAM', 'TESTALTM', 'TEST ALT MANCHESTER', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+        let plan = |query: &str| {
+            let pool = pool.clone();
+            let uri =
+                format!("/Trips/plan?origin=ZAL&destination=ZAM&date={date}&live=false&{query}");
+            async move { get(test_router(test_app(pool)), uri).await }
+        };
+        let uids = |body: &Value| -> Vec<String> {
+            body["segments"][0]["itineraries"]
+                .as_array()
+                .map(|itineraries| {
+                    itineraries
+                        .iter()
+                        .map(|itinerary| {
+                            itinerary["legs"][0]["trainUid"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_string()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let (status, body) = plan("departAfter=08:30&results=options").await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(uids(&body), ["TESTALTF1", "TESTALTC1"], "{body:?}");
+        let itineraries = &body["segments"][0]["itineraries"];
+        assert_eq!(
+            itineraries[0]["labels"],
+            serde_json::json!([{"kind": "fastest"}]),
+            "{body:?}"
+        );
+        assert_eq!(
+            itineraries[1]["labels"],
+            serde_json::json!([{"kind": "alternative", "viaCrs": "ZAC"}]),
+            "{body:?}"
+        );
+        assert_eq!(
+            body["journeys"][1]["labels"], itineraries[1]["labels"],
+            "{body:?}"
+        );
+
+        let (status, body) = plan("departAfter=08:30&results=options&alternatives=false").await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(uids(&body), ["TESTALTF1"], "{body:?}");
+        assert_eq!(
+            body["segments"][0]["itineraries"][0]["labels"],
+            serde_json::json!([{"kind": "fastest"}])
+        );
+
+        // Arrive by 11:45: the 09:30 fast train leaves last; the ZAC
+        // route is the alternative.
+        let (status, body) = plan("arriveBy=11:45&results=options").await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(uids(&body), ["TESTALTF2", "TESTALTC1"], "{body:?}");
+        assert_eq!(
+            body["journeys"][0]["labels"],
+            serde_json::json!([{"kind": "leavesLatest"}]),
+            "{body:?}"
+        );
+
+        let (status, body) = plan("departAfter=08:30").await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(uids(&body), ["TESTALTF1"], "{body:?}");
+        assert!(
+            body["segments"][0]["itineraries"][0]
+                .get("labels")
+                .is_none(),
+            "{body:?}"
+        );
+        assert!(body["journeys"][0].get("labels").is_none(), "{body:?}");
+
+        let (status, body) = plan("results=options&alternatives=maybe").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+
+        cleanup().await;
     }
 
     /// `?maxChanges=` validation is enforced by the real route BEFORE the

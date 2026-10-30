@@ -615,6 +615,33 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------
+-- Two routes for /plan's Compare options (DS-196; plan.spec.ts), on the
+-- seed's service date: the fast one calls at ZOS, the other at ZOC, 20
+-- minutes slower, within the alternatives' detour bound.
+--   E2EOP1  ZOA 08:00 -> ZOS 08:30 -> ZOD 09:00
+--   E2EOP2  ZOA 08:05 -> ZOC 08:40 -> ZOD 09:20
+-- Made-up codes in `stanox_crs` only, as above.
+-- ---------------------------------------------------------------------
+INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence)
+VALUES
+  ('E2EOPT-ZOA', 'ZOA', 'E2EOPA', 'Fixture Options', 1),
+  ('E2EOPT-ZOS', 'ZOS', 'E2EOPS', 'Fixture Sidings', 1),
+  ('E2EOPT-ZOC', 'ZOC', 'E2EOPC', 'Fixture Crossing', 1),
+  ('E2EOPT-ZOD', 'ZOD', 'E2EOPD', 'Fixture Docks', 1)
+ON CONFLICT (stanox) DO NOTHING;
+
+INSERT INTO schedule_calling_points_full
+  (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset)
+VALUES
+  ('2026-09-17', 'E2EOP1', 0, 'E2EOPA', 'origin', NULL, '08:00:00', 0),
+  ('2026-09-17', 'E2EOP1', 1, 'E2EOPS', 'intermediate', '08:30:00', '08:31:00', 0),
+  ('2026-09-17', 'E2EOP1', 2, 'E2EOPD', 'terminate', '09:00:00', NULL, 0),
+  ('2026-09-17', 'E2EOP2', 0, 'E2EOPA', 'origin', NULL, '08:05:00', 0),
+  ('2026-09-17', 'E2EOP2', 1, 'E2EOPC', 'intermediate', '08:40:00', '08:41:00', 0),
+  ('2026-09-17', 'E2EOP2', 2, 'E2EOPD', 'terminate', '09:20:00', NULL, 0)
+ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
 -- A rail, tram, rail route for /plan (transit trip planning, DS-164;
 -- plan.spec.ts, with ci.yml's API_TRIP_PLAN_TRANSIT_NETWORKS=metrolink),
 -- on the seed's service date, riding the Blue Line tram already seeded

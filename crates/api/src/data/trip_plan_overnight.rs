@@ -14,6 +14,8 @@
 
 use std::collections::HashSet;
 
+use trip_planner::options::{Direction, MAX_ALTERNATIVES, within_bound};
+
 use super::trip_planning_itinerary::{PlannedItinerary, PlannedLeg, SegmentResult, TimeBound};
 
 const DAY_MIN: u32 = 1440;
@@ -116,7 +118,10 @@ fn rank(journey: &Journey, arrive_by: bool) -> (u32, u32) {
 ///
 /// - `fastest`: the one best journey;
 /// - `options`: per number of changes, fewest first, the best journey,
-///   kept only when it beats every one with fewer changes.
+///   kept only when it beats every one with fewer changes; then the
+///   alternative routes (DS-196) of either date still within the detour
+///   bound of the merged best journey, best first, at most
+///   `trip_planner::options::MAX_ALTERNATIVES`.
 ///
 /// Segment metadata comes from `earlier` (the request's own date), except
 /// `cappedByMaxChanges` (either), the waypoint deadlines (the widest of
@@ -134,11 +139,15 @@ pub fn merge_across_midnight(
     let arrive_by = matches!(time, TimeBound::ArriveBy(_));
 
     let mut seen = HashSet::new();
-    let mut pool: Vec<Journey> = journeys(&earlier)
+    let (mut alternatives, mut pool): (Vec<Journey>, Vec<Journey>) = journeys(&earlier)
         .into_iter()
         .chain(journeys(&later))
         .filter(|journey| seen.insert(identity(journey)))
-        .collect();
+        .partition(|journey| {
+            journey
+                .first()
+                .is_some_and(|part| part.alternative.is_some())
+        });
     pool.sort_by_key(|journey| (changes(journey), rank(journey, arrive_by)));
 
     let selected: Vec<Journey> = if results == "fastest" {
@@ -160,6 +169,20 @@ pub fn merge_across_midnight(
             if beats_kept && new_count {
                 kept.push(journey);
             }
+        }
+        let direction = if arrive_by {
+            Direction::ArriveBy
+        } else {
+            Direction::DepartAfter
+        };
+        if let Some(best) = kept.iter().min_by_key(|journey| rank(journey, arrive_by)) {
+            let best = (departure(best), arrival(best));
+            alternatives.retain(|journey| {
+                within_bound(direction, best, (departure(journey), arrival(journey)))
+            });
+            alternatives.sort_by_key(|journey| rank(journey, arrive_by));
+            alternatives.truncate(MAX_ALTERNATIVES);
+            kept.extend(alternatives);
         }
         kept
     };
@@ -250,6 +273,8 @@ mod tests {
             continues_previous_train: false,
             via_satisfied_by: Vec::new(),
             scheduled_only: None,
+            alternative: None,
+            labels: Vec::new(),
         }
     }
 
