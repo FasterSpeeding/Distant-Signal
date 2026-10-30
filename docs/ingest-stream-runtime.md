@@ -209,7 +209,9 @@ gzip) and bound; `check_budget(&INGEST_STREAMS, BUDGET_BYTES)` computes the
 `MAXLEN`s and the worst case of each stream **and** its dead-letter stream
 (`(MAXLEN + 100) × (entry + 512 B)`, the 100 being `MAXLEN ~`'s node
 slack), and fails if a stream covers less than the 2-hour outage target or
-the total is over 512 MB. A unit test runs it on the spec table:
+the total is over the budget (512 MB, 576 MiB since the TfL timetable
+stream). A unit test runs it on the spec table (this summary predates the
+transit streams; `budget.rs` has every row):
 
 | Stream | `MAXLEN ~` | Covers | Worst case, stream + dead letters |
 |---|---|---|---|
@@ -219,7 +221,8 @@ the total is over 512 MB. A unit test runs it on the spec table:
 | `ds:ingest:reference` (tocs) | 30 | 30 days | 2 × 0.5 MB |
 | `ds:ingest:ioi-gtfs`, `ds:ingest:ioi-nir` (disabled) | 500 each | about 10 days | 2 × 10.1 MB each |
 | `ds:ingest:ioi-live` (disabled) | 1000 | about 3.5 days | 2 × 18.6 MB |
-| **Total** | | | **about 292 MB** of 512 MiB (alert at 75%, 384 MiB) |
+| `ds:ingest:transit-tfl` (disabled) | 128 | 1 day | 2 × 15 MB |
+| **Total, all streams in `budget.rs`** | | | **about 426 MB** of 576 MiB (alert at 75%, 432 MiB) |
 
 ## Metrics
 

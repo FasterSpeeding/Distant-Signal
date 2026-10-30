@@ -42,7 +42,7 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { network, stop } = await params;
   const [detail, stopDetail] = await load(network, stop);
   const title = `${stopDetail.name}, ${detail.name}`;
-  return pageMetadata(title, `Scheduled tram departures from ${stopDetail.name}.`, {
+  return pageMetadata(title, `Scheduled departures from ${stopDetail.name}.`, {
     path: `/transit/${encodeURIComponent(network)}/stops/${encodeURIComponent(stop)}`,
     imageAlt: previewImageAlt(title),
   });

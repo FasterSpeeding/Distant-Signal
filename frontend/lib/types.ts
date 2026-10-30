@@ -3406,6 +3406,47 @@ export interface TransitLine {
   lineId: string;
   name: string;
   colour: string | null;
+  /** The line's own mode (`tube`, `dlr`, `tram`), else its network's. */
+  mode?: string;
+  /** The `line_status` id its status comes from, and what a pin of it
+   * stores: `id`, or TfL's own line (`tfl-victoria`) for the TfL network. */
+  statusLineId?: string;
+}
+
+/** Where a network's line status comes from: TfL's own line status
+ * (`tfl`, no disruptions list) or the network's published disruptions. */
+export type TransitStatusSource = 'tfl' | 'situations';
+
+/** A National Rail catalogue line a transit network's operator also runs
+ * (the TfL network's Overground lines and Elizabeth line). */
+export interface TransitNationalRailLine {
+  id: string;
+  name: string;
+}
+
+/** One band of a direction's frequency summary. */
+export interface TransitFrequencyBand {
+  band: 'early' | 'morning-peak' | 'daytime' | 'evening-peak' | 'evening' | 'late';
+  /** `HH:MM`, the band's start and end (`00:00` for midnight). */
+  from: string;
+  to: string;
+  departures: number;
+  minGapMinutes: number | null;
+  maxGapMinutes: number | null;
+}
+
+/** A line's frequency summary for a date, each direction at its busiest
+ * station. */
+export interface TransitLineFrequency {
+  date: string;
+  outsideHorizon: boolean;
+  directions: {
+    direction: TransitDirection;
+    station: TransitStationRef;
+    first: string;
+    last: string;
+    bands: TransitFrequencyBand[];
+  }[];
 }
 
 /** How fresh a network's disruptions are: `current` (under 30 minutes
@@ -3461,6 +3502,8 @@ export interface TransitSituations {
 export interface TransitNetworkDetail extends TransitNetwork {
   lines: (TransitLine & { status?: TransitLineStatus })[];
   status?: { state: TransitStatusState; asOf: string | null };
+  statusSource?: TransitStatusSource;
+  nationalRailLines?: TransitNationalRailLine[];
 }
 
 export interface TransitStationRef {
@@ -3475,6 +3518,8 @@ export interface TransitLineDetail extends TransitLine {
   directions: { direction: TransitDirection; headsign: string | null; stations: TransitStationRef[] }[];
   status?: TransitLineStatus;
   situations?: TransitSituations;
+  statusSource?: TransitStatusSource;
+  frequency?: TransitLineFrequency | null;
 }
 
 export interface TransitRailLink {

@@ -261,6 +261,18 @@ describe('OpenDataAttributionDetails (/attribution)', () => {
     expect(visibleText(statementOf('railwaycodes') as Element)).toMatch('railwaycodes.org.uk');
   });
 
+  it('credits the TfL timetables only while the TfL network is shown', () => {
+    renderWithMantine(<OpenDataAttributionDetails />);
+    expect(document.getElementById('source-tfl-timetables')).toBeNull();
+    cleanup();
+    renderWithMantine(<OpenDataAttributionDetails transitNetworks={['tfl']} />);
+    expect(visibleText(statementOf('tfl-timetables') as Element)).toMatch(
+      "Transport for London's journey planner timetables",
+    );
+    // TfL's own credit stays, once.
+    expect(visibleText(statementOf('tfl') as Element)).toMatch('Powered by TfL Open Data');
+  });
+
   it('states that the service is unofficial and unaffiliated', () => {
     renderWithMantine(<OpenDataAttributionDetails />);
     expect(screen.getByText(NON_AFFILIATION_STATEMENT)).toBeInTheDocument();

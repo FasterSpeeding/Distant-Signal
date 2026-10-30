@@ -541,5 +541,15 @@ describe('StationSearchForm', () => {
         resolveNavigation();
       });
     });
+
+    it("leaves the TfL network's stations to the TfL stop search", async () => {
+      routeFetch({
+        networks: [{ id: 'tfl', name: 'London (TfL)', mode: 'metro' }],
+        transitStops: [{ id: '9400ZZLUBXN', name: 'Brixton', lat: null, lon: null, lines: [], railLinks: [] }],
+      });
+      renderWithProvider();
+      await search('brixt');
+      expect(screen.queryByRole('option', { name: /Brixton · London \(TfL\)/, hidden: true })).toBeNull();
+    });
   });
 });

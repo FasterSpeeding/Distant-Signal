@@ -182,8 +182,9 @@ async fn insert_lines(conn: &mut PgConnection, keys: Keys<'_>, rows: &[TransitLi
     }
     sqlx::query(
         "INSERT INTO transit_lines \
-         (network, feed_version, line_id, name, colour, sort_order, directions) \
-         SELECT $1, $2, * FROM UNNEST($3::text[], $4::text[], $5::text[], $6::int[], $7::jsonb[]) \
+         (network, feed_version, line_id, name, colour, sort_order, directions, mode) \
+         SELECT $1, $2, * FROM UNNEST($3::text[], $4::text[], $5::text[], $6::int[], $7::jsonb[], \
+                $8::text[]) \
          ON CONFLICT DO NOTHING",
     )
     .bind(keys.0)
@@ -193,6 +194,7 @@ async fn insert_lines(conn: &mut PgConnection, keys: Keys<'_>, rows: &[TransitLi
     .bind(rows.iter().map(|r| r.colour.clone()).collect::<Vec<_>>())
     .bind(rows.iter().map(|r| r.sort_order).collect::<Vec<_>>())
     .bind(directions)
+    .bind(rows.iter().map(|r| r.mode.clone()).collect::<Vec<_>>())
     .execute(&mut *conn)
     .await?;
     Ok(())

@@ -27,6 +27,7 @@ import { LineTrainsResults } from './LineTrainsResults';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { linePreviewImage } from '@/lib/linePreview';
 import { ButtonLink } from '@/components/ButtonLink';
+import { tflTimetableHref } from '@/lib/transit';
 import { StateBadge } from '@/components/StateBadge';
 
 /** `Suspense` fallback for both "Recent trends" boundaries below (review
@@ -300,6 +301,9 @@ export default async function LineDetailPage({
   // TfL-adjacent line list; there is no shared Rust->TypeScript constant to
   // import `common::TFL_LINE_ID_PREFIX` from.
   const isTflLine = id.startsWith('tfl-');
+  // A TfL Tube, DLR or tram line's timetable lives on its transit page
+  // while the TfL network is served (the TfL transit design §8).
+  const timetableHref = isTflLine ? await tflTimetableHref(id) : null;
 
   // A 404 here no longer 404s the page by itself -- see
   // `fetchLineStatusResult`'s comment. `withStaleFallback` still rethrows
@@ -465,6 +469,11 @@ export default async function LineDetailPage({
               </ButtonLink>
               <DeleteLineButton id={id} />
             </>
+          )}
+          {timetableHref && (
+            <ButtonLink href={timetableHref} variant="outline" size="xs">
+              Timetable
+            </ButtonLink>
           )}
           {definition && <LineDefinitionTooltip stations={definition.stations} operators={definition.operators} />}
           <ShareButton />

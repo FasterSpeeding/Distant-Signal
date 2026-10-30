@@ -118,12 +118,13 @@ export const ACCOUNT_DESTINATION: NavDestination = { href: '/account', label: 'A
  * in the bar (`PreferencesNavIcon`). */
 export const PREFERENCES_DESTINATION: NavDestination = { href: '/account/preferences', label: 'Preferences' };
 
-/** `/transit`: the tram networks Distant Signal serves
- * (docs/superpowers/specs/2026-10-09-transit-networks-design.md). Listed
+/** `/transit`: the tram and metro networks Distant Signal serves
+ * (docs/superpowers/specs/2026-10-09-transit-networks-design.md; TfL's
+ * Underground, DLR and trams since the TfL transit design). Listed
  * only while the api serves at least one network, in the drawer after
  * "Lines": the inline bar has no width to spare, and `/lines` links to it
  * for desktop visitors. */
-export const TRANSIT_DESTINATION: NavDestination = { href: '/transit', label: 'Trams' };
+export const TRANSIT_DESTINATION: NavDestination = { href: '/transit', label: 'Trams and metros' };
 
 /** What the mobile drawer lists: every primary destination, plus the
  * per-account ones the bar hands to the account menu on desktop. The drawer

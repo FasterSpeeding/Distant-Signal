@@ -104,6 +104,11 @@ const PAGES: [name: string, path: string][] = [
   ['transit-line', '/transit/metrolink/lines/blue'],
   ['transit-stop', '/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17'],
   ['transit-timetable', '/transit/metrolink/lines/blue/timetable?date=2026-09-17&direction=outbound&from=07:00'],
+  // The TfL network (the TfL transit design): its lines by mode and the
+  // National Rail lines it links, and a Tube line's frequency summary
+  // (the seed's trains run on every seeded day at the same times).
+  ['transit-tfl', '/transit/tfl'],
+  ['transit-tfl-line', '/transit/tfl/lines/victoria'],
   // A TfL stop's live arrivals (DS-136): the seed's King's Cross St. Pancras,
   // whose board scripts/tfl-arrivals-stub.py answers relative to the
   // server's clock, so each train's expected time is masked; its "2 min"

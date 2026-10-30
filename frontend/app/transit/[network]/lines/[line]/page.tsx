@@ -7,10 +7,12 @@ import { TextLink } from '@/components/TextLink';
 import { PinToggle } from '@/components/PinToggle';
 import { TransitAttributionNote } from '@/components/TransitAttributionNote';
 import { TransitDisruptions } from '@/components/TransitDisruptions';
+import { TransitFrequency } from '@/components/TransitFrequency';
 import { TransitStatusBadge } from '@/components/TransitStatusBadge';
 import { getPreferences, getTransitLine, getTransitNetwork } from '@/lib/api';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { lineColour, orNotFound, TRANSIT_ID, transitStopHref } from '@/lib/transit';
+import { directionHeading } from '@/lib/transitModes';
 import type { Preferences } from '@/lib/types';
 
 interface Params {
@@ -30,22 +32,27 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { network, line } = await params;
   const [detail, lineDetail] = await load(network, line);
   const title = `${lineDetail.name}, ${detail.name}`;
-  return pageMetadata(title, `${lineDetail.name} stops and scheduled tram times.`, {
+  return pageMetadata(title, `${lineDetail.name} stops, how often it runs and scheduled times.`, {
     path: `/transit/${encodeURIComponent(network)}/lines/${encodeURIComponent(line)}`,
     imageAlt: previewImageAlt(title),
   });
 }
 
-/** `/transit/[network]/lines/[line]`: a tram line's status and disruptions
- * (when the network has a disruptions feed), its stops in order, each
- * way, and a link to its timetable. The star pins it (its public id,
- * `metrolink:blue`), as for a National Rail line. */
+/** `/transit/[network]/lines/[line]`: a line's status and disruptions
+ * (when the network has a disruptions feed; for TfL, TfL's own status and
+ * a link to its line page), how often it runs today and its first and
+ * last departures, its stops in order, each way, and a link to its
+ * timetable. The star pins it (`statusLineId`: its public id,
+ * `metrolink:blue`, or TfL's line, `tfl-victoria`), as for a National
+ * Rail line. */
 export default async function TransitLinePage({ params }: Params) {
   const { network, line } = await params;
   const [[detail, lineDetail], preferences] = await Promise.all([
     load(network, line),
     getPreferences().catch(() => NO_PREFERENCES),
   ]);
+  const fromTfl = lineDetail.statusSource === 'tfl';
+  const pinId = lineDetail.statusLineId ?? lineDetail.id;
   const stopNames = Object.fromEntries(
     lineDetail.directions.flatMap((direction) => direction.stations.map((station) => [station.id, station.name])),
   );
@@ -55,7 +62,7 @@ export default async function TransitLinePage({ params }: Params) {
         <Group gap="sm" wrap="nowrap">
           <ColorSwatch color={lineColour(lineDetail)} size={18} withShadow={false} aria-hidden="true" />
           <Title order={1}>{lineDetail.name}</Title>
-          <PinToggle kind="line" id={lineDetail.id} initiallyPinned={preferences.pinnedLines.includes(lineDetail.id)} />
+          <PinToggle kind="line" id={pinId} initiallyPinned={preferences.pinnedLines.includes(pinId)} />
         </Group>
         <TextLink href={`/transit/${network}`}>{detail.name}</TextLink>
       </Stack>
@@ -70,25 +77,35 @@ export default async function TransitLinePage({ params }: Params) {
         <ButtonLink href={`/transit/${network}/lines/${line}/timetable`} variant="light">
           Timetable
         </ButtonLink>
+        {fromTfl && (
+          <ButtonLink href={`/lines/${encodeURIComponent(pinId)}`} variant="subtle">
+            Status details
+          </ButtonLink>
+        )}
       </Group>
 
-      <TransitDisruptions
-        situations={lineDetail.situations}
-        empty="Nothing is affecting this line right now."
-        network={network}
-        stopNames={stopNames}
-      />
+      {!fromTfl && (
+        <TransitDisruptions
+          situations={lineDetail.situations}
+          empty="Nothing is affecting this line right now."
+          network={network}
+          stopNames={stopNames}
+        />
+      )}
+
+      {lineDetail.frequency && (
+        <TransitFrequency
+          frequency={lineDetail.frequency}
+          headings={Object.fromEntries(
+            lineDetail.directions.map((direction) => [direction.direction, directionHeading(direction)]),
+          )}
+        />
+      )}
 
       <SimpleGrid cols={{ base: 1, sm: lineDetail.directions.length > 1 ? 2 : 1 }} spacing="lg">
         {lineDetail.directions.map((direction) => (
           <Stack key={direction.direction} gap="sm">
-            <SectionTitle>
-              {direction.headsign
-                ? `Towards ${direction.headsign}`
-                : direction.direction === 'outbound'
-                  ? 'One way'
-                  : 'The other way'}
-            </SectionTitle>
+            <SectionTitle>{directionHeading(direction)}</SectionTitle>
             <Stack component="ol" gap={4} className="ds-plain-list">
               {direction.stations.map((station) => (
                 <li key={station.id}>
@@ -99,7 +116,7 @@ export default async function TransitLinePage({ params }: Params) {
           </Stack>
         ))}
       </SimpleGrid>
-      {lineDetail.directions.length === 0 && <Text c="dimmed">No trams on this line in the timetable.</Text>}
+      {lineDetail.directions.length === 0 && <Text c="dimmed">Nothing runs on this line in the timetable.</Text>}
 
       <TransitAttributionNote network={detail} />
     </Stack>

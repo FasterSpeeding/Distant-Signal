@@ -54,11 +54,16 @@ async function searchTransitStopPlaces(q: string, signal?: AbortSignal): Promise
   }));
 }
 
+/** The TfL network's id: its stations are TfL stops, searched as such. */
+const TFL_NETWORK_ID = 'tfl';
+
 /** The served transit networks' stations whose names match `q` (`GET
  * /public/transit/networks`, then each network's `/stops`), each with its
  * network; with `tripPlanningOnly`, only networks the planner routes over
  * (`tripPlanning: true`). `[]` for a blank query; a failed lookup is no
- * rows for that network. */
+ * rows for that network. The TfL network's stations are left out: they
+ * are TfL's stops, found (once) by the TfL stop search, whose pages carry
+ * their timetables (the TfL transit design §8.4). */
 export async function matchingTransitStations(
   q: string,
   signal?: AbortSignal,
@@ -72,7 +77,8 @@ export async function matchingTransitStations(
   const body = (await response.json()) as { networks?: unknown };
   const networks = arrayOf(body.networks)
     .filter((n): n is TransitNetwork => hasStrings(n, 'id', 'name'))
-    .filter((n) => TRANSIT_ID.test(n.id) && (!tripPlanningOnly || n.tripPlanning === true));
+    .filter((n) => TRANSIT_ID.test(n.id) && n.id !== TFL_NETWORK_ID)
+    .filter((n) => !tripPlanningOnly || n.tripPlanning === true);
   const perNetwork = await Promise.all(
     networks.map(async (network) => {
       const stopsResponse = await fetch(`/api/transit/${encodeURIComponent(network.id)}/stops`, init);

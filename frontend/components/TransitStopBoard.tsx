@@ -22,7 +22,7 @@ export function TransitStopBoard({ board, laterHref }: { board: TransitBoard; la
       {board.outsideHorizon ? (
         <ServiceListNotice>The timetable for this date isn&apos;t published yet.</ServiceListNotice>
       ) : board.departures.length === 0 ? (
-        <ServiceListNotice>No more scheduled trams this day.</ServiceListNotice>
+        <ServiceListNotice>No more scheduled departures this day.</ServiceListNotice>
       ) : (
         <ServiceRowList aria-label="Scheduled departures">
           {board.departures.map((departure) => {
