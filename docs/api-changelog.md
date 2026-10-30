@@ -3,6 +3,39 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-30: `results=options` adds alternative routes, with `labels`
+
+Additive. DS-MCP can keep reading the itineraries as before; the list may
+be longer, and it should read `labels` to say what each option is
+(DS-196; `crates/trip-planner/src/options.rs`).
+
+- `GET /Trips/plan?results=options` used to return only the Pareto set
+  over arrival and changes from one departure time, which is a single
+  journey whenever the fastest train is direct. After that set (same
+  order as before) it now adds up to two alternative routes: other
+  corridors or stations, found by banning the calls and changes of the
+  routes already kept and searching again. An alternative is kept only
+  when it arrives (arrive-by: leaves) at most half the best option's
+  duration later (earlier), between 20 and 90 minutes, takes at most that
+  much longer, needs no more than `maxChanges` and at most two changes
+  more than the fewest-change option, never calls at a station twice, and
+  is not mostly the same stations as an option already listed. The ends,
+  waypoints and vias are never banned, and `avoid`, `avoidStop` and
+  `avoidChange` still apply. The same train at another time is not an
+  alternative. At most five options in all.
+- Each journey in `options` mode gains `labels`, on `journeys[j]` and on
+  every segment's `itineraries[j]`: a list of `{"kind": "fastest"}`
+  (depart-after; `{"kind": "leavesLatest"}` for arrive-by) on the best
+  journey, `{"kind": "fewestChanges"}` on the best journey with the fewest
+  changes when the change counts differ, and
+  `{"kind": "alternative", "viaCrs": "MYB"}` on each alternative, naming
+  the station that tells it apart from the fastest (`null` when none
+  does). `fastest` mode responses are unchanged and carry no `labels`.
+- `?alternatives=false` (default `true`) returns the bare Pareto set as
+  before. Any other value is a 400.
+- With `acrossMidnight=true`, alternatives from either date are kept when
+  still within the bound of the merged best journey.
+
 ## 2026-10-30: Tube rides change trains when quicker, and use a station's other stops
 
 Additive. DS-MCP can show `boardStop` and `alightStop` where present; the
@@ -416,7 +449,6 @@ docs/superpowers/specs/2026-10-24-transit-trip-planning-design.md.
 - An untracked journey leg's `originStopId`/`destinationStopId` may be a
   tram station of a planner network (`9400ZZMAPIC`) as well as a TfL stop
   id.
-
 
 ## 2026-10-24: a second transit network, `net` (dark)
 

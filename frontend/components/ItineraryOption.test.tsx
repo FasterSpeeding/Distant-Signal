@@ -39,6 +39,37 @@ const fixedLinkOnlyItinerary: TripPlanItinerary = {
 };
 
 describe('ItineraryOption', () => {
+  it("shows a Compare options journey's labels, naming an alternative's station", () => {
+    const { unmount } = renderWithMantine(
+      <ItineraryOption
+        itinerary={{ ...trainItinerary, labels: [{ kind: 'fastest' }, { kind: 'fewestChanges' }] }}
+        selected={false}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByText('Fastest')).toBeInTheDocument();
+    expect(screen.getByText('Fewest changes')).toBeInTheDocument();
+    unmount();
+
+    renderWithMantine(
+      <ItineraryOption
+        itinerary={{ ...trainItinerary, labels: [{ kind: 'alternative', viaCrs: 'MYB' }] }}
+        selected={false}
+        onSelect={() => {}}
+        stationNames={new Map([['MYB', 'London Marylebone']])}
+      />,
+    );
+    expect(screen.getByText('Via London Marylebone')).toBeInTheDocument();
+    expect(screen.queryByText('Fastest')).not.toBeInTheDocument();
+  });
+
+  it('shows no labels for a fastest-mode itinerary', () => {
+    const { container } = renderWithMantine(
+      <ItineraryOption itinerary={trainItinerary} selected={false} onSelect={() => {}} />,
+    );
+    expect(container.querySelector('[data-option-labels]')).toBeNull();
+  });
+
   it('renders a train leg summary and allows selection', () => {
     const onSelect = vi.fn();
     renderWithMantine(<ItineraryOption itinerary={trainItinerary} selected={false} onSelect={onSelect} />);

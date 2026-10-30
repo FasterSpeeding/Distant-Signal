@@ -557,6 +557,8 @@ mod tests {
                 continues_previous_train: false,
                 via_satisfied_by: Vec::new(),
                 scheduled_only: None,
+                alternative: None,
+                labels: Vec::new(),
             }],
             capped_by_max_changes: false,
             depart_after_min: None,
