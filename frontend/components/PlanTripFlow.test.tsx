@@ -13,7 +13,7 @@ import { RAIL_TRAM_RAIL } from '@/test/transitPlanFixtures';
 // mock `TrackTrainForm.test.tsx` already needs for the exact same reason.
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
-  usePathname: () => '/journeys/new',
+  usePathname: () => '/plan',
   useSearchParams: () => new URLSearchParams(''),
 }));
 
@@ -1018,7 +1018,7 @@ describe('PlanTripFlow advanced options', () => {
   });
 
   it('leaves the address bar alone without syncUrl', async () => {
-    window.history.replaceState(null, '', '/journeys/new');
+    window.history.replaceState(null, '', '/journeys/42');
     const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(viaPlan) });
     await search(fetchMock);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());

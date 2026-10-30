@@ -135,18 +135,11 @@ test.describe('desktop nav bar (1440x900)', () => {
     const nav = page.locator('nav[aria-label="Main"]');
     // `exact: true`: Playwright's default accessible-name match is a
     // substring match, and 'Journeys' would otherwise also hit other links.
-    for (const label of [
-      'Journeys',
-      'Plan a journey',
-      'Trains',
-      'Status',
-      'Lines',
-      'Operators',
-      'Stations',
-      'Incidents',
-    ]) {
+    for (const label of ['Journeys', 'Trains', 'Status', 'Lines', 'Operators', 'Stations', 'Incidents']) {
       await expect(nav.getByRole('link', { name: label, exact: true })).toBeVisible();
     }
+    // DS-194: Plan a journey is reached from Journeys and the home page.
+    await expect(nav.getByRole('link', { name: 'Plan a journey' })).toHaveCount(0);
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
   });
 
@@ -247,19 +240,18 @@ test.describe('phone nav bar (390x844)', () => {
 
     const drawer = await openNavDrawer(page);
     // `exact: true` for the same reason as the desktop-bar test above.
-    for (const label of [
-      'Journeys',
-      'Plan a journey',
-      'Trains',
-      'Status',
-      'Lines',
-      'Operators',
-      'Stations',
-      'Incidents',
-      'Preferences',
-    ]) {
+    for (const label of ['Journeys', 'Trains', 'Status', 'Lines', 'Operators', 'Stations', 'Incidents', 'Preferences']) {
       await expect(drawer.getByRole('link', { name: label, exact: true })).toBeVisible();
     }
+    // DS-194: no Plan a journey entry; the page is part of Journeys.
+    await expect(drawer.getByRole('link', { name: 'Plan a journey' })).toHaveCount(0);
+  });
+
+  test('marks Journeys current in the drawer on Plan a journey', async ({ page }) => {
+    await page.goto('/plan');
+    const drawer = await openNavDrawer(page);
+    await expect(drawer.getByRole('link', { name: 'Journeys', exact: true })).toHaveAttribute('aria-current', 'page');
+    await expect(drawer.getByRole('link', { name: 'Plan a journey' })).toHaveCount(0);
   });
 
   test('marks Trains current in the drawer on the timetable', async ({ page }) => {

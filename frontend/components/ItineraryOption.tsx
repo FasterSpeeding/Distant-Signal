@@ -3,20 +3,27 @@ import { Group, Radio, Stack, Text } from '@mantine/core';
 import { ClickableCard, selectableCardRadioProps, StaticCard } from './ClickableCard';
 import { codeRouteLabel, tflStopPlaceName } from '@/lib/stationLabel';
 import { ServiceModeBadge } from './ServiceModeBadge';
-import { optionLabelText, satisfiedStationLabel, viaSatisfiedLabel, waypointSatisfiedLabel } from '@/lib/tripPlan';
+import {
+  accessLegStopCount,
+  optionLabelText,
+  satisfiedStationLabel,
+  viaSatisfiedLabel,
+  waypointSatisfiedLabel,
+} from '@/lib/tripPlan';
 import { CANCELLED_LABEL, delayLabel } from '@/lib/serviceStatus';
 import type { StationGroup } from '@/lib/stationGroups';
 import type {
   TripPlanItinerary,
   TripPlanLeg,
   TripPlanLegLive,
+  TripPlanResponse,
   TripPlanTransitLeg,
   TripPlanTransitWalk,
   TripPlanViaSatisfied,
   TripPlanWaypointSatisfied,
   TflStop,
 } from '@/lib/types';
-import { accessLegNote, transferLabel } from '@/lib/displayLabels';
+import { accessChangeClause, accessLegNote, accessStopsNote, transferLabel } from '@/lib/displayLabels';
 import { transitServiceModeLabel } from '@/lib/serviceMode';
 import { SCHEDULED_CAPTION } from '@/lib/transitStops';
 import { StateBadge } from './StateBadge';
@@ -57,7 +64,12 @@ function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): ReactN
     const arrival = (leg.publicArrival ?? leg.scheduledArrival).slice(0, 5);
     return `${departure} ${route} ${arrival}${liveNote(leg.live)}`;
   }
-  return `${transferLabel(leg.mode, leg.line)} ${route}, ${leg.minutes} min`;
+  // A TfL access ride that changes trains says so in the route itself, so
+  // it never reads (or is announced, inside the card's radio label) as one
+  // train: "Tube (Piccadilly line) Uxbridge to Heathrow, change at Acton
+  // Town, 45 min".
+  const change = leg.access ? accessChangeClause(leg.access) : undefined;
+  return `${transferLabel(leg.mode, leg.line)} ${route}${change ? `, ${change}` : ''}, ${leg.minutes} min`;
 }
 
 /** A tram leg (transit trip planning §11.3): "08:14 Tram (Blue Line)
@@ -116,6 +128,7 @@ export function ItineraryOption({
   viaPasses = [],
   waypointStops = [],
   groups = [],
+  stopAccess,
 }: {
   itinerary: TripPlanItinerary;
   selected: boolean;
@@ -133,6 +146,9 @@ export function ItineraryOption({
   waypointStops?: TripPlanWaypointSatisfied[] | undefined;
   /** The station groups, to name a group a via or stop satisfied. */
   groups?: StationGroup[] | undefined;
+  /** The plan's TfL stop ends and their candidates (`TripPlanResponse`'s
+   * `access`), for how many stops an access ride rides. */
+  stopAccess?: TripPlanResponse['access'];
 }) {
   const hasTrainLeg = itinerary.legs.some((leg) => leg.kind === 'train');
   const stationLabelOf = (hit: { crs: string; matchedCrs?: string | null }) =>
@@ -166,7 +182,12 @@ export function ItineraryOption({
                   </Group>
                   {leg.kind === 'transfer' && leg.access && (
                     <Text size="xs" c="dimmed" pl="sm">
-                      {accessLegNote(leg.access)}
+                      {accessLegNote(leg.access, accessLegStopCount(leg, stopAccess))}
+                    </Text>
+                  )}
+                  {leg.kind === 'transfer' && leg.access && accessStopsNote(leg.access) && (
+                    <Text size="xs" c="dimmed" pl="sm">
+                      {accessStopsNote(leg.access)}
                     </Text>
                   )}
                   {leg.kind === 'transfer' && leg.transitWalk && (

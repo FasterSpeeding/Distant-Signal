@@ -166,10 +166,10 @@ used, rather than as a literal in a component.
   text colour at 20%).
 - The bar starts with the wordmark (`Wordmark`: the favicon's signal arm on
   its grape tile, 24px, then "Distant Signal" in 16px bold). Its links are
-  Journeys, Plan a journey, Trains, Status, Lines, Operators, Stations and
-  Incidents (`lib/navLinks.ts`). Journeys is the one tracking entry: it
-  opens the Journeys page (`/journeys`; `/track/mine` redirects there) and
-  stays marked current on `/track`, a tracked train's page
+  Journeys, Trains, Status, Lines, Operators, Stations and Incidents
+  (`lib/navLinks.ts`). Journeys is the one tracking entry: it opens the
+  Journeys page (`/journeys`; `/track/mine` redirects there) and stays
+  marked current on `/plan`, `/track`, a tracked train's page
   (`/train/by-id/...`) and every `/journeys` page. Trains is the
   timetable (`/trains`): a station's departures and arrivals, the trains
   between two stations, or a train by headcode or UID, with no tracking or
@@ -177,9 +177,13 @@ used, rather than as a literal in a component.
   its results open (`/train/[uid]/[date]`), where tracking is a light,
   secondary button. Journeys links to it ("Find a train") where someone
   needs to pick a train, rather than embedding a search of its own.
-  Starting a journey is not a nav entry: "New journey" (`/journeys/new`)
-  is a button on the Journeys page and at the top of the home page's
-  "Upcoming journeys". Logged out, that section is a teaser in the same
+  Starting a journey is not a nav entry: "Plan a journey" (`/plan`;
+  `/journeys/new` redirects there) is a button on the Journeys page and at
+  the top of the home page's "Upcoming journeys", and a link on station
+  and stop pages. It plans a route, or starts from a train you know or a
+  Tube, bus or walk leg (a segmented control), and links to "Find a
+  train", "Add a ticket" and "Journey templates" under it. Logged out,
+  "Upcoming journeys" is a teaser in the same
   frame: one flat card saying what tracking a journey gives you, a "Log
   in or sign up" `LoginControl` button and a "Plan a journey" link
   (`UpcomingJourneysTeaser`). No settings live in the bar: the theme and pride flag are
@@ -363,7 +367,7 @@ used, rather than as a literal in a component.
   label to one line with an ellipsis, so three or more options that don't
   fit a phone stack: `orientation="vertical"` in a dialog
   (`AddJourneyLegButton`), or below `xs` only with `.ds-entry-mode-control`
-  (New journey), whose labels also wrap rather than clip.
+  (Plan a journey), whose labels also wrap rather than clip.
 - **Calling-point table** (`JourneyTimeline`): below `sm` the delay sits
   under the Actual time instead of in its own column, cells have 6px side
   padding, and the table only scrolls sideways (inside its own box) when a
@@ -399,14 +403,32 @@ used, rather than as a literal in a component.
 - **Link previews** (`lib/previewImage.tsx`): a route's `opengraph-image.tsx`
   renders its own title on the brand template (the bare arm and the name,
   the title below, on a grape 7 to 9 gradient). Static pages pass their
-  `metadata`; a line or station passes its own `generateMetadata`, so the
-  two can't disagree. Titles never come from the request. Every other
+  `metadata`, so the two can't disagree. Titles never come from the
+  request. Every other
   route falls back to `public/opengraph-image.png`, the template's no-title
   form. A route with its own image passes `OWN_PREVIEW_IMAGE` to
   `pageMetadata`: an explicit card image would otherwise win over it.
   The bare arm is cropped to `signalMarkBounds` (the shape's own extent,
   raised fishtail tip included), never a hand-picked box. Re-save
   `public/opengraph-image.png` whenever the template or the mark changes.
+- **Live link previews** (`lib/livePreview.ts`): an incident, a line and
+  a station have a card drawn from live data (`renderStatusPreviewImage`,
+  mapped by `lib/incidentPreview.ts`, `lib/linePreview.ts` and
+  `lib/stationPreview.ts`, served from `{page}/card.png`). A band in the
+  severity pill's colours names the state in words ("Minor delays",
+  "Disruption in progress", "Cleared") with its time ("As of ...",
+  "Updated ..."); below it the wordmark, the title clamped to three lines,
+  what is wrong, line chips and one-line facts. A line or station card
+  ends "A snapshot in UK time: open the page for live status". The page
+  lists the card itself with `?v=`, a digest of the state it shows (never
+  a timestamp), so a new state is a new URL in chat apps that cache
+  images; it is not an `opengraph-image.tsx`, whose URL can't carry that.
+  `og:description` stays evergreen; the live part is in the image only.
+  The routes read through the "Reads for link-preview images" in
+  `lib/api.ts` (anonymous, no client IP, shared for a minute) and
+  regenerate the PNG at most once a minute. No departures on a station
+  card: they go stale in minutes and a chat app shows the card for hours.
+  Sample cards: `frontend/test/fixtures/preview-cards/`.
 - **Preferences** (`app/account/preferences/page.tsx`): open to everyone,
   never a redirect. Each section is a `PreferencesSection` card.
   - Device-local, no account needed: Appearance (colour theme, pride
@@ -438,7 +460,7 @@ used, rather than as a literal in a component.
   first departure has passed and whose last leg hasn't ended) and then "Upcoming journeys" (first departure
   still to come, soonest first, five then "View all"). "Current journey"
   renders only when there is one; "Upcoming journeys" always does, with a
-  light "New journey" button in its header, and says "No upcoming
+  light "Plan a journey" button in its header, and says "No upcoming
   journeys." when it is empty. The current journey is one `ClickableCard` with a 2px
   grape border (`.currentJourneyCard`), the only such card on the page:
   its name, its worst status (`JourneyStatusGroupBadge`), the leg under
@@ -904,7 +926,7 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
 Stations, a station, Trains (empty and searched), a train, Incidents, the
-plan form (Depart at and Arrive by), New journey, Account (logged in),
+Plan a journey (Depart at, Arrive by, and opened on "I know my route"), Account (logged in),
 Preferences (logged out, logged in and with a pride flag), home logged in, a tracked train
 not in the timetable, a planned tracked train, a journey with an untracked
 walk, the Journeys page and a group with shared trains and journeys (all
@@ -995,6 +1017,13 @@ Journeys (DS-115, 21 Oct 2026): the Track entry and page became Journeys
 home page's "Upcoming journeys", and `/journeys/new` took its words as
 its h1; the Journeys list splits into Upcoming and Past, with "Your
 reliability" between them.
+
+Plan a journey (DS-194, 30 Oct 2026): "New journey" (`/journeys/new`)
+merged into "Plan a journey" (`/plan`), which now offers every way to
+start a journey; `/journeys/new` redirects there permanently with its
+query. "Plan a journey" left the nav: the Journeys page and the home
+page's "Upcoming journeys" lead with it as a button, and Journeys stays
+marked current on `/plan`.
 
 Trains (DS-192, 30 Oct 2026): "Find a train" left Journeys to become the
 Trains section of the nav (`/trains`, h1 "Trains"), schedule-first: a

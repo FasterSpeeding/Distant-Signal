@@ -1294,7 +1294,7 @@ describe('DashboardPage -- journey sections', () => {
     renderWithMantine(await DashboardPage());
     expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
     expect(screen.queryByText('No upcoming journeys.')).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'New journey' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: 'Plan a journey' })).toHaveLength(1); // the teaser's, no button
     expect(screen.queryByRole('link', { name: 'View all' })).not.toBeInTheDocument();
     expect(api.getMyJourneys).not.toHaveBeenCalled();
     expect(api.getJourney).not.toHaveBeenCalled();
@@ -1356,7 +1356,7 @@ describe('DashboardPage -- journey sections', () => {
     const rows = within(upcoming)
       .getAllByRole('link')
       .map((link) => link.getAttribute('href'))
-      .filter((href) => href?.startsWith('/journeys/') && href !== '/journeys/new');
+      .filter((href) => href?.startsWith('/journeys/') && href !== '/plan');
     // Soonest first; this morning's finished journey is on neither list.
     expect(rows).toEqual(['/journeys/11', '/journeys/12']);
     expect(within(upcoming).getByText(/Departs 18:00/)).toBeInTheDocument();
@@ -1420,9 +1420,9 @@ describe('DashboardPage -- journey sections', () => {
     expect(screen.getByRole('region', { name: 'Upcoming journeys' })).toBeInTheDocument();
   });
 
-  // DS-115: "New journey" lives in this section, so a logged-in visitor
+  // DS-115: "Plan a journey" lives in this section, so a logged-in visitor
   // with nothing coming up still gets it, where the section would be.
-  it('logged in with no current or upcoming journeys: Upcoming journeys says so, and offers New journey', async () => {
+  it('logged in with no current or upcoming journeys: Upcoming journeys says so, and offers Plan a journey', async () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
     mockJourneys([thisMorning]);
     renderWithMantine(await DashboardPage());
@@ -1431,17 +1431,17 @@ describe('DashboardPage -- journey sections', () => {
     expect(headings.slice(0, 2)).toEqual(['Home', 'Upcoming journeys']);
     const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
     expect(within(upcoming).getByText('No upcoming journeys.')).toBeInTheDocument();
-    expect(within(upcoming).getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');
+    expect(within(upcoming).getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
     expect(within(upcoming).queryByRole('link', { name: 'View all' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Your lines', level: 2 })).toBeInTheDocument();
   });
 
-  it('logged in with no journeys at all: still offers New journey', async () => {
+  it('logged in with no journeys at all: still offers Plan a journey', async () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
     vi.mocked(api.getMyJourneys).mockResolvedValue([]);
     renderWithMantine(await DashboardPage());
     const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
-    expect(within(upcoming).getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');
+    expect(within(upcoming).getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
   });
 
   // The home page has no "Tracked trains" list: a train tracked on its own
@@ -1562,7 +1562,7 @@ describe('DashboardPage -- journey sections', () => {
     const rows = within(upcoming)
       .getAllByRole('link')
       .map((link) => link.getAttribute('href'))
-      .filter((href) => href !== '/journeys/new' && href !== '/journeys');
+      .filter((href) => href !== '/plan' && href !== '/journeys');
     expect(rows).toEqual(['/train/W5/2026-09-17', '/journeys/11', '/train/W6/2026-09-20', '/journeys/12']);
     const lunch = within(upcoming).getByRole('link', { name: /^Lunch train/ });
     expect(
@@ -1590,12 +1590,12 @@ describe('DashboardPage -- journey sections', () => {
     ]);
     renderWithMantine(await DashboardPage());
     expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
-    // "New journey" stays, and the section doesn't claim there are none.
+    // "Plan a journey" stays, and the section doesn't claim there are none.
     const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
     expect(within(upcoming).getByRole('link', { name: /KGX\) to York/ })).toBeInTheDocument();
     expect(within(upcoming).getByText("Couldn't load your journeys. Try again.")).toBeInTheDocument();
     expect(within(upcoming).queryByText('No upcoming journeys.')).not.toBeInTheDocument();
-    expect(within(upcoming).getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');
+    expect(within(upcoming).getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
   });
 
   it('a failing detail read leaves a journey starting today in the upcoming list', async () => {

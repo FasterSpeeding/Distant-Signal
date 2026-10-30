@@ -443,7 +443,7 @@ describe('TrackTrainForm', () => {
     });
   });
 
-  // `JourneyCreationFlow` (the `/journeys/new` continuous creation page)
+  // `JourneyCreationFlow` (the `/plan` continuous creation page)
   // needs to keep this form's own leg-1 submit machinery but stay on the
   // SAME page afterwards to offer an inline "Add a leg" -- rather than
   // being pushed away to `/journeys/{id}` the moment leg 1 exists, the way

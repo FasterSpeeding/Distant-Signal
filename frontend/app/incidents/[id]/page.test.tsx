@@ -10,7 +10,7 @@ import type { IncidentDetail, Suggestion } from '@/lib/types';
 
 vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>();
-  return { ...actual, getIncident: vi.fn(), getAllTocs: vi.fn(), getStationName: vi.fn() };
+  return { ...actual, getIncident: vi.fn(), getAllTocs: vi.fn(), getPreviewTocs: vi.fn(), getStationName: vi.fn() };
 });
 
 // Neutral defaults matching this page's own fail-soft posture (both
@@ -22,6 +22,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
 // production whenever `API_BASE_URL` genuinely has nothing to say.
 beforeEach(() => {
   vi.mocked(api.getAllTocs).mockResolvedValue([]);
+  vi.mocked(api.getPreviewTocs).mockResolvedValue([]);
   vi.mocked(api.getStationName).mockResolvedValue(null);
 });
 // No throwing mock, no useRouter -- this page renders no client component
@@ -321,27 +322,62 @@ describe('IncidentDetailPage', () => {
 });
 
 describe('generateMetadata', () => {
-  it('titles the page with the incident summary and describes the affected lines', async () => {
+  it('titles the page with the incident summary and describes where and who, not the state', async () => {
+    vi.mocked(api.getPreviewTocs).mockResolvedValue([{ code: 'VT', name: 'Avanti West Coast' }]);
     vi.mocked(api.getIncident).mockResolvedValue(detail());
     const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
     expect(metadata.title).toBe('Signal failure at Woking');
-    expect(metadata.description).toBe('Real-Time incident affecting South Western Main Line.');
+    expect(metadata.description).toBe('Disruption at Woking affecting Avanti West Coast.');
     // One incident, gone within hours: crawlable, never indexed.
     expect(metadata.robots).toEqual({ index: false, follow: true });
     expect(metadata.openGraph?.title).toBe('Signal failure at Woking · Distant Signal');
     expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });
 
-  it('labels a planned-work incident distinctly from a real-time one', async () => {
-    vi.mocked(api.getIncident).mockResolvedValue(detail({ isPlanned: true }));
+  it("lists the incident's own versioned preview image, with alt text naming it", async () => {
+    vi.mocked(api.getIncident).mockResolvedValue(detail());
     const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
-    expect(metadata.description).toBe('Planned work incident affecting South Western Main Line.');
+    const image = {
+      url: expect.stringMatching(/^\/incidents\/12345\/card\.png\?v=[0-9a-f]{8}$/) as unknown,
+      alt: 'Signal failure at Woking (disruption in progress) on Distant Signal',
+      width: 1200,
+      height: 630,
+      type: 'image/png',
+    };
+    expect(metadata.openGraph?.images).toEqual([image]);
+    expect(metadata.twitter?.images).toEqual([{ url: image.url, alt: image.alt }]);
   });
 
-  it('falls back to the summary when no line currently reports the incident', async () => {
-    vi.mocked(api.getIncident).mockResolvedValue(detail({ currentlyAffectsLines: [] }));
+  it('gives the image a new URL when the incident is cleared', async () => {
+    vi.mocked(api.getIncident).mockResolvedValue(detail());
+    const live = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
+    vi.mocked(api.getIncident).mockResolvedValue(detail({ isCleared: true, state: 'cleared' }));
+    const cleared = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
+    const url = (metadata: typeof live) => (metadata.twitter?.images as { url: string }[])[0]!.url;
+    expect(url(cleared)).not.toBe(url(live));
+    expect((cleared.twitter?.images as { alt: string }[])[0]!.alt).toBe(
+      'Signal failure at Woking (cleared) on Distant Signal',
+    );
+  });
+
+  it('labels planned work distinctly from a disruption', async () => {
+    vi.mocked(api.getIncident).mockResolvedValue(detail({ isPlanned: true }));
     const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
-    expect(metadata.description).toBe('Real-Time incident: Signal failure at Woking.');
+    expect(metadata.description).toBe('Planned work at Woking affecting VT.');
+  });
+
+  it('names the lines when the summary names no place', async () => {
+    vi.mocked(api.getIncident).mockResolvedValue(detail({ summary: 'Signal failure', operators: [] }));
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
+    expect(metadata.description).toBe('Disruption on South Western Main Line.');
+  });
+
+  it('falls back to the summary when it has no place, line or operator', async () => {
+    vi.mocked(api.getIncident).mockResolvedValue(
+      detail({ summary: 'Signal failure', operators: [], currentlyAffectsLines: [] }),
+    );
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
+    expect(metadata.description).toBe('Disruption: Signal failure.');
   });
 
   it('calls notFound() when getIncident throws ApiNotFoundError, matching the page component', async () => {

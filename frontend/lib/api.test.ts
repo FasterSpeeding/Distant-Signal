@@ -50,6 +50,12 @@ import {
   ApiUnauthorizedError,
   API_FETCH_TIMEOUT_MS,
   SESSION_FETCH_TIMEOUT_MS,
+  getPreviewIncident,
+  getPreviewLineStatus,
+  getPreviewLines,
+  getPreviewStationName,
+  getPreviewStopPointDisruption,
+  getPreviewTocs,
 } from './api';
 
 // `getPreferences` (and every other cookie-forwarding helper in lib/api.ts)
@@ -1787,5 +1793,65 @@ describe('api client X-Real-IP forwarding', () => {
     await getPublicTrainByUidAndDate('C12345', '2026-10-01');
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(sentHeaders()).toBeUndefined();
+  });
+});
+
+// Reads for link-preview images: shared by every requester, so no cookie and
+// no X-Real-IP (Next keys its data cache on the headers, and reading them
+// would make the image route dynamic), cached for a minute or an hour.
+describe('api client preview reads', () => {
+  beforeEach(() => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    incomingRequest.headers = { 'cf-connecting-ip': '203.0.113.5' };
+    vi.stubEnv('API_BASE_URL', 'http://test-api:8080');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([{ code: 'LWS', name: 'Lewes' }]), { status: 200 })),
+    );
+  });
+
+  afterEach(() => {
+    incomingCookies.header = '';
+    incomingRequest.headers = {};
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    ['getPreviewIncident', () => getPreviewIncident('A/B'), 'http://test-api:8080/public/incidents/A%2FB', 60],
+    [
+      'getPreviewLineStatus',
+      () => getPreviewLineStatus('lner-ecml'),
+      'http://test-api:8080/Line/lner-ecml/Status?detail=true',
+      60,
+    ],
+    [
+      'getPreviewStopPointDisruption',
+      () => getPreviewStopPointDisruption('LWS'),
+      'http://test-api:8080/StopPoint/LWS/Disruption',
+      60,
+    ],
+    ['getPreviewLines', () => getPreviewLines(), 'http://test-api:8080/public/lines', 3600],
+    ['getPreviewTocs', () => getPreviewTocs(), 'http://test-api:8080/public/tocs/all', 3600],
+    ['getPreviewStationName', () => getPreviewStationName('LWS'), 'http://test-api:8080/public/stations?q=LWS', 3600],
+  ])('%s reads anonymously, with no client IP, cached', async (_name, read, url, revalidate) => {
+    await read();
+    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0]! as [string, RequestInit & { next?: unknown }];
+    expect(calledUrl).toBe(url);
+    expect(init.headers).toBeUndefined();
+    expect(init.next).toEqual({ revalidate });
+  });
+
+  it('getPreviewStationName matches the code exactly', async () => {
+    await expect(getPreviewStationName('lws')).resolves.toBe('Lewes');
+    await expect(getPreviewStationName('LEW')).resolves.toBeNull();
+  });
+
+  it('a 404 is an ApiNotFoundError, as for the pages', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404 })),
+    );
+    await expect(getPreviewIncident('nope')).rejects.toBeInstanceOf(ApiNotFoundError);
   });
 });

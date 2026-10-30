@@ -13,7 +13,7 @@ import { TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
 import { formatTime } from '@/lib/dateFormat';
 import { describeFailure } from '@/lib/failure';
 import { followedFromLabel } from '@/lib/followedFrom';
-import { JOURNEYS_DESTINATION, NEW_JOURNEY_LABEL, PLAN_JOURNEY_DESTINATION, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
+import { JOURNEYS_DESTINATION, PLAN_JOURNEY_HREF, PLAN_JOURNEY_LABEL } from '@/lib/navLinks';
 import { tokens } from '@/lib/theme';
 import {
   currentLeg,
@@ -364,10 +364,10 @@ export function CurrentJourneySection({
 
 /** "Upcoming journeys": journeys and trains tracked on their own together,
  * soonest first, capped at `MAX_UPCOMING_JOURNEYS` with "View all" to the
- * Journeys page, which lists every one. Its header carries "New journey",
- * one of the two ways in to `/journeys/new` now the nav has none (DS-115),
+ * Journeys page, which lists every one. Its header carries "Plan a
+ * journey", one of the two ways in to `/plan` now the nav has none (DS-194),
  * so the section is rendered for every logged-in visitor: with nothing
- * upcoming it says so, and still offers "New journey" where a new user
+ * upcoming it says so, and still offers "Plan a journey" where a new user
  * would look for it. When `loadFailed` (the journeys couldn't be read), it
  * says that instead of claiming there are none, and still lists any lone
  * trains under it. */
@@ -386,8 +386,8 @@ export function UpcomingJourneysSection({
         <SectionTitle id="upcoming-journeys-heading">Upcoming journeys</SectionTitle>
         <Group gap="md">
           {shown.length > 0 && <TextLink href={JOURNEYS_DESTINATION.href}>View all</TextLink>}
-          <ButtonLink href={TRACK_JOURNEY_HREF} variant="light">
-            {NEW_JOURNEY_LABEL}
+          <ButtonLink href={PLAN_JOURNEY_HREF} variant="light">
+            {PLAN_JOURNEY_LABEL}
           </ButtonLink>
         </Group>
       </Group>
@@ -429,7 +429,7 @@ export function UpcomingJourneysTeaser() {
     <Stack component="section" aria-labelledby="upcoming-journeys-heading" gap="md">
       <Group justify="space-between" gap="sm">
         <SectionTitle id="upcoming-journeys-heading">Upcoming journeys</SectionTitle>
-        <TextLink href={PLAN_JOURNEY_DESTINATION.href}>{PLAN_JOURNEY_DESTINATION.label}</TextLink>
+        <TextLink href={PLAN_JOURNEY_HREF}>{PLAN_JOURNEY_LABEL}</TextLink>
       </Group>
       <Card {...tokens.card.static}>
         <Stack gap="sm" align="flex-start">

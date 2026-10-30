@@ -28,16 +28,16 @@ export interface NavDestination {
  * It was "Track" on `/track/mine` (round 2, 12 Oct 2026), which had folded
  * four tracking entries into one; `/track/mine` now redirects here
  * (`next.config.mjs`). The page lists your journeys, upcoming then past,
- * with "New journey", "Find a train", "Add a ticket" and journey templates
- * one tap away. The other tracking pages keep their URLs (deep links and
- * pre-fill query params depend on them) and mark this entry as the current
- * section: `/track`, and a tracked train's own page (`/train/by-id/...`).
- * `/trains` is not one of them since it became the Trains section
- * (2026-10-30). */
+ * with "Plan a journey", "Find a train", "Add a ticket" and journey
+ * templates one tap away. The other tracking pages, the planner included,
+ * keep their URLs (deep links and pre-fill query params depend on them) and
+ * mark this entry as the current section: `/track`, `/plan`, and a tracked
+ * train's own page (`/train/by-id/...`). `/trains` is not one of them since
+ * it became the Trains section (2026-10-30). */
 export const JOURNEYS_DESTINATION: NavDestination = {
   href: '/journeys',
   label: 'Journeys',
-  section: ['/track', '/journeys', '/train/by-id'],
+  section: ['/track', '/journeys', '/plan', '/train/by-id'],
 };
 
 /** The Trains section, `/trains` (2026-10-30): the timetable for seeing
@@ -54,33 +54,28 @@ export const TRAINS_DESTINATION: NavDestination = {
   except: ['/train/by-id'],
 };
 
-/** Where a new journey (or a single train, its one-leg case) starts:
- * `JourneyCreationFlow` on `/journeys/new`. Not a nav entry: it is reached
- * from the "New journey" button on the Journeys page and at the top of the
- * home page's "Upcoming journeys" (and from the planner's own copy). */
-export const TRACK_JOURNEY_HREF = '/journeys/new';
+/** `/plan`, "Plan a journey": where every journey starts (DS-194). It
+ * plans a route, or builds the journey from a train the visitor already
+ * knows, or from a Tube, bus or walk leg (`JourneyCreationFlow`), and links
+ * to tickets and journey templates. `/journeys/new`, the "New journey" page
+ * it absorbed, redirects here with its query (`next.config.mjs`).
+ *
+ * Not a nav entry: it is reached from the button at the top of the Journeys
+ * page and of the home page's "Upcoming journeys", and from station and
+ * stop pages' "Plan a journey from here". */
+export const PLAN_JOURNEY_HREF = '/plan';
 
-/** `TRACK_JOURNEY_HREF` opened on "I know my route" rather than its default,
- * the planner (`lib/journeyEntryMode.ts`): for a link offered to someone
- * who already knows their train, such as `/plan`'s "Track it directly". */
-export const TRACK_KNOWN_ROUTE_HREF = `${TRACK_JOURNEY_HREF}?mode=known`;
-
-/** The words on every button that opens `TRACK_JOURNEY_HREF`, which is
- * also that page's h1 (docs/style-guide.md, "Tone"). */
-export const NEW_JOURNEY_LABEL = 'New journey';
-
-/** `/plan`: the trip planner. Planning needs no account, so it is in the
- * main bar for everyone, straight after Journeys. */
-export const PLAN_JOURNEY_DESTINATION: NavDestination = { href: '/plan', label: 'Plan a journey' };
+/** The words on every link and button that opens `PLAN_JOURNEY_HREF`,
+ * which is also that page's h1 and title (docs/style-guide.md, "Tone"). */
+export const PLAN_JOURNEY_LABEL = 'Plan a journey';
 
 /** Always visible to everyone, logged in or not. Rendered inline in the
  * bar at `md` and up, and in the drawer below it. Each label is the h1 of
  * the page it opens (docs/style-guide.md, "Tone"). The travel entries come
- * first (your journeys, planning one, the timetable), then the network's
+ * first (your journeys, then the timetable), then the network's
  * state and reference pages. */
 export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
   JOURNEYS_DESTINATION,
-  PLAN_JOURNEY_DESTINATION,
   TRAINS_DESTINATION,
   { href: '/status', label: 'Status', section: ['/network'] },
   { href: '/lines', label: 'Lines' },

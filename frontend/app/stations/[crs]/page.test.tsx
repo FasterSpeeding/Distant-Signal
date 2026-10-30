@@ -13,6 +13,7 @@ vi.mock('@/lib/api', async () => {
   return {
     ...actual,
     getStopPointDisruption: vi.fn(),
+    getPreviewStopPointDisruption: vi.fn(),
     getPreferences: vi.fn(),
     getStationName: vi.fn(),
     getStationSampleStats: vi.fn(),
@@ -447,6 +448,7 @@ describe('generateMetadata', () => {
   beforeEach(() => {
     __resetStaleCacheForTests();
     vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
+    vi.mocked(api.getPreviewStopPointDisruption).mockResolvedValue([]);
   });
 
   it('titles the page with the station name and gives an evergreen description and canonical', async () => {
@@ -460,6 +462,33 @@ describe('generateMetadata', () => {
       url: '/stations/KGX',
     });
     expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
+  });
+
+  it('lists its own preview image, with the same alt text, versioned by the disruptions', async () => {
+    vi.mocked(api.getStopPointDisruption).mockClear();
+    vi.mocked(api.getPreviewStopPointDisruption).mockResolvedValue([]);
+    const calm = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
+    const [image] = calm.openGraph?.images as { url: string; alt: string }[];
+    expect(image).toEqual({
+      url: expect.stringMatching(/^\/stations\/KGX\/card\.png\?v=[0-9a-f]{8}$/) as unknown,
+      alt: 'London Kings Cross (KGX) on Distant Signal',
+      width: 1200,
+      height: 630,
+      type: 'image/png',
+    });
+
+    vi.mocked(api.getPreviewStopPointDisruption).mockResolvedValue([report('ecml', 'East Coast Main Line')]);
+    const disrupted = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
+    expect((disrupted.openGraph?.images as { url: string }[])[0]!.url).not.toBe(image!.url);
+    expect(disrupted.description).toBe(calm.description);
+    // The page's own per-visitor read is left to the page.
+    expect(api.getStopPointDisruption).not.toHaveBeenCalled();
+  });
+
+  it('still lists the image when the disruptions are unreachable', async () => {
+    vi.mocked(api.getPreviewStopPointDisruption).mockRejectedValue(new Error('down'));
+    const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
+    expect((metadata.openGraph?.images as { url: string }[])[0]!.url).toMatch(/^\/stations\/KGX\/card\.png\?v=/);
   });
 
   it('never quotes the live status, which would go stale in a search snippet', async () => {

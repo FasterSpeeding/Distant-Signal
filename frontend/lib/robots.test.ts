@@ -19,11 +19,13 @@ const starGroup = (text: string) => {
 };
 
 describe('buildRobots', () => {
-  it('allows the site by default and re-allows only /journeys/new under /journeys/', () => {
+  // `/journeys/new` was re-allowed under `/journeys/` until it became a
+  // redirect to `/plan` (DS-194).
+  it('allows the site by default and re-allows nothing under /journeys/', () => {
     const out = lines(render({ origin: undefined }));
     expect(out[0]).toBe('User-Agent: *');
     expect(out).toContain('Allow: /');
-    expect(out).toContain('Allow: /journeys/new$');
+    expect(out.filter((line) => line.startsWith('Allow: /journeys'))).toEqual([]);
   });
 
   it.each([

@@ -96,15 +96,37 @@ export function transferLabel(mode: string, line?: string | null): string {
 /** The note under a `/Trips/plan` access leg (DS-135): the leg between a
  * TfL stop From or To and a National Rail station, whose minutes are an
  * estimate. Says what the estimate is from. */
-export function accessLegNote(access: TripPlanAccessLeg): string {
+export function accessLegNote(access: TripPlanAccessLeg, stopCount?: number): string {
   const km = (access.distanceMetres / 1000).toFixed(1);
   switch (access.basis) {
     case 'hub':
       return 'Estimated time to walk between the stop and the National Rail station';
-    case 'line':
-      return `Estimated time for about ${km} km along the line`;
+    case 'line': {
+      const stops = stopCount ? `, ${stopCount} ${stopCount === 1 ? 'stop' : 'stops'}` : '';
+      return `Estimated time for about ${km} km along the line${stops}`;
+    }
     case 'walk':
     case 'nearest':
       return `Estimated walk: the station is about ${km} km away`;
   }
+}
+
+/** An access ride's change of trains, for the leg's own line ("Tube
+ * (Piccadilly line) Uxbridge to Heathrow, change at Acton Town, 45 min"),
+ * so it reads, and is announced, as part of the route rather than a
+ * footnote. `undefined` for a ride on one train. */
+export function accessChangeClause(access: TripPlanAccessLeg): string | undefined {
+  const name = access.changeAt?.name.trim();
+  return name ? `change at ${name}` : undefined;
+}
+
+/** Where an access ride is boarded or left when that is another stop area
+ * of the station ("Board at Paddington (H&C Line)."), or `undefined` when
+ * it uses the plan's own stops. */
+export function accessStopsNote(access: TripPlanAccessLeg): string | undefined {
+  const parts = [
+    access.boardStop?.name.trim() ? `Board at ${access.boardStop.name.trim()}.` : null,
+    access.alightStop?.name.trim() ? `Leave at ${access.alightStop.name.trim()}.` : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(' ') : undefined;
 }

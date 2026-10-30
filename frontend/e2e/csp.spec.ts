@@ -54,12 +54,15 @@ async function waitForHydration(page: Page) {
 
 // `/stations/KGX` carries server-rendered JSON-LD, a data block that needs no nonce.
 const STATION = `/stations/${process.env.E2E_REAL_STATION_CRS ?? 'KGX'}`;
+// An incident page lists its own preview image (`card.png`).
+const INCIDENT = `/incidents/${process.env.E2E_REAL_INCIDENT_ID ?? 'E879EB6C791C470AB6C2A7458AE68C3B'}`;
 const ROUTES = [
   '/',
   '/lines',
   '/stations',
   STATION,
   '/incidents',
+  INCIDENT,
   '/trains',
   '/track',
   '/chat',

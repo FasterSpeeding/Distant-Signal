@@ -70,9 +70,10 @@ const PAGES: [name: string, path: string][] = [
   // the seed's /plan timetable codes. The time and date fields are masked.
   ['plan', '/plan?origin=ZEA&destination=ZEC&date=2026-09-17&departAfter=08:00'],
   ['plan-arrive-by', '/plan?origin=ZEA&destination=ZEC&date=2026-09-17&arriveBy=09:00'],
-  // New journey, logged out: opens on the planner, and at 390px its three
-  // ways to start are stacked so none is cut short.
-  ['journeys-new', '/journeys/new'],
+  // Plan a journey, logged out, on "I know my route" (DS-194 merged New
+  // journey into it): at 390px its three ways to start are stacked so none
+  // is cut short, with the train form and the other ways to start below.
+  ['plan-known', '/plan?mode=known'],
   ['account', '/account'],
   // Tracked-train states and an untracked leg (spec
   // 2026-10-20-untracked-legs-and-tracked-train-states-design.md): a train

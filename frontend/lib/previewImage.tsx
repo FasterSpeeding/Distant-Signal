@@ -1,7 +1,9 @@
 import { ImageResponse } from 'next/og';
 import type { Metadata } from 'next';
 import { type MarkBox, signalMarkBounds, signalMarkSvg } from './brand';
+import { type StatusPreviewCard, TITLE_FITS_LENGTH } from './livePreview';
 import { SITE_NAME } from './pageMetadata';
+import type { SeverityGroup } from './severity';
 
 /** The link-preview (Open Graph) image template (round 2, item 9): the
  * page's title on the brand background, under the wordmark. A route opts in
@@ -125,5 +127,163 @@ export function renderPreviewImage(title: string | null): ImageResponse {
       </div>
     </div>,
     PREVIEW_IMAGE_SIZE,
+  );
+}
+
+/** The light scheme's `StatusBadge` pairs (`--ds-status-badge-<group>-fill`
+ * and `-text` in app/globals.css, resolved to hex: the image renderer has
+ * no CSS variables). `previewImage.test.tsx` checks them against the CSS,
+ * so the band can't drift from the pills, which clear 4.5:1 and APCA Lc 75. */
+export const STATUS_BAND_COLORS: Record<SeverityGroup, { fill: string; text: string }> = {
+  good: { fill: '#287f39', text: '#ffffff' },
+  informational: { fill: '#495057', text: '#ffffff' },
+  planned: { fill: '#1864ab', text: '#ffffff' },
+  mild: { fill: '#fcc419', text: '#000000' },
+  severe: { fill: '#c92a2a', text: '#ffffff' },
+};
+
+/** Titles step down so three lines fit; past that the title is clamped. */
+export function cardTitleFontSize(title: string): number {
+  if (title.length <= 50) return 60;
+  if (title.length <= TITLE_FITS_LENGTH) return 52;
+  return 44;
+}
+
+/** The line chips' row: the card's width less its padding. */
+const CHIP_ROW_WIDTH = 1200 - 2 * 64;
+const CHIP_MAX_WIDTH = 520;
+const CHIP_GAP = 12;
+/** Room kept for "and 12 more". */
+const CHIP_MORE_WIDTH = 150;
+
+/** A chip's width estimated from its name: Geist at 26px averages under
+ * 14px a character; plus padding and border. Long names cap at
+ * `CHIP_MAX_WIDTH` and end in an ellipsis. */
+function chipWidth(name: string): number {
+  return Math.min(CHIP_MAX_WIDTH, 40 + 14 * name.length);
+}
+
+/** The line chips that fit on one row at full size, and how many more to
+ * count instead: squeezing a third chip to "Northe..." says nothing. The
+ * first chip always shows. */
+export function fitLineChips(names: readonly string[], more: number): { names: string[]; more: number } {
+  const total = names.length + more;
+  const shown: string[] = [];
+  let used = 0;
+  for (const name of names) {
+    const width = chipWidth(name) + (shown.length > 0 ? CHIP_GAP : 0);
+    const reserve = shown.length + 1 < total ? CHIP_MORE_WIDTH : 0;
+    if (shown.length > 0 && used + width + reserve > CHIP_ROW_WIDTH) break;
+    shown.push(name);
+    used += width;
+  }
+  return { names: shown, more: total - shown.length };
+}
+
+/** One line of text that ends in an ellipsis rather than wrapping. */
+const SINGLE_LINE = {
+  display: 'block',
+  overflow: 'hidden',
+  whiteSpace: 'nowrap',
+  textOverflow: 'ellipsis',
+} as const;
+
+/** A live link preview (an incident, a line, a station; `lib/livePreview.ts`):
+ * the state as a coloured band with the words on it and its time, then the
+ * brand template's wordmark, the title, a lead line, line chips and the
+ * other facts. The mapper leaves out what it has nothing to say for, so
+ * nothing is drawn blank. */
+export function renderStatusPreviewImage(card: StatusPreviewCard, init: ResponseInit = {}): ImageResponse {
+  const band = STATUS_BAND_COLORS[card.band.tone];
+  const chips = fitLineChips(card.chips.names, card.chips.more);
+  return new ImageResponse(
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        backgroundImage: BACKGROUND,
+        color: TEXT,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 32,
+          height: 96,
+          padding: '0 64px',
+          backgroundColor: band.fill,
+          color: band.text,
+        }}
+      >
+        <div style={{ ...SINGLE_LINE, fontSize: 44, letterSpacing: -0.5 }}>{card.band.label}</div>
+        <div style={{ display: 'flex', flexShrink: 0, fontSize: 28 }}>{card.band.aside}</div>
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'space-between',
+          flexGrow: 1,
+          padding: '36px 64px 40px',
+          gap: 24,
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+            <Mark height={52} />
+            <div style={{ fontSize: 34, letterSpacing: -0.5 }}>{SITE_NAME}</div>
+          </div>
+          <div
+            style={{
+              display: 'block',
+              overflow: 'hidden',
+              lineClamp: 3,
+              fontSize: cardTitleFontSize(card.title),
+              lineHeight: 1.12,
+              letterSpacing: -1,
+            }}
+          >
+            {card.title}
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 28 }}>
+          {card.lead && <div style={{ ...SINGLE_LINE, fontSize: 32 }}>{card.lead}</div>}
+          {chips.names.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: CHIP_GAP, overflow: 'hidden' }}>
+              {chips.names.map((name) => (
+                <div
+                  key={name}
+                  style={{
+                    ...SINGLE_LINE,
+                    flexShrink: 0,
+                    maxWidth: CHIP_MAX_WIDTH,
+                    padding: '4px 18px',
+                    borderRadius: 999,
+                    border: '2px solid rgba(255, 255, 255, 0.7)',
+                    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+                    fontSize: 26,
+                  }}
+                >
+                  {name}
+                </div>
+              ))}
+              {chips.more > 0 && (
+                <div style={{ display: 'flex', flexShrink: 0, fontSize: 26 }}>{`and ${chips.more} more`}</div>
+              )}
+            </div>
+          )}
+          {card.rows.map((row) => (
+            <div key={row} style={{ ...SINGLE_LINE, opacity: 0.94 }}>
+              {row}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>,
+    { ...PREVIEW_IMAGE_SIZE, ...init },
   );
 }

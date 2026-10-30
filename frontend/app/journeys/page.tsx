@@ -7,7 +7,7 @@ import { TextLink } from '@/components/TextLink';
 import { ButtonLink } from '@/components/ButtonLink';
 import { StateBadge } from '@/components/StateBadge';
 import { pageMetadata } from '@/lib/pageMetadata';
-import { NEW_JOURNEY_LABEL, PLAN_JOURNEY_DESTINATION, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
+import { PLAN_JOURNEY_HREF, PLAN_JOURNEY_LABEL } from '@/lib/navLinks';
 import { TicketSummary } from '@/components/TicketSummary';
 import { FollowJourneyButton } from '@/components/FollowJourneyButton';
 import { followedFromLabel } from '@/lib/followedFrom';
@@ -45,11 +45,11 @@ export const metadata: Metadata = {
 
 /** `/journeys` -- the Journeys page, the nav's one tracking entry
  * (`JOURNEYS_DESTINATION` in `lib/navLinks.ts`). It was the Track page at
- * `/track/mine` until DS-115, which renamed it, made "New journey" the way
- * in to `/journeys/new` (no longer a nav entry), and split the list into
+ * `/track/mine` until DS-115, which renamed it and split the list into
  * Upcoming and Past (`lib/upcomingPast.ts`) with "Your reliability"
- * between them. Its header starts everything tracking-shaped: "New
- * journey", "Find a train", "Add a ticket" and journey templates. Below
+ * between them. Its header starts everything tracking-shaped: "Plan a
+ * journey" (`/plan`, no longer a nav entry since DS-194), "Find a train",
+ * "Add a ticket" and journey templates. Below
  * that, a logged-in user's own
  * tracked trains AND tickets, one merged page (Part B of the upload-first ticket-tracking plan). Was two
  * separate pages (`/journeys` for trains, `/track/tickets` for tickets)
@@ -129,9 +129,8 @@ export default async function JourneysPage() {
     return (
       // No auto-opening login modal: this is the nav's Journeys entry, so
       // every logged-out visitor who taps it lands here. The header offers
-      // what they can start without logging in first: a new journey (it
-      // asks them to log in when they save it), a train search and the
-      // planner.
+      // what they can start without logging in first: planning a journey
+      // (it asks them to log in when they save it) and a train search.
       <Stack p="lg" gap="md" maw={640}>
         <JourneysHeader />
         <Text>Log in to see your journeys, and to keep your tickets with them.</Text>
@@ -241,9 +240,7 @@ export default async function JourneysPage() {
     <Stack p="lg" gap="xl">
       <JourneysHeader authenticated />
       {nothingToShow ? (
-        <Text c="dimmed">
-          You have no journeys yet. Start a new journey, or find a train first, and it will show here.
-        </Text>
+        <Text c="dimmed">You have no journeys yet. Plan a journey, or find a train first, and it will show here.</Text>
       ) : (
         <>
           {(upcomingCount > 0 || pastCount > 0) && (
@@ -290,26 +287,23 @@ export default async function JourneysPage() {
   );
 }
 
-/** The Journeys page's h1 and its ways to start. "New journey" leads, as
- * a button, for everyone: `/journeys/new` asks a logged-out visitor to log
- * in when they save, and is reached only from here and the home page, not
- * the nav. The rest are links: logged out, the two that need no account
- * (finding a train, planning a journey); logged in, a train search, a
- * ticket and journey templates. */
+/** The Journeys page's h1 and its ways to start. "Plan a journey" leads,
+ * as a button, for everyone: `/plan` needs no account to search and asks a
+ * logged-out visitor to log in when they save, and is reached from here and
+ * the home page, not the nav (DS-194). The rest are links: a train search
+ * for everyone and, logged in, a ticket and journey templates. */
 function JourneysHeader({ authenticated = false }: { authenticated?: boolean }) {
   return (
     <Stack gap="sm">
       <Title order={1}>Journeys</Title>
       <Group gap="md" align="center">
-        <ButtonLink href={TRACK_JOURNEY_HREF}>{NEW_JOURNEY_LABEL}</ButtonLink>
+        <ButtonLink href={PLAN_JOURNEY_HREF}>{PLAN_JOURNEY_LABEL}</ButtonLink>
         <TextLink href="/trains">Find a train</TextLink>
-        {authenticated ? (
+        {authenticated && (
           <>
             <TextLink href="/track/mine/add-ticket">Add a ticket</TextLink>
             <TextLink href="/journeys/templates">Journey templates</TextLink>
           </>
-        ) : (
-          <TextLink href={PLAN_JOURNEY_DESTINATION.href}>Plan a journey</TextLink>
         )}
       </Group>
     </Stack>

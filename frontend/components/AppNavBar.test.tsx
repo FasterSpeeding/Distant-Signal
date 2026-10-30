@@ -3,7 +3,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { screen, fireEvent, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { AppNavBar } from './AppNavBar';
-import { PLAN_JOURNEY_DESTINATION, PREFERENCES_DESTINATION, PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
+import { PLAN_JOURNEY_LABEL, PREFERENCES_DESTINATION, PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
 import type { DataFreshness, SessionInfo } from '@/lib/types';
 
 // LoginControl / AccountMenu / AppNavDrawer all reach for App Router hooks
@@ -79,7 +79,7 @@ describe('AppNavBar', () => {
     }
   });
 
-  it.each(['/journeys/new', '/track', '/journeys', '/journeys/42', '/train/by-id/7'])(
+  it.each(['/plan', '/journeys/new', '/track', '/journeys', '/journeys/42', '/train/by-id/7'])(
     'marks Journeys current on %s, and not Trains',
     (path) => {
       pathname = path;
@@ -136,35 +136,24 @@ describe('AppNavBar', () => {
     ).not.toBeInTheDocument();
   });
 
-  describe('the "Plan a journey" entry', () => {
-    it('links to /plan for anyone, straight after Journeys, at every width from md up', () => {
+  // DS-194: "Plan a journey" left the nav. It is reached from the Journeys
+  // page and the home page, and its page is part of the Journeys section.
+  describe('no "Plan a journey" entry', () => {
+    it('is not in the bar, for anyone', () => {
       for (const session of [loggedOut, loggedIn]) {
         const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} />);
-        const names = barLinkNames();
-        expect(names[names.indexOf('Journeys') + 1]).toBe('Plan a journey');
-        const link = screen.getByRole('link', { name: 'Plan a journey' });
-        expect(link).toHaveAttribute('href', '/plan');
-        expect(link.closest('.mantine-visible-from-lg')).toBeNull();
+        expect(barLinkNames()).not.toContain(PLAN_JOURNEY_LABEL);
         unmount();
       }
     });
 
-    it('marks itself as the current page on /plan, and nothing else', () => {
+    it('is not in the drawer, which marks Journeys current on /plan', async () => {
       pathname = '/plan';
-      renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-      expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('aria-current', 'page');
-      expect(screen.getByRole('link', { name: 'Journeys' })).not.toHaveAttribute('aria-current');
-    });
-
-    it('is in the drawer, marked current on /plan', async () => {
-      pathname = '/plan';
-      renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
+      renderWithMantine(<AppNavBar session={loggedIn} freshness={freshness} />);
       fireEvent.click(screen.getByRole('button', { name: 'Navigation menu' }));
       const drawer = await screen.findByRole('dialog');
-      const link = within(drawer).getByRole('link', { name: PLAN_JOURNEY_DESTINATION.label });
-      expect(link).toHaveAttribute('href', '/plan');
-      expect(link).toHaveAttribute('aria-current', 'page');
-      expect(link).toHaveAttribute('data-active', 'true');
+      expect(within(drawer).queryByRole('link', { name: PLAN_JOURNEY_LABEL })).toBeNull();
+      expect(within(drawer).getByRole('link', { name: 'Journeys' })).toHaveAttribute('aria-current', 'page');
     });
   });
 
