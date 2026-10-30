@@ -1416,3 +1416,108 @@ fn bench_fastest_cpu() {
         }
     }
 }
+
+/// `results=options` (DS-196) over 20 random pairs departing 08:00, in CPU
+/// time (median over `DS_BENCH_REPS`, default 9, of all 20): RAPTOR's
+/// Pareto set alone at the default cap (6 rounds), then the same plus
+/// `trip_planner::diversify`'s alternatives (one Connection Scan per extra
+/// search). Also how many options each returns in all, as a checksum and a
+/// measure of what the alternatives add.
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn bench_options_cpu() {
+    if !bench_requested() {
+        return;
+    }
+    let reps: usize = std::env::var("DS_BENCH_REPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(9);
+    let (connections, interchange) = network();
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    let mut rng = Rng(0x0b71_0950);
+    let pairs: Vec<(Vec<String>, Vec<String>)> = (0..20)
+        .map(|_| {
+            (
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+            )
+        })
+        .collect();
+    let base = |from: &[String], to: &[String]| {
+        raptor_search_restricted(
+            RaptorOptions {
+                connections: &connections,
+                interchange: &interchange,
+                from_tiplocs: from,
+                to_tiplocs: to,
+                departure_min: 480,
+                date,
+                max_rounds: 6,
+            },
+            None,
+            None,
+        )
+        .into_iter()
+        .filter(|j| j.changes <= 4)
+        .collect::<Vec<_>>()
+    };
+    let pareto = || {
+        pairs
+            .iter()
+            .map(|(from, to)| base(from, to).len())
+            .sum::<usize>()
+    };
+    let options = || {
+        pairs
+            .iter()
+            .map(|(from, to)| {
+                trip_planner::diversify(
+                    base(from, to),
+                    &trip_planner::DiversifyOptions {
+                        connections: &connections,
+                        interchange: &interchange,
+                        restrictions: None,
+                        protected: [from.clone(), to.clone()].concat(),
+                        direction: trip_planner::options::Direction::DepartAfter,
+                        max_changes: 4,
+                    },
+                    |restrictions| {
+                        scan_connections_restricted(
+                            ScanOptions {
+                                connections: &connections,
+                                interchange: &interchange,
+                                from_tiplocs: from,
+                                to_tiplocs: to,
+                                departure_min: 480,
+                                date,
+                            },
+                            None,
+                            Some(restrictions),
+                        )
+                        .map(trip_planner::RaptorJourney::from)
+                    },
+                )
+                .len()
+            })
+            .sum::<usize>()
+    };
+    for (label, f) in [
+        ("raptor pareto only", &pareto as &dyn Fn() -> usize),
+        ("raptor + alternatives", &options),
+    ] {
+        let mut samples = Vec::new();
+        let mut found = 0;
+        for _ in 0..reps {
+            let started = thread_cpu();
+            found = f();
+            samples.push(thread_cpu().saturating_sub(started));
+        }
+        samples.sort();
+        println!(
+            "{label:22} cpu median {:>9.2?} min {:>9.2?} (20 queries, {found} options)",
+            samples[samples.len() / 2],
+            samples[0]
+        );
+    }
+}

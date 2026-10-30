@@ -109,6 +109,29 @@ impl Restrictions {
         self
     }
 
+    /// These restrictions plus more `no_interchange` and `no_call` TIPLOCs
+    /// (normalized here; `no_call` implies `no_interchange` as in
+    /// [`Self::new`]). What [`crate::options`] bans to find another route.
+    #[must_use]
+    pub fn with_extra(
+        &self,
+        no_interchange: impl IntoIterator<Item = String>,
+        no_call: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let mut copy = self.clone();
+        for tiploc in no_call {
+            let tiploc = normalize_tiploc(&tiploc).to_string();
+            copy.no_interchange.insert(tiploc.clone());
+            copy.no_call.insert(tiploc);
+        }
+        copy.no_interchange.extend(
+            no_interchange
+                .into_iter()
+                .map(|t| normalize_tiploc(&t).to_string()),
+        );
+        copy
+    }
+
     pub fn is_empty(&self) -> bool {
         self.no_interchange.is_empty()
             && self.no_call.is_empty()
