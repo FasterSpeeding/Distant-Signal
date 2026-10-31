@@ -65,6 +65,7 @@ export const ROUTE_TEMPLATES = [
   '/transit/[network]',
   '/transit/[network]/lines/[line]',
   '/transit/[network]/lines/[line]/timetable',
+  '/transit/[network]/stops',
   '/transit/[network]/stops/[stop]',
 ] as const;
 
@@ -119,6 +120,9 @@ export const FEATURE_STEPS = {
   leg_stops: ['earlier_expanded', 'later_expanded'],
   /** `/plan`'s way in to a new journey, each time one is shown. */
   journey_start: ['plan', 'known', 'untracked'],
+  /** A transit network page's "Find a stop": a stop opened from it, or
+   * its "See all matches" row (never which stop or what was typed). */
+  stop_finder: ['stop_opened', 'all_matches_opened'],
 } as const;
 
 export const FEATURES = [
@@ -136,6 +140,7 @@ export const FEATURES = [
   'shared_journeys',
   'leg_stops',
   'journey_start',
+  'stop_finder',
 ] as const;
 
 export type Feature = keyof typeof FEATURE_STEPS;

@@ -1,21 +1,22 @@
-import { Group, Stack, Text, Title } from '@mantine/core';
-import { notFound } from 'next/navigation';
+import { Fragment } from 'react';
+import { Stack, Text, Title } from '@mantine/core';
+import { notFound, redirect } from 'next/navigation';
 import type { Metadata } from 'next';
-import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
 import { SectionTitle } from '@/components/SectionTitle';
-import { SearchableList } from '@/components/SearchableList';
 import { TextLink } from '@/components/TextLink';
 import { TransitAttributionNote } from '@/components/TransitAttributionNote';
 import { TransitDisruptions } from '@/components/TransitDisruptions';
 import { TransitLineList } from '@/components/TransitLineList';
+import { TransitStopFinder } from '@/components/TransitStopFinder';
 import { getTransitNetwork, getTransitSituations, getTransitStops } from '@/lib/api';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
-import { orNotFound, TRANSIT_ID, transitStopHref } from '@/lib/transit';
+import { orNotFound, TRANSIT_ID } from '@/lib/transit';
+import { stopIndexHref } from '@/lib/transitStopFinder';
 import { groupLinesByMode, networkModesPhrase } from '@/lib/transitModes';
 
 interface Params {
   params: Promise<{ network: string }>;
-  /** `?q=`, "Find a stop". */
+  /** `?q=`, the old in-page "Find a stop": sent on to the A to Z. */
   searchParams?: Promise<{ q?: string | string[] }>;
 }
 
@@ -36,19 +37,30 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
  * by mode when it has several, its disruptions, and its stops. The TfL
  * network has no disruptions list (its status is TfL's, detailed on each
  * line's `/lines/tfl-<line>` page) and links the TfL lines that are
- * National Rail lines here (the TfL transit design §8.2). */
+ * National Rail lines here (the TfL transit design §8.2).
+ *
+ * Stops are a type-ahead finder (`TransitStopFinder`), not a list: the
+ * page neither fetches nor renders the network's stations (356 for TfL),
+ * and the finder loads them on first use. A line's page lists its stops in
+ * order, and `/transit/[network]/stops` has the A to Z. */
 export default async function TransitNetworkPage({ params, searchParams }: Params) {
   const { network } = await params;
   const { q } = (await searchParams) ?? {};
   if (!TRANSIT_ID.test(network)) notFound();
-  const [detail, stops, situations] = await Promise.all([
+  const search = Array.isArray(q) ? q[0] : q;
+  if (search?.trim()) redirect(stopIndexHref(network, search));
+  const [detail, situations] = await Promise.all([
     orNotFound(getTransitNetwork(network)),
-    orNotFound(getTransitStops(network)),
     getTransitSituations(network).catch(() => null),
   ]);
   const fromTfl = detail.statusSource === 'tfl';
   const groups = groupLinesByMode(detail.lines);
   const lineNames = Object.fromEntries(detail.lines.map((line) => [line.id, line.name]));
+  // The disruptions name their stops: only then are the stations fetched
+  // (from the data cache, server-side; none of it reaches the browser).
+  const namesStops =
+    !fromTfl && !!situations && [...situations.current, ...situations.upcoming].some((s) => s.stops.length > 0);
+  const stops = namesStops ? await getTransitStops(network).catch(() => []) : [];
   const stopNames = Object.fromEntries(stops.map((stop) => [stop.id, stop.name]));
   const hasFeed = (detail.status?.state ?? 'none') !== 'none';
   // Only the TfL network has live data (TfL's arrivals, on each stop's
@@ -67,23 +79,26 @@ export default async function TransitNetworkPage({ params, searchParams }: Param
       {groups.map((group) => (
         <Stack key={group.mode ?? 'lines'} gap="sm">
           <SectionTitle>{group.label ?? 'Lines'}</SectionTitle>
-          <TransitLineList network={network} lines={group.lines} />
+          <TransitLineList network={network} lines={group.lines} label={group.label ?? 'Lines'} />
         </Stack>
       ))}
 
       {detail.nationalRailLines && detail.nationalRailLines.length > 0 && (
-        <Stack gap="sm">
+        <Stack gap="xs">
           <SectionTitle>Also run by TfL</SectionTitle>
-          <Text c="dimmed">These run on the National Rail network, with live trains and timetables there.</Text>
-          <Group gap="sm">
-            {detail.nationalRailLines.map((line) => (
-              <ClickableCard key={line.id} padding="sm">
-                <Text fw={600}>
-                  <CardTitleLink href={`/lines/${line.id}`}>{line.name}</CardTitleLink>
-                </Text>
-              </ClickableCard>
+          {/* Links in a sentence, not cards: they lead off this network, so
+              they stay under its own lines. */}
+          <Text size="sm" c="dimmed">
+            On the National Rail network, with live trains and timetables there:{' '}
+            {detail.nationalRailLines.map((line, index, all) => (
+              <Fragment key={line.id}>
+                <TextLink href={`/lines/${line.id}`} inline underline="always">
+                  {line.name}
+                </TextLink>
+                {index < all.length - 2 ? ', ' : index === all.length - 2 ? ' and ' : '.'}
+              </Fragment>
             ))}
-          </Group>
+          </Text>
         </Stack>
       )}
 
@@ -100,25 +115,14 @@ export default async function TransitNetworkPage({ params, searchParams }: Param
 
       <Stack gap="sm">
         <SectionTitle>Stops</SectionTitle>
-        {stops.length === 0 ? (
-          <Text c="dimmed">No stops in the timetable.</Text>
-        ) : (
-          // The list is a client component so "Find a stop" can filter it in
-          // place; the page stays a Server Component.
-          <SearchableList
-            searchLabel="Find a stop"
-            noun={{ one: 'stop', other: 'stops' }}
-            titlePrefix={`${detail.name} stops`}
-            initialQuery={Array.isArray(q) ? q[0] : q}
-            layout="list"
-            listLabel="Stops"
-            items={stops.map((stop) => ({
-              key: stop.id,
-              text: stop.name,
-              node: <TextLink href={transitStopHref(network, stop.id)}>{stop.name}</TextLink>,
-            }))}
-          />
-        )}
+        <TransitStopFinder network={network} networkName={detail.name} lineNames={lineNames} />
+        <Text size="sm" c="dimmed">
+          Each line&apos;s page lists its stops in order.{' '}
+          {/* Not prefetched: the A to Z is the full list this page leaves out. */}
+          <TextLink href={stopIndexHref(network)} inline underline="always" prefetch={false}>
+            All stops, A to Z
+          </TextLink>
+        </Text>
       </Stack>
 
       <TransitAttributionNote network={detail} />

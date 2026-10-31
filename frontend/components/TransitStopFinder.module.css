@@ -1,0 +1,10 @@
+/* A row's lines, dimmed; on the highlighted row they take the row's own
+   text colour, as the dimmed grey fails contrast on the filled highlight. */
+
+.lines {
+  color: var(--mantine-color-dimmed);
+}
+
+[data-combobox-selected] .lines {
+  color: inherit;
+}

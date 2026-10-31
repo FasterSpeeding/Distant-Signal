@@ -82,6 +82,7 @@ it. Its own rate-limit budget: `API_RATE_LIMIT_EVENTS_PER_MINUTE` (60) and
 | `shared_journeys` | `shown`, `opened` | Home's "Shared with you" list shown, and a journey in it opened |
 | `leg_stops` | `earlier_expanded`, `later_expanded` | A journey leg's collapsed "Earlier stops" or "Later stops" opened |
 | `journey_start` | `plan`, `known`, `untracked` | `/plan`'s way in to a new journey shown, on arrival and on each switch |
+| `stop_finder` | `stop_opened`, `all_matches_opened` | A transit network page's "Find a stop": a stop opened from its list, or its "See all *n* matches" row (the A to Z, `/transit/[network]/stops`) |
 
 An event from before the nav knows the session (a page's own effects can
 run first on a full load) waits for it, and is sent only if the session
@@ -107,7 +108,7 @@ Mirrored into Prometheus:
 
 - `distant_signal_api_usage_events_total{event, signed_in}`
 - `distant_signal_api_usage_page_views_total{route}` (one series per route
-  template, 54)
+  template, 55)
 - `distant_signal_api_usage_events_dropped_total{reason}`: `privacy_signal`,
   `not_opted_in`, `invalid`, `error`
 

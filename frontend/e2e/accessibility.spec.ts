@@ -209,6 +209,8 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   // they name, the line lists its stops, the timetable's row headers are
   // stop links.
   ['/transit/metrolink', '/transit/metrolink'],
+  ['/transit/metrolink/stops', '/transit/metrolink/stops'],
+  ['/transit/tfl', '/transit/tfl'],
   ['/transit/metrolink/lines/blue', '/transit/metrolink/lines/blue'],
   [
     '/transit/metrolink/lines/blue/timetable',
@@ -541,9 +543,24 @@ test.describe('accessibility: interactive sub-states', () => {
 
   // "Find a stop", the search-only bar (the e2e seed has no operators, so
   // /operators has no cards to search).
-  test('/transit/metrolink, stops searched', async ({ page }) => {
-    await page.goto('/transit/metrolink?q=picc');
+  test('/transit/metrolink/stops, stops searched', async ({ page }) => {
+    await page.goto('/transit/metrolink/stops?q=picc');
     await expect(page.getByRole('textbox', { name: 'Find a stop' })).toHaveValue('picc');
+    await expectNoViolations(page);
+  });
+
+  // The network page's "Find a stop" type-ahead, open on its matches and
+  // with one highlighted, and with none.
+  test('/transit/metrolink, stop finder open', async ({ page }) => {
+    await page.goto('/transit/metrolink');
+    const finder = page.getByRole('combobox', { name: 'Find a stop' });
+    await finder.fill('a');
+    await expect(page.getByRole('listbox')).toBeVisible();
+    await finder.press('ArrowDown');
+    await expect(finder).toHaveAttribute('aria-expanded', 'true');
+    await expectNoViolations(page);
+    await finder.fill('zzzz');
+    await expect(page.getByRole('option', { name: /No stops match/ })).toBeVisible();
     await expectNoViolations(page);
   });
 
