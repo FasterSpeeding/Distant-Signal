@@ -7,12 +7,21 @@ import { LineStatusCard } from '@/components/LineStatusCard';
 import { SectionTitle } from '@/components/SectionTitle';
 import { TextLink } from '@/components/TextLink';
 import { TflArrivalsBoard } from '@/components/TflArrivalsBoard';
-import { ApiNotFoundError, getLineStatus, getTflStop, getTflStopArrivals } from '@/lib/api';
+import { TflStopTimetable } from '@/components/TflStopTimetable';
+import {
+  ApiNotFoundError,
+  getLineStatus,
+  getTflStop,
+  getTflStopArrivals,
+  getTransitDepartures,
+  getTransitNetworks,
+  getTransitStop,
+} from '@/lib/api';
 import { createLogger } from '@/lib/logger';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { stationLabel } from '@/lib/stationLabel';
 import { journeyFromTflStopHref, TFL_LINE_ID, TFL_STOP_ID, tflLineHref, tflModeBadge } from '@/lib/tflStops';
-import type { LineStatusReport, TflStopArrivals, TflStopDetail } from '@/lib/types';
+import type { LineStatusReport, TflStopArrivals, TflStopDetail, TransitBoard, TransitStopDetail } from '@/lib/types';
 
 const log = createLogger('app/tfl/stops/[id]');
 
@@ -21,6 +30,50 @@ const MAX_RAIL_STATIONS = 3;
 
 interface Params {
   params: Promise<{ id: string }>;
+}
+
+interface Search {
+  /** The timetable's day and page (`?date=`, `?cursor=`). */
+  searchParams?: Promise<{ date?: string | string[]; cursor?: string | string[] }>;
+}
+
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function single(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/** The day after `date` (`YYYY-MM-DD`). */
+function nextDay(date: string): string {
+  const day = new Date(`${date}T12:00:00Z`);
+  day.setUTCDate(day.getUTCDate() + 1);
+  return day.toISOString().slice(0, 10);
+}
+
+/** The TfL network's timetable at the stop (the TfL transit design §8.4):
+ * its station and the scheduled board for `date` (default today) from
+ * `cursor`, while the api serves the network and the stop is in its
+ * timetable; null otherwise, or on any failure (live arrivals stay the
+ * page's point). */
+async function loadTimetable(
+  id: string,
+  date: string | undefined,
+  cursor: string | undefined,
+): Promise<{ station: TransitStopDetail; board: TransitBoard } | null> {
+  try {
+    const networks = await getTransitNetworks();
+    if (!networks.some((network) => network.id === 'tfl')) return null;
+    const [station, board] = await Promise.all([
+      getTransitStop('tfl', id, date),
+      getTransitDepartures('tfl', id, { date, cursor, limit: '10' }),
+    ]);
+    return { station, board };
+  } catch (err) {
+    if (!(err instanceof ApiNotFoundError)) {
+      log.warn('TfL timetable unavailable', { stopId: id, error: String(err) });
+    }
+    return null;
+  }
 }
 
 async function loadStop(id: string): Promise<TflStopDetail> {
@@ -79,13 +132,27 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 
 /** `/tfl/stops/[id]` (DS-136): a TfL Tube, DLR or tram stop. Its live
  * arrivals by line and platform (from TfL, through the api's short cache),
- * its lines' status, the National Rail station there if there is one, and
- * a way to start a journey leg from it. Server-rendered; the root layout's
+ * its timetable while the TfL network is served (first and last trains,
+ * scheduled departures; `?date=` and `?cursor=` page it), its lines'
+ * status, the National Rail station there if there is one, and a way to
+ * start a journey leg from it. Server-rendered; the root layout's
  * `AutoRefresh` refreshes it every 30 s. */
-export default async function TflStopPage({ params }: Params) {
+export default async function TflStopPage({ params, searchParams }: Params & Search) {
   const { id } = await params;
+  const search = (await searchParams) ?? {};
+  const dateParam = single(search.date);
+  const cursorParam = single(search.cursor);
   const stop = await loadStop(id);
-  const [arrivals, lineStatus] = await Promise.all([loadArrivals(stop.id), loadLineStatus(stop)]);
+  const [arrivals, lineStatus, timetable] = await Promise.all([
+    loadArrivals(stop.id),
+    loadLineStatus(stop),
+    loadTimetable(
+      stop.id,
+      dateParam && DATE.test(dateParam) ? dateParam : undefined,
+      cursorParam && cursorParam.length <= 256 ? cursorParam : undefined,
+    ),
+  ]);
+  const base = `/tfl/stops/${encodeURIComponent(stop.id)}`;
   const reported = new Set(lineStatus.map((report) => report.id));
   const unreported = stop.lines.filter((line) => TFL_LINE_ID.test(line.id) && !reported.has(`tfl-${line.id}`));
   // The stations at the stop, best first (King's Cross St. Pancras has two).
@@ -135,6 +202,20 @@ export default async function TflStopPage({ params }: Params) {
           </Alert>
         )}
       </Stack>
+
+      {timetable && (
+        <TflStopTimetable
+          firstLast={timetable.station.firstLast ?? []}
+          dated={dateParam !== undefined && DATE.test(dateParam)}
+          board={timetable.board}
+          laterHref={
+            timetable.board.nextCursor
+              ? `${base}?${new URLSearchParams({ date: timetable.board.date, cursor: timetable.board.nextCursor }).toString()}#timetable`
+              : null
+          }
+          nextDayHref={`${base}?date=${nextDay(timetable.board.date)}#timetable`}
+        />
+      )}
 
       {stop.lines.length > 0 && (
         <Stack gap="sm" component="section" aria-labelledby="line-status">

@@ -4976,7 +4976,7 @@ mod db_tests {
             ),
             (
                 untracked_leg("hovercraft", 30, 40),
-                "transitMode must be one of: tube, dlr, bus, tram, metro, rail, walk, ferry, taxi, cycle, other.",
+                "transitMode must be one of: tube, dlr, bus, tram, metro, rail, walk, transfer, ferry, taxi, cycle, other.",
             ),
             (
                 serde_json::json!({ "mode": "untracked", "transitMode": "bus" }),

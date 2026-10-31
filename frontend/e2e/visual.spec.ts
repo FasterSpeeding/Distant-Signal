@@ -101,14 +101,21 @@ const PAGES: [name: string, path: string][] = [
   // frontend-e2e job). Dated, so the board and timetable don't follow the
   // server's clock.
   ['transit-network', '/transit/metrolink'],
-  ['transit-line', '/transit/metrolink/lines/blue'],
+  ['transit-line', '/transit/metrolink/lines/blue?date=2026-09-17'],
   ['transit-stop', '/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17'],
   ['transit-timetable', '/transit/metrolink/lines/blue/timetable?date=2026-09-17&direction=outbound&from=07:00'],
+  // The TfL network (the TfL transit design): its lines by mode and the
+  // National Rail lines it links, and a Tube line's frequency summary.
+  // The line pages are dated, so their frequency doesn't follow the
+  // server's clock (a run crossing midnight saw no trains "today").
+  ['transit-tfl', '/transit/tfl'],
+  ['transit-tfl-line', '/transit/tfl/lines/victoria?date=2026-09-17'],
   // A TfL stop's live arrivals (DS-136): the seed's King's Cross St. Pancras,
   // whose board scripts/tfl-arrivals-stub.py answers relative to the
   // server's clock, so each train's expected time is masked; its "2 min"
   // stays put.
-  ['tfl-stop', '/tfl/stops/940GZZLUKSX'],
+  // Dated, so its timetable's board doesn't follow the server's clock.
+  ['tfl-stop', '/tfl/stops/940GZZLUKSX?date=2026-09-17'],
 ];
 
 /** The pages shot with the seed's session cookie (E2E_SESSION_COOKIE). */

@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
-// The tram pages against the live api and the seed's metrolink network
-// (frontend/e2e/fixtures/seed.sql; API_TRANSIT_NETWORKS=metrolink in the
+// The transit pages against the live api and the seed's metrolink and tfl
+// networks (frontend/e2e/fixtures/seed.sql; API_TRANSIT_NETWORKS in the
 // frontend-e2e job). A smoke test: each page renders its data, and the
 // board says it is scheduled, not live.
 
@@ -92,6 +92,41 @@ test.describe('transit pages', () => {
     await page.getByRole('rowheader', { name: 'Eccles' }).getByRole('link', { name: 'Eccles' }).click();
     await expect(page).toHaveURL(/\/transit\/metrolink\/stops\/9400ZZMAECC$/);
     await expect(page.getByRole('heading', { level: 1, name: 'Eccles' })).toBeVisible();
+  });
+
+  test('the TfL network groups its lines by mode and links the Overground and Elizabeth line', async ({ page }) => {
+    await page.goto('/transit');
+    await expect(page.getByRole('heading', { level: 1, name: 'Trams and metros' })).toBeVisible();
+    await page.getByRole('link', { name: 'London (TfL)' }).click();
+    await expect(page).toHaveURL(/\/transit\/tfl$/);
+    await expect(page.getByRole('heading', { level: 2, name: 'Underground' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 2, name: 'DLR' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Elizabeth line' })).toHaveAttribute('href', '/lines/elizabeth-line');
+    // TfL's own status, so no disruptions list.
+    await expect(page.getByRole('heading', { name: 'Disruptions' })).toHaveCount(0);
+  });
+
+  test('a TfL line says how often it runs and links its status page', async ({ page }) => {
+    // Dated: the seed's trains run on 2026-09-17 and the day it ran, so
+    // "today" alone would fail a run that crosses midnight.
+    await page.goto('/transit/tfl/lines/victoria?date=2026-09-17');
+    await expect(page.getByRole('heading', { level: 1, name: 'Victoria' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^How often it runs on / })).toBeVisible();
+    await expect(page.getByText('From Brixton: first 07:00, last 07:10')).toBeVisible();
+    await expect(page.getByText('Every 3 to 4 minutes')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Status details' })).toHaveAttribute('href', '/lines/tfl-victoria');
+  });
+
+  test("a TfL network stop is TfL's own stop page", async ({ page }) => {
+    await page.goto('/transit/tfl/stops/9400ZZLUKSX');
+    await expect(page).toHaveURL(/\/tfl\/stops\/940GZZLUKSX$/);
+    await expect(page.getByRole('heading', { level: 1, name: "King's Cross St. Pancras" })).toBeVisible();
+    // And the line page links it there directly.
+    await page.goto('/transit/tfl/lines/victoria');
+    await expect(page.getByRole('link', { name: "King's Cross St. Pancras" })).toHaveAttribute(
+      'href',
+      '/tfl/stops/940GZZLUKSX',
+    );
   });
 
   test('an unknown network is not found', async ({ page }) => {

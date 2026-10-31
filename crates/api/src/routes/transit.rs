@@ -176,6 +176,17 @@ async fn rail_links(State(app): State<App>, Query(query): Query<RailLinksQuery>)
     reply(LONG_CACHE, json!({ "links": to_json(&links)? }))
 }
 
+/// Where `network`'s line status comes from: `tfl` (`TfL`'s own line
+/// status, the `TfL` design §7: no situations, so pages link to the line's
+/// `/lines/tfl-<line>` page for the detail) or `situations` (SIRI-SX).
+fn status_source(network: &str) -> &'static str {
+    if common::transit::status_from_tfl(network) {
+        "tfl"
+    } else {
+        "situations"
+    }
+}
+
 /// The situations' state for `network` now (spec §10.2's staleness rule).
 async fn status_state(
     app: &App,
@@ -207,6 +218,17 @@ async fn get_network(State(app): State<App>, Path(network): Path<String>) -> Rep
         .await
         .map_err(internal_error)?;
     let mut body = to_json(&summary)?;
+    // The TfL network (the TfL design §8.2): TfL's lines that are National
+    // Rail catalogue lines here (the Overground and the Elizabeth line),
+    // which its page links to rather than timetabling again.
+    if common::transit::status_from_tfl(&network) {
+        let catalogue: Vec<Value> = common::TFL_TO_NR_LINE_ID
+            .iter()
+            .filter_map(|(_, nr)| app.config.lines.iter().find(|line| line.id == *nr))
+            .map(|line| json!({ "id": line.id, "name": line.name }))
+            .collect();
+        body["nationalRailLines"] = Value::Array(catalogue);
+    }
     let mut lines_json = Vec::with_capacity(lines.len());
     for line in &lines {
         let mut entry = to_json(line)?;
@@ -219,13 +241,24 @@ async fn get_network(State(app): State<App>, Path(network): Path<String>) -> Rep
     }
     body["lines"] = Value::Array(lines_json);
     body["status"] = json!({ "state": state, "asOf": as_of });
+    body["statusSource"] = json!(status_source(&network));
     reply(SHORT_CACHE, body)
 }
 
-/// The line, its `status` and the current and upcoming `situations` that
+#[derive(Debug, Deserialize)]
+struct LineQuery {
+    /// The frequency summary's date (default: today in London).
+    date: Option<NaiveDate>,
+}
+
+/// The line, its `status`, the current and upcoming `situations` that
 /// concern it (those changing its status, and stop notices for its
-/// stations).
-async fn get_line(State(app): State<App>, Path((network, line)): Path<(String, String)>) -> Reply {
+/// stations), and its `frequency` on `?date=` (the `TfL` design §8.3).
+async fn get_line(
+    State(app): State<App>,
+    Path((network, line)): Path<(String, String)>,
+    Query(query): Query<LineQuery>,
+) -> Reply {
     check_network(&app, &network)?;
     if !is_id(&line) {
         return Err(not_found("line"));
@@ -251,9 +284,17 @@ async fn get_line(State(app): State<App>, Path((network, line)): Path<(String, S
     let view = disruptions::situations_view(&network, &situations, state, as_of, Utc::now(), |s| {
         disruptions::concerns(s, &line, &stations)
     });
+    let date = query
+        .date
+        .unwrap_or_else(|| super::london_now().date_naive());
+    let frequency = read::line_frequency(&app.database, &network, &line, date)
+        .await
+        .map_err(internal_error)?;
     let mut body = to_json(&detail)?;
     body["status"] = to_json(&disruptions::line_view(state, as_of, stored.get(&line)))?;
     body["situations"] = to_json(&view)?;
+    body["frequency"] = to_json(&frequency)?;
+    body["statusSource"] = json!(status_source(&network));
     reply(SHORT_CACHE, body)
 }
 
@@ -283,6 +324,8 @@ struct TimetableQuery {
     /// `HH:MM`.
     from: Option<String>,
     to: Option<String>,
+    /// A branch of the line (`branches[].id`, the `TfL` design §8.3).
+    branch: Option<String>,
 }
 
 /// `HH:MM` (to 47:59, a timetable's day) as seconds after midnight.
@@ -331,10 +374,13 @@ async fn get_line_timetable(
         &app.database,
         &network,
         &line,
-        date,
-        &direction,
-        from_s,
-        to_s,
+        read::TimetableWindow {
+            date,
+            direction: &direction,
+            from_s,
+            to_s,
+            branch: query.branch.as_deref(),
+        },
     )
     .await
     .map_err(internal_error)?
@@ -355,11 +401,36 @@ async fn list_stops(State(app): State<App>, Path(network): Path<String>) -> Repl
     reply(LONG_CACHE, json!({ "stops": to_json(&stops)? }))
 }
 
-async fn get_stop(State(app): State<App>, Path((network, stop)): Path<(String, String)>) -> Reply {
+/// A stop id as the network's tables spell it. The `tfl` network's
+/// stations are `TfL`'s stops, whose pages and ids are the stop areas
+/// (`940GZZLUKSX`); the tables hold the access nodes (`9400ZZLUKSX`). Both
+/// spellings are taken (the `TfL` design §8.4).
+fn table_stop_id(network: &str, stop: &str) -> String {
+    match stop.strip_prefix("940G") {
+        Some(rest) if common::transit::status_from_tfl(network) => format!("9400{rest}"),
+        _ => stop.to_owned(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct StopQuery {
+    /// The `firstLast` date (default: today in London).
+    date: Option<NaiveDate>,
+}
+
+/// A station, its platforms, lines and rail links, its `notices`, and
+/// `firstLast`: its first and last departures on `?date=` per line and
+/// direction.
+async fn get_stop(
+    State(app): State<App>,
+    Path((network, stop)): Path<(String, String)>,
+    Query(query): Query<StopQuery>,
+) -> Reply {
     check_network(&app, &network)?;
     if !is_stop_id(&stop) {
         return Err(not_found("stop"));
     }
+    let stop = table_stop_id(&network, &stop);
     let Some(detail) = read::get_stop(&app.database, &network, &stop)
         .await
         .map_err(internal_error)?
@@ -375,8 +446,16 @@ async fn get_stop(State(app): State<App>, Path((network, stop)): Path<(String, S
     let view = disruptions::situations_view(&network, &situations, state, as_of, Utc::now(), |s| {
         s.stop_ids.iter().any(|id| id == &stop)
     });
+    let date = query
+        .date
+        .unwrap_or_else(|| super::london_now().date_naive());
+    let first_last = read::stop_first_last(&app.database, &network, &stop, date)
+        .await
+        .map_err(internal_error)?
+        .unwrap_or_default();
     let mut body = to_json(&detail)?;
     body["notices"] = to_json(&view.current)?;
+    body["firstLast"] = to_json(&first_last)?;
     reply(SHORT_CACHE, body)
 }
 
@@ -398,6 +477,7 @@ async fn get_departures(
     if !is_stop_id(&stop) {
         return Err(not_found("stop"));
     }
+    let stop = table_stop_id(&network, &stop);
     let now = super::london_now();
     let today = now.date_naive();
     let date = query.date.unwrap_or(today);
@@ -531,6 +611,35 @@ mod db_tests {
         let (status, _, body) = get(&lit, &format!("/transit/{NETWORK}/lines/blue")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["directions"][0]["stations"][0]["id"], A);
+        assert_eq!(body["mode"], "tram");
+        assert_eq!(body["statusLineId"], format!("{NETWORK}:blue"));
+        assert_eq!(body["statusSource"], "situations");
+
+        // The frequency summary (the TfL design §8.3): outbound from A at
+        // 06:00, 07:00, 23:50 and 00:10; inbound from B at 07:30.
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}/lines/blue?date={today}")).await;
+        let frequency = &body["frequency"];
+        assert_eq!(frequency["outsideHorizon"], false);
+        let outbound = &frequency["directions"][0];
+        assert_eq!(outbound["direction"], "outbound");
+        assert_eq!(outbound["station"]["id"], A);
+        assert_eq!(
+            (outbound["first"].as_str(), outbound["last"].as_str()),
+            (Some("06:00"), Some("00:10"))
+        );
+        let late = outbound["bands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["band"] == "late")
+            .unwrap();
+        assert_eq!(late["departures"], 2);
+        assert_eq!(late["minGapMinutes"], 20);
+        assert_eq!(frequency["directions"][1]["station"]["id"], B);
+        assert_eq!(frequency["directions"][1]["first"], "07:30");
+        let far = today.checked_add_days(chrono::Days::new(30)).unwrap();
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}/lines/blue?date={far}")).await;
+        assert_eq!(body["frequency"]["outsideHorizon"], true);
         // The path takes the local id, not the public one.
         let (status, _, _) = get(&lit, &format!("/transit/{NETWORK}/lines/{NETWORK}:blue")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -577,6 +686,100 @@ mod db_tests {
         let (status, _, _) = get(&lit, &format!("/transit/{NETWORK}/stops/nope")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         cleanup(&pool, NETWORK).await;
+    }
+
+    /// The `TfL` design §7, §8.2: the `tfl` network's lines take `TfL`'s own
+    /// status (`tfl-<line>` rows, `ingest_freshness('tfl')`), pin by that
+    /// id, have no situations, and the network lists `TfL`'s National Rail
+    /// catalogue lines.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL (a migrated database)"]
+    async fn tfl_lines_take_tfls_own_status() {
+        let pool = ds_store::test_support::connect().await;
+        let today = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        seed(&pool, "tfl", today).await;
+        let owner = ds_store::test_support::schedule_fixture_pool(&pool).await;
+        sqlx::query(
+            "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, source) \
+             VALUES ('tfl-blue', 'Blue', 'tube', '{TfL}', \
+               '[{\"severity\": 9, \"reason\": \"Signal failure\", \"validity\": \
+                 {\"from_date\": \"2026-10-14T00:00:00Z\", \"to_date\": null, \"is_now\": true}}]', 'tfl') \
+             ON CONFLICT (line_id) DO UPDATE SET statuses = EXCLUDED.statuses, source = 'tfl'",
+        )
+        .execute(&owner)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ingest_freshness (source, fetched_at) VALUES ('tfl', now()) \
+             ON CONFLICT (source) DO UPDATE SET fetched_at = now()",
+        )
+        .execute(&owner)
+        .await
+        .unwrap();
+        let mut lit = app(pool.clone(), &["tfl"]);
+        std::sync::Arc::get_mut(&mut lit).unwrap().config.lines =
+            common::config::parse_lines(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lines"))
+                .unwrap();
+
+        let (status, _, body) = get(&lit, "/transit/tfl").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["statusSource"], "tfl");
+        assert_eq!(body["status"]["state"], "current");
+        let line = &body["lines"][0];
+        assert_eq!(line["statusLineId"], "tfl-blue");
+        assert_eq!(line["status"]["state"], "current");
+        assert_eq!(line["status"]["statuses"][0]["description"], "Minor Delays");
+        let national_rail: Vec<&str> = body["nationalRailLines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            national_rail.contains(&"elizabeth-line"),
+            "{national_rail:?}"
+        );
+        assert!(
+            national_rail.contains(&"overground-mildmay"),
+            "{national_rail:?}"
+        );
+
+        // TfL's stop-area spelling reaches the station (the TfL design §8.4),
+        // with its first and last departures of the day.
+        let (status, _, body) = get(
+            &lit,
+            &format!("/transit/tfl/stops/940GZZTTAAA?date={today}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["id"], A);
+        let first_last = &body["firstLast"][0];
+        assert_eq!(first_last["line"]["id"], "tfl:blue");
+        assert_eq!(first_last["direction"], "outbound");
+        assert_eq!(first_last["towards"], "Bbb");
+        assert_eq!(
+            (first_last["first"].as_str(), first_last["last"].as_str()),
+            (Some("06:00"), Some("00:10"))
+        );
+        let (status, _, body) = get(
+            &lit,
+            &format!("/transit/tfl/stops/940GZZTTAAA/departures?date={today}&after=06:00"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["departures"][0]["tripId"], "T0600");
+        // Another network keeps its own spelling only.
+        let (_, _, body) = get(&lit, "/transit/tfl/lines/blue").await;
+        assert_eq!(body["statusSource"], "tfl");
+        assert_eq!(body["branches"][0]["id"], "outbound-1");
+        assert_eq!(body["status"]["statuses"][0]["reason"], "Signal failure");
+        assert!(body["situations"]["current"].as_array().unwrap().is_empty());
+
+        sqlx::query("DELETE FROM line_status WHERE line_id = 'tfl-blue'")
+            .execute(&owner)
+            .await
+            .unwrap();
+        cleanup(&pool, "tfl").await;
     }
 
     /// Plan 5.1: a National Rail station's linked tram stops, only from

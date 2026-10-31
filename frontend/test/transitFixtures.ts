@@ -197,3 +197,133 @@ export const STATUS_UNAVAILABLE: TransitLineStatus = {
   statuses: [],
   upcoming: [],
 };
+
+/** The TfL network (the TfL transit design): lines of several modes, TfL's
+ * own status, the National Rail lines it links. Invented ids. */
+export const TFL_NETWORK: TransitNetworkDetail = {
+  id: 'tfl',
+  name: 'London (TfL)',
+  mode: 'metro',
+  attribution: { licence: 'TfL-Open-Data', text: 'Powered by TfL Open Data.' },
+  feedVersion: '20261025_200505-0123456789ab',
+  horizonFrom: '2026-10-29',
+  horizonTo: '2026-12-29',
+  timetableAsOf: '2026-10-30T04:00:00Z',
+  situationsAsOf: null,
+  statusSource: 'tfl',
+  status: { state: 'current', asOf: '2026-10-30T09:00:00Z' },
+  lines: [
+    {
+      id: 'tfl:victoria',
+      lineId: 'victoria',
+      name: 'Victoria',
+      colour: '#1f97d4',
+      mode: 'tube',
+      statusLineId: 'tfl-victoria',
+      status: MINOR_DELAYS,
+    },
+    { id: 'tfl:dlr', lineId: 'dlr', name: 'DLR', colour: '#14a39a', mode: 'dlr', statusLineId: 'tfl-dlr' },
+    {
+      id: 'tfl:central',
+      lineId: 'central',
+      name: 'Central',
+      colour: '#d6362b',
+      mode: 'tube',
+      statusLineId: 'tfl-central',
+    },
+  ],
+  nationalRailLines: [
+    { id: 'elizabeth-line', name: 'Elizabeth line' },
+    { id: 'overground-mildmay', name: 'Mildmay line' },
+  ],
+};
+
+export const TFL_LINE: TransitLineDetail = {
+  ...TFL_NETWORK.lines[0]!,
+  branches: [
+    {
+      id: 'outbound-1',
+      direction: 'outbound',
+      name: 'Brixton to Walthamstow Central',
+      stations: [
+        { id: '9400ZZLUBXN', name: 'Brixton' },
+        { id: '9400ZZLUWWL', name: 'Walthamstow Central' },
+      ],
+      sharePercent: 100,
+    },
+  ],
+  statusSource: 'tfl',
+  status: MINOR_DELAYS,
+  situations: { state: 'current', asOf: '2026-10-30T09:00:00Z', current: [], upcoming: [] },
+  directions: [
+    {
+      direction: 'outbound',
+      headsign: null,
+      stations: [
+        { id: '9400ZZLUBXN', name: 'Brixton' },
+        { id: '9400ZZLUWWL', name: 'Walthamstow Central' },
+      ],
+    },
+  ],
+  frequency: {
+    date: '2026-10-30',
+    outsideHorizon: false,
+    directions: [
+      {
+        direction: 'outbound',
+        station: { id: '9400ZZLUBXN', name: 'Brixton' },
+        first: '05:27',
+        last: '00:28',
+        bands: [
+          { band: 'early', from: '00:00', to: '07:00', departures: 28, minGapMinutes: 2, maxGapMinutes: 10 },
+          { band: 'morning-peak', from: '07:00', to: '10:00', departures: 106, minGapMinutes: 1, maxGapMinutes: 3 },
+        ],
+      },
+    ],
+  },
+};
+
+/** A line with two branches one way (the TfL transit design §8.3).
+ * Invented ids. */
+export const TFL_BRANCHED_LINE: TransitLineDetail = {
+  id: 'tfl:northern',
+  lineId: 'northern',
+  name: 'Northern',
+  colour: '#222222',
+  mode: 'tube',
+  statusLineId: 'tfl-northern',
+  statusSource: 'tfl',
+  directions: [
+    {
+      direction: 'outbound',
+      headsign: null,
+      stations: [
+        { id: '9400ZZLUMDN', name: 'Morden' },
+        { id: '9400ZZLUEGW', name: 'Edgware' },
+        { id: '9400ZZLUHBT', name: 'High Barnet' },
+      ],
+    },
+  ],
+  branches: [
+    {
+      id: 'outbound-1',
+      direction: 'outbound',
+      name: 'Morden to Edgware',
+      stations: [
+        { id: '9400ZZLUMDN', name: 'Morden' },
+        { id: '9400ZZLUEGW', name: 'Edgware' },
+      ],
+      sharePercent: 60,
+    },
+    {
+      id: 'outbound-2',
+      direction: 'outbound',
+      name: 'Morden to High Barnet',
+      stations: [
+        { id: '9400ZZLUMDN', name: 'Morden' },
+        { id: '9400ZZLUHBT', name: 'High Barnet' },
+      ],
+      sharePercent: 40,
+    },
+  ],
+};

@@ -24,6 +24,7 @@ export const TRANSIT_MODES: readonly { value: TransitMode; label: string }[] = [
   { value: 'metro', label: 'Metro' },
   { value: 'rail', label: 'Train (not tracked)' },
   { value: 'walk', label: 'Walk' },
+  { value: 'transfer', label: 'Transfer' },
   { value: 'ferry', label: 'Ferry' },
   { value: 'taxi', label: 'Taxi' },
   { value: 'cycle', label: 'Cycle' },

@@ -248,6 +248,7 @@ const TRANSIT_MODES: ReadonlySet<string> = new Set<TransitMode>([
   'metro',
   'rail',
   'walk',
+  'transfer',
   'ferry',
   'taxi',
   'cycle',

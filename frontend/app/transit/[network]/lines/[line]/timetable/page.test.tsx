@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { LINE, NETWORK, TIMETABLE } from '@/test/transitFixtures';
+import { LINE, NETWORK, TFL_BRANCHED_LINE, TFL_NETWORK, TIMETABLE } from '@/test/transitFixtures';
 import * as api from '@/lib/api';
 import TransitTimetablePage from './page';
 
@@ -29,6 +29,34 @@ describe('/transit/[network]/lines/[line]/timetable', () => {
     vi.mocked(api.getTransitNetwork).mockResolvedValue(NETWORK);
     vi.mocked(api.getTransitLine).mockResolvedValue(LINE);
     vi.mocked(api.getTransitLineTimetable).mockResolvedValue(TIMETABLE);
+  });
+
+  it("shows an Underground line's hour, by branch", async () => {
+    vi.mocked(api.getTransitNetwork).mockResolvedValue(TFL_NETWORK);
+    vi.mocked(api.getTransitLine).mockResolvedValue(TFL_BRANCHED_LINE);
+    vi.mocked(api.getTransitLineTimetable).mockResolvedValue({ ...TIMETABLE, branch: 'outbound-2' });
+    const element = await TransitTimetablePage({
+      params: Promise.resolve({ network: 'tfl', line: 'northern' }),
+      searchParams: Promise.resolve({ date: '2026-10-30', from: '08:00', branch: 'outbound-2' }),
+    });
+    renderWithMantine(element);
+    expect(api.getTransitLineTimetable).toHaveBeenLastCalledWith('tfl', 'northern', {
+      date: '2026-10-30',
+      direction: 'outbound',
+      from: '08:00',
+      to: '09:00',
+      branch: 'outbound-2',
+    });
+    expect(screen.getByText(/^Morden to High Barnet, /)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Every branch' }).getAttribute('href')).toBe(
+      '/transit/tfl/lines/northern/timetable?date=2026-10-30&direction=outbound&from=08%3A00',
+    );
+    expect(screen.getByRole('link', { name: 'Morden to Edgware' }).getAttribute('href')).toBe(
+      '/transit/tfl/lines/northern/timetable?date=2026-10-30&direction=outbound&from=08%3A00&branch=outbound-1',
+    );
+    expect(screen.getByRole('link', { name: 'Later' }).getAttribute('href')).toContain(
+      'from=09%3A00&branch=outbound-2',
+    );
   });
 
   it('shows a stops-by-trams grid for the window, labelled as not live', async () => {
@@ -61,7 +89,7 @@ describe('/transit/[network]/lines/[line]/timetable', () => {
   it('says when there are no trams or no published timetable', async () => {
     vi.mocked(api.getTransitLineTimetable).mockResolvedValue({ ...TIMETABLE, trips: [] });
     await render({ date: '2026-10-14', from: '02:00' });
-    expect(screen.getByText('No scheduled trams in this window.')).toBeTruthy();
+    expect(screen.getByText('No scheduled departures in this window.')).toBeTruthy();
     cleanup();
     vi.mocked(api.getTransitLineTimetable).mockResolvedValue({ ...TIMETABLE, trips: [], outsideHorizon: true });
     await render({ date: '2027-06-01' });

@@ -1,5 +1,5 @@
 import { Group, Stack, Text, Title } from '@mantine/core';
-import { notFound } from 'next/navigation';
+import { notFound, permanentRedirect } from 'next/navigation';
 import type { Metadata } from 'next';
 import { SectionTitle } from '@/components/SectionTitle';
 import { TextLink } from '@/components/TextLink';
@@ -11,6 +11,7 @@ import { getTransitDepartures, getTransitNetwork, getTransitNetworks, getTransit
 import { formatDate } from '@/lib/dateFormat';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { localLineId, orNotFound, TRANSIT_ID, TRANSIT_STOP_ID } from '@/lib/transit';
+import { tflStopIdOf } from '@/lib/transitStops';
 
 interface Params {
   params: Promise<{ network: string; stop: string }>;
@@ -42,7 +43,7 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { network, stop } = await params;
   const [detail, stopDetail] = await load(network, stop);
   const title = `${stopDetail.name}, ${detail.name}`;
-  return pageMetadata(title, `Scheduled tram departures from ${stopDetail.name}.`, {
+  return pageMetadata(title, `Scheduled departures from ${stopDetail.name}.`, {
     path: `/transit/${encodeURIComponent(network)}/stops/${encodeURIComponent(stop)}`,
     imageAlt: previewImageAlt(title),
   });
@@ -56,6 +57,16 @@ export default async function TransitStopPage({ params, searchParams }: Params &
   const search = (await searchParams) ?? {};
   const date = single(search.date);
   const cursor = single(search.cursor);
+  // The TfL network's stations are TfL's stops: one page each, TfL's,
+  // which carries the timetable too (the TfL transit design §8.4).
+  const tflStop = TRANSIT_STOP_ID.test(stop) ? tflStopIdOf(network, stop) : null;
+  if (tflStop) {
+    const query = new URLSearchParams();
+    if (date) query.set('date', date);
+    if (cursor) query.set('cursor', cursor);
+    const suffix = query.size > 0 ? `?${query.toString()}#timetable` : '';
+    permanentRedirect(`/tfl/stops/${encodeURIComponent(tflStop)}${suffix}`);
+  }
   const [[detail, stopDetail], networks] = await Promise.all([load(network, stop), getTransitNetworks()]);
   // Only a network the trip planner routes over can be planned from
   // (`tripPlanning`, on the networks list; transit trip planning §5.2).

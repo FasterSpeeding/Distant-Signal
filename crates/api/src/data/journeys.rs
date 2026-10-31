@@ -1281,8 +1281,9 @@ pub const LEG_KIND_UNTRACKED: &str = "untracked";
 /// Every `transit_mode` an untracked leg may have, in the order the form
 /// offers them. Checked here, not by the database (whose CHECK only bounds
 /// the shape), so adding a mode needs no migration.
-pub const TRANSIT_MODES: [&str; 11] = [
-    "tube", "dlr", "bus", "tram", "metro", "rail", "walk", "ferry", "taxi", "cycle", "other",
+pub const TRANSIT_MODES: [&str; 12] = [
+    "tube", "dlr", "bus", "tram", "metro", "rail", "walk", "transfer", "ferry", "taxi", "cycle",
+    "other",
 ];
 /// The longest place name an untracked leg keeps (the migration's CHECK).
 pub const UNTRACKED_PLACE_MAX_CHARS: usize = 100;
@@ -1620,6 +1621,21 @@ mod untracked_tests {
             leg.service_date(),
             NaiveDate::from_ymd_opt(2026, 10, 21).unwrap()
         );
+    }
+
+    #[test]
+    fn a_planner_transfer_between_stations_is_a_transfer_leg() {
+        // The planner saves a timetable TRANSFER link between two stations
+        // (Euston to Victoria, 19 minutes) as a `transfer` leg.
+        let leg = validate_untracked_leg(
+            UntrackedLegInput {
+                transit_mode: "TRANSFER",
+                ..input("2026-10-21T08:50:00Z", "2026-10-21T09:09:00Z")
+            },
+            today(),
+        )
+        .unwrap();
+        assert_eq!(leg.transit_mode, "transfer");
     }
 
     #[test]

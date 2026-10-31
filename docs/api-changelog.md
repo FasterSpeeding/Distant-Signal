@@ -3,6 +3,21 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-31: `transfer`, a twelfth untracked-leg `transitMode`
+
+Additive: an untracked leg's `transitMode` may now be `transfer`
+(everywhere one is accepted or served: `POST /Journeys/itinerary`, the
+leg add and edit routes, the replan suggestions; DS-216). It is a
+timetable `TRANSFER` link between two different stations, such as Euston
+to Victoria in 19 minutes: often a Tube hop, but the link does not say
+which way it goes. The planner's save and the mid-journey alternatives
+used to drop every `TRANSFER` transfer leg as a change within one
+station, so a saved journey lost the hop. They now send a `TRANSFER`
+between different station codes as a `transfer` leg on its planned times;
+one with the same code at both ends is still left out. A client that
+does not know the mode should show it as it shows `other`. The `400`
+message for an unknown mode lists the new one.
+
 ## 2026-10-31: Between stations filters on a journey's window legs
 
 Additive: a window leg can carry the `/trains` Between stations filters,
@@ -82,6 +97,68 @@ answered exactly as before. They are not on `/Trips/plan`.
   train's origin, an `origin` in `avoid` or `avoid_stop`. The `/trains`
   page now offers it as "Starts at" in Advanced options, beside
   "Terminates at".
+
+## 2026-10-31: line branches, a stop's first and last departures, TfL stop ids
+
+Additive (DS-212, the TfL transit design's P2;
+`crates/api/src/routes/transit.rs`, `ds_store::transit::read`).
+
+- **`/public/transit/{network}/lines/{line}`** gains `branches`:
+  `[{id, direction, name, stations: [{id, name}], sharePercent}]`, the runs
+  of stations the line's trips make each way, busiest first. A trip that
+  makes part of a longer run counts for it; a run under 5% of its
+  direction's trips is left out. `name` is `<first> to <last>`, with
+  `via <station>` when two share their ends (`Edgware to Morden via
+  Bank`). `id` (`outbound-1`) is stable for a timetable version.
+- **`.../lines/{line}/timetable?branch=<id>`** shows that branch: its
+  stations are the rows and only the trips that stay on it are listed;
+  the body says `branch` (`null` without one, or for an unknown id or
+  another direction's, which show the whole direction as before).
+- **`/public/transit/{network}/stops/{stop}?date=`** gains `firstLast`:
+  `[{line, direction, towards, first, last}]`, the station's first and
+  last departures that day per line and way (`HH:MM`; trips ending there
+  and replacement buses left out), in line order.
+- **The `tfl` network takes TfL's stop-area spelling** for a stop
+  (`/public/transit/tfl/stops/940GZZLUKSX` and its `/departures` are
+  `9400ZZLUKSX`'s), so a client holding TfL's stop id can ask for its
+  timetable directly.
+
+
+## 2026-10-31: the `tfl` transit network, line modes and frequencies
+
+Additive, and dark until `API_TRANSIT_NETWORKS` lists `tfl` (DS-212;
+docs/superpowers/specs/2026-10-30-tfl-transit-design.md;
+`crates/api/src/routes/transit.rs`).
+
+- **A new network id, `tfl`:** TfL's Underground, DLR and London Trams
+  from TfL's own timetable. Its lines are TfL's ids (`victoria`,
+  `hammersmith-city`, `dlr`, `tram`); public ids `tfl:victoria`. Station
+  ids are NaPTAN access nodes (`9400ZZLUBXN`); TfL's stop pages use the
+  stop-area spelling (`940GZZLUBXN`).
+- **Every line** (`/public/transit/{network}`'s `lines[]`, a line, and a
+  board row's `line`) gains `mode` (`tube`, `dlr`, `tram`, or the
+  network's own mode, `tram` for Metrolink and NET) and `statusLineId`:
+  the `line_status` id its `status` comes from and a pin of it should
+  store. It is the line's public id, except on `tfl`, where it is TfL's
+  own line (`tfl-victoria`): those pins are TfL line pins, as before.
+- **`/public/transit/{network}` and `/public/transit/{network}/lines/{line}`**
+  gain `statusSource`: `situations` (the network's published disruptions,
+  as before) or `tfl` (TfL's own line status, from `tfl-<line>` rows;
+  `situations` lists are then always empty, and `/Line/tfl-<line>/Status`
+  has the detail). `/public/transit/tfl` also has `nationalRailLines`
+  (`[{id, name}]`): TfL's lines that are National Rail catalogue lines
+  here (the Elizabeth line and the Overground lines).
+- **`/public/transit/{network}/lines/{line}?date=YYYY-MM-DD`** gains
+  `frequency` (default date: today in London): `{date, outsideHorizon,
+  directions: [{direction, station: {id, name}, first, last, bands:
+  [{band, from, to, departures, minGapMinutes, maxGapMinutes}]}]}`. For
+  each direction, its departures (replacement buses left out) from its
+  busiest station: the first and last (`HH:MM`), and per band of the day
+  (`early` to 07:00, `morning-peak`, `daytime` 10:00 to 16:00,
+  `evening-peak`, `evening` 19:00 to 22:00, `late` from 22:00) the count
+  and the shortest and longest gap in whole minutes (`null` with one
+  departure; gaps under a minute, two branches meeting, are left out).
+  Scheduled only, like every transit route.
 
 ## 2026-10-30: stop filters on the `/trains` boards (`calls_at`, `via`, `avoid`, `avoid_stop`)
 

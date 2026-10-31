@@ -15,7 +15,7 @@ import { TextLink } from '@/components/TextLink';
 import { SCHEDULED_CAPTION, transitStopHref } from '@/lib/transitStops';
 import type { TransitLineTimetable as Timetable } from '@/lib/types';
 
-/** A tram line's timetable for one direction and time window: stops down
+/** A line's timetable for one direction and time window: stops down
  * the side, one column per tram, its scheduled time at each stop (an en
  * dash where it doesn't call). Each stop's name links to its stop page.
  * Scrolls sideways in its own container, so the page never does. */
@@ -24,7 +24,7 @@ export function TransitLineTimetable({ network, timetable }: { network: string; 
     return <ServiceListNotice>The timetable for this date isn&apos;t published yet.</ServiceListNotice>;
   }
   if (timetable.trips.length === 0) {
-    return <ServiceListNotice>No scheduled trams in this window.</ServiceListNotice>;
+    return <ServiceListNotice>No scheduled departures in this window.</ServiceListNotice>;
   }
   return (
     <Stack gap="xs">
@@ -38,7 +38,7 @@ export function TransitLineTimetable({ network, timetable }: { network: string; 
               <TableTh scope="col">Stop</TableTh>
               {timetable.trips.map((trip, i) => (
                 <TableTh key={trip.tripId} scope="col">
-                  <VisuallyHidden>Tram </VisuallyHidden>
+                  <VisuallyHidden>Departure </VisuallyHidden>
                   {i + 1}
                 </TableTh>
               ))}

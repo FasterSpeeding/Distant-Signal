@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, vi, beforeEach } from 'vitest';
 import { act, cleanup, screen } from '@testing-library/react';
+import { TFL_NETWORK } from '@/test/transitFixtures';
 import { renderWithMantine } from '@/test/render';
 import LineDetailPage, { generateMetadata } from './page';
 import * as api from '@/lib/api';
@@ -28,6 +29,10 @@ vi.mock('@/lib/api', async () => {
     // pre-existing "Operators: SW" behaviour. The one test that DOES care
     // (`categoryLabel`/`operatorLabel` below) overrides it locally.
     getAllTocs: vi.fn().mockResolvedValue([]),
+    // The TfL network is not served unless a test says so (the TfL
+    // transit design §8: a TfL line links its timetable while it is).
+    getTransitNetworks: vi.fn().mockResolvedValue([]),
+    getTransitNetwork: vi.fn(),
     getLineHalfHourlyStats: vi.fn(),
     getLineHalfHourlyCoverageStats: vi.fn(),
     // Same rationale as `getAllTocs` above: most tests in this file don't
@@ -387,6 +392,17 @@ describe('LineDetailPage Trains on this line panel', () => {
     await renderPage('tfl-victoria');
     expect(screen.queryByRole('heading', { name: 'Trains on this line' })).not.toBeInTheDocument();
     expect(api.getLineTrainsSummary).not.toHaveBeenCalled();
+  });
+
+  it("links a TfL line's timetable while the TfL network is served and has it", async () => {
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('tfl-victoria', 'Victoria line')]);
+    await renderPage('tfl-victoria');
+    expect(screen.queryByRole('link', { name: 'Timetable' })).not.toBeInTheDocument();
+    cleanup();
+    vi.mocked(api.getTransitNetworks).mockResolvedValueOnce([TFL_NETWORK]);
+    vi.mocked(api.getTransitNetwork).mockResolvedValueOnce(TFL_NETWORK);
+    await renderPage('tfl-victoria');
+    expect(screen.getByRole('link', { name: 'Timetable' }).getAttribute('href')).toBe('/transit/tfl/lines/victoria');
   });
 
   it('does not render the panel for a custom line, and never fetches trains', async () => {

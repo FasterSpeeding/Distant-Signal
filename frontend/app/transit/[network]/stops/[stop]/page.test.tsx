@@ -20,7 +20,13 @@ vi.mock('@/lib/api', async () => {
 const notFoundMock = vi.fn(() => {
   throw new Error('NEXT_NOT_FOUND');
 });
-vi.mock('next/navigation', () => ({ notFound: () => notFoundMock() }));
+const redirectMock = vi.fn((to: string) => {
+  throw new Error(`NEXT_REDIRECT ${to}`);
+});
+vi.mock('next/navigation', () => ({
+  notFound: () => notFoundMock(),
+  permanentRedirect: (to: string) => redirectMock(to),
+}));
 
 async function render(search: Record<string, string> = {}, stop = '9400ZZMAPIC') {
   const element = await TransitStopPage({
@@ -29,6 +35,20 @@ async function render(search: Record<string, string> = {}, stop = '9400ZZMAPIC')
   });
   return renderWithMantine(element);
 }
+
+describe('/transit/tfl/stops/[stop]', () => {
+  it("redirects to TfL's stop page, keeping the day and page", async () => {
+    await expect(
+      TransitStopPage({
+        params: Promise.resolve({ network: 'tfl', stop: '9400ZZLUKSX' }),
+        searchParams: Promise.resolve({ date: '2026-10-30', cursor: 'c1' }),
+      }),
+    ).rejects.toThrow('NEXT_REDIRECT /tfl/stops/940GZZLUKSX?date=2026-10-30&cursor=c1#timetable');
+    await expect(TransitStopPage({ params: Promise.resolve({ network: 'tfl', stop: '940GZZLUKSX' }) })).rejects.toThrow(
+      /^NEXT_REDIRECT \/tfl\/stops\/940GZZLUKSX$/,
+    );
+  });
+});
 
 describe('/transit/[network]/stops/[stop]', () => {
   beforeEach(() => {
@@ -107,7 +127,7 @@ describe('/transit/[network]/stops/[stop]', () => {
   it('says when the board is empty or the date is outside the timetable', async () => {
     vi.mocked(api.getTransitDepartures).mockResolvedValue({ ...BOARD, departures: [], nextCursor: null });
     await render();
-    expect(screen.getByText('No more scheduled trams this day.')).toBeTruthy();
+    expect(screen.getByText('No more scheduled departures this day.')).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'Later departures' })).toBeNull();
     cleanup();
     vi.mocked(api.getTransitDepartures).mockResolvedValue({
