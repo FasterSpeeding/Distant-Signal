@@ -677,7 +677,7 @@ export interface TrackingPhaseFields {
 
 /** An untracked leg's mode (`data::journeys::TRANSIT_MODES`). */
 export type TransitMode =
-  'tube' | 'dlr' | 'bus' | 'tram' | 'metro' | 'rail' | 'walk' | 'ferry' | 'taxi' | 'cycle' | 'other';
+  'tube' | 'dlr' | 'bus' | 'tram' | 'metro' | 'rail' | 'walk' | 'transfer' | 'ferry' | 'taxi' | 'cycle' | 'other';
 
 /** An untracked leg's state from the clock alone, computed by the api. */
 export type UntrackedStatus = 'planned' | 'inProgress' | 'done';
@@ -1517,6 +1517,10 @@ export interface JourneyLegDetail extends UntrackedLegFields {
    * the four bounds above are no longer enough to derive this on their
    * own. */
   windowSearched: boolean;
+  /** A window leg's search filters (DS-215): the Trains section's Between
+   * stations filters its candidates apply, saved by "Add a leg" and "Edit
+   * search". `null` for none; absent from an older backend. */
+  searchFilters?: LegSearchFilters | null;
   trackedTrainState: TrackedTrainState | null;
   legSkip: LegSkipStatus | null;
   /** The change onto this leg from the one before, judged by the api on
@@ -2297,6 +2301,9 @@ export type NewJourneyLegRequest =
       serviceDate: string; // "YYYY-MM-DD"
       departWindow?: TimeWindow;
       arriveWindow?: TimeWindow;
+      /** The Between stations filters saved with the leg (DS-215).
+       * `POST /Journeys/{id}/legs` only. */
+      filters?: LegSearchFilters;
     }
   | UntrackedLegRequest;
 
@@ -3378,6 +3385,25 @@ export interface TrainArrivalsPage extends TimetableCertaintyFields {
 export interface TrainHeadcodePage extends TimetableCertaintyFields {
   results: TrainSearchResult[];
   serviceDate?: string;
+}
+
+/** A journey window leg's search filters (DS-215,
+ * `crates/api/src/data/journeys.rs`'s `LegSearchFilters`): the Between
+ * stations search's `operator`, `origin` (here `startsAt`, a leg's
+ * `origin` being where the traveller boards), `terminates_at` and stop
+ * filters, each the text `/public/trains/search` takes (a comma-separated
+ * list). The keys other than `operator` are `TrainStopFilters`' own.
+ * Unset ones are absent. */
+export interface LegSearchFilters {
+  operator?: string;
+  startsAt?: string;
+  terminatesAt?: string;
+  previouslyCallsAt?: string;
+  previouslyStopsAt?: string;
+  callsAt?: string;
+  via?: string;
+  avoid?: string;
+  avoidStop?: string;
 }
 
 /** One `GET /public/trains/search/operators` entry: an ATOC code the

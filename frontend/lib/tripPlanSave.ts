@@ -46,6 +46,16 @@ const TRANSFER_MODES: Record<string, TransitMode> = {
   FERRY: 'ferry',
 };
 
+/** A `TRANSFER` link's mode: `transfer` when its two ends are different
+ * stations, `undefined` for a change within one station (both ends the
+ * same code, or neither known). */
+function crossStationTransferMode(leg: TransferLeg): TransitMode | undefined {
+  if (leg.mode.toUpperCase() !== 'TRANSFER') return undefined;
+  const origin = leg.originCrs?.toUpperCase() ?? null;
+  const destination = leg.destinationCrs?.toUpperCase() ?? null;
+  return origin === destination ? undefined : 'transfer';
+}
+
 /** The ONE place a planner transfer becomes an untracked leg's mode and
  * place names: the fixed-link mode (WALK, TUBE, ...) as a journey mode, and
  * each end's station name (else its code). Where `/Trips/plan` names the
@@ -53,13 +63,16 @@ const TRANSFER_MODES: Record<string, TransitMode> = {
  * transfers; docs/superpowers/specs/2026-10-20-tfl-stop-lookup-design.md
  * §5), that end is the stop: its name and its id. The transfer's `line`
  * (2026-10-21) is the leg's line name, as people write it ("Victoria
- * line"). `null` for a change
- * within one station (`TRANSFER`), which isn't a journey of its own. */
+ * line"). A `TRANSFER` link between two different stations (Euston to
+ * Victoria, 19 minutes: often a Tube hop the link doesn't say is one) is a
+ * `transfer` leg; `null` for a `TRANSFER` within one station (the same
+ * code at both ends, its minutes only the interchange time), which isn't a
+ * journey of its own. */
 export function transferAsUntracked(
   leg: TransferLeg,
   nameFor: (code: string) => string | undefined,
 ): TransferAsUntracked | null {
-  const transitMode = TRANSFER_MODES[leg.mode.toUpperCase()];
+  const transitMode = TRANSFER_MODES[leg.mode.toUpperCase()] ?? crossStationTransferMode(leg);
   if (transitMode === undefined) return null;
   const place = (code: string | null) => {
     if (!code || isTiplocCode(code)) return undefined;
