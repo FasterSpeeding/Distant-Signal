@@ -16,7 +16,7 @@ import { SCHEDULED_CAPTION, transitStopHref } from '@/lib/transitStops';
 import type { TransitLineTimetable as Timetable } from '@/lib/types';
 
 /** A line's timetable for one direction and time window: stops down
- * the side, one column per tram, its scheduled time at each stop (an en
+ * the side, one column per trip, its scheduled time at each stop (an en
  * dash where it doesn't call). Each stop's name links to its stop page.
  * Scrolls sideways in its own container, so the page never does. */
 export function TransitLineTimetable({ network, timetable }: { network: string; timetable: Timetable }) {

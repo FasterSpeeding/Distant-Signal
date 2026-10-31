@@ -104,6 +104,14 @@ test.describe('transit pages', () => {
     await expect(page.getByRole('link', { name: 'Elizabeth line' })).toHaveAttribute('href', '/lines/elizabeth-line');
     // TfL's own status, so no disruptions list.
     await expect(page.getByRole('heading', { name: 'Disruptions' })).toHaveCount(0);
+    // Live arrivals are on each stop's page, and the seed's Tube and DLR
+    // lines are never called trams.
+    await expect(page.getByText(/Each stop's page has live arrivals/)).toBeVisible();
+    await expect(page.locator('main')).not.toContainText(/tram/i);
+    await expect(page.locator('meta[name="description"]')).toHaveAttribute(
+      'content',
+      'London (TfL): Tube and DLR lines, stops and scheduled times.',
+    );
   });
 
   test('a TfL line says how often it runs and links its status page', async ({ page }) => {
