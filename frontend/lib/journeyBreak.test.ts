@@ -222,6 +222,34 @@ describe('suggestionBadges', () => {
       ),
     ).toEqual(['A', 'B', 'C']);
   });
+
+  it('flags a suggestion outside the operator filter and names an operator-only one', () => {
+    expect(
+      suggestionBadges(
+        replanSuggestion({
+          pickLabels: ['Recommended', 'Fastest'],
+          fit: 'covered',
+          fitLabel: 'Usually covered by your ticket',
+          outsideOperatorFilter: true,
+        }),
+      ).map((badge) => [badge.label, badge.tone]),
+    ).toEqual([
+      ['Recommended', 'neutral'],
+      ['Uses other operators', 'caution'],
+      ['Usually covered by your ticket', 'neutral'],
+    ]);
+    expect(
+      suggestionBadges(
+        replanSuggestion({
+          pickLabels: [],
+          fit: null,
+          fitLabel: null,
+          legs: [trainSuggestionLeg()],
+          operatorOnly: ['GR'],
+        }),
+      ).map((badge) => badge.label),
+    ).toEqual(['LNER only']);
+  });
 });
 
 describe('suggestionLegBody', () => {

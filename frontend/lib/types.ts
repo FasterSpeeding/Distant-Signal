@@ -1601,6 +1601,9 @@ export interface JourneyDetail {
   revisionCount?: number;
   /** Whether the owner muted suggestions for this journey (owner only). */
   suggestionsMuted?: boolean;
+  /** The `/plan` operator filter the journey keeps for its replans (owner
+   * only, 2026-10-31). Absent when it has none. */
+  operatorFilter?: JourneyOperatorFilter;
   /** Set when the caller follows this journey (DS-146). */
   followedFrom?: FollowedFrom;
   /** Whether the caller can follow it through a group it is shared into
@@ -1679,6 +1682,15 @@ export type ReplanSuggestionLeg =
       plannedArrival: string;
     };
 
+/** A journey's operator filter (`GET /Journeys/{id}`'s `operatorFilter`). */
+export interface JourneyOperatorFilter {
+  mode: 'only' | 'avoid' | 'prefer';
+  /** The operators as applied, groups expanded. */
+  codes: string[];
+  /** As chosen (`group:GTR`): what the page shows. */
+  entries: string[];
+}
+
 /** One way to carry on. */
 export interface ReplanSuggestion {
   /** "s1": unique within its set. */
@@ -1704,6 +1716,12 @@ export interface ReplanSuggestion {
   pickLabels: string[];
   /** One of the (at most three) cards; otherwise under "More options". */
   card: boolean;
+  /** The journey's "prefer" operator filter's own route (2026-10-31): its
+   * operators, for an "LNER only" badge. Absent otherwise. */
+  operatorOnly?: string[];
+  /** The journey's operator filter left no route, so this, the best one
+   * without it, uses other operators (2026-10-31). Absent otherwise. */
+  outsideOperatorFilter?: boolean;
 }
 
 /** The leg a set of suggestions starts from. */

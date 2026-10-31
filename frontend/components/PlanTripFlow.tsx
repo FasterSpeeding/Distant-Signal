@@ -37,6 +37,7 @@ import {
   UNDERGROUND,
   joinNames,
   operatorFilterBanner,
+  savedOperatorFilter,
   operatorName,
   operatorOnlyLabel,
   preferOutcomeNote,
@@ -290,6 +291,7 @@ export function PlanTripFlow({
     const chosen = selections.flatMap((selection) => (selection.itinerary ? [selection.itinerary] : []));
     const trainLegs = trainLegsForTracking(chosen);
     const legsToSave = itineraryLegsForSaving(chosen, (code) => stationNames.get(code));
+    const operatorFilter = savedOperatorFilter(plan, answeredQuery);
 
     if (trainLegs.length === 0) {
       setCreationError('This route needs no train, so there is nothing to track.');
@@ -317,7 +319,9 @@ export function PlanTripFlow({
       const response = await fetch('/api/Journeys/itinerary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey() },
-        body: JSON.stringify({ legs: legsToSave }),
+        // The operator filter the plan applied (its response echo, §6.9 of
+        // the operator filtering spec), so the journey's replans honour it.
+        body: JSON.stringify(operatorFilter ? { legs: legsToSave, operatorFilter } : { legs: legsToSave }),
       });
       // I1: `GET /Trips/plan` is deliberately unauthenticated, so an
       // anonymous visitor can plan a full route with no friction, but

@@ -1,6 +1,7 @@
 import { formatTime } from './dateFormat';
 import { legIsOver } from './homeJourneys';
 import { legDepartureInstant } from './journeyLegChaining';
+import { operatorOnlyLabel } from './plannerOperators';
 import type { ItineraryLegBody } from './tripPlanSave';
 import type {
   BreakCause,
@@ -223,10 +224,36 @@ export interface SuggestionBadge {
 /** At most this many badges in a row (docs/style-guide.md, Typography). */
 const MAX_BADGES = 3;
 
-/** A card's badges: its pick labels (gray), then its ticket fit ("Check
- * your ticket" and "May need a new ticket" yellow, the rest gray), at most
- * three, the fit kept when there are too many picks. */
+/** A suggestion's operator filter badges (2026-10-31): "Uses other
+ * operators" (yellow) when the journey's filter left no route, and "LNER
+ * only" for its "prefer" filter's own route, named from its legs. */
+function operatorBadges(suggestion: ReplanSuggestion): SuggestionBadge[] {
+  const badges: SuggestionBadge[] = [];
+  if (suggestion.outsideOperatorFilter) {
+    badges.push({
+      label: 'Uses other operators',
+      tone: 'caution',
+      reason: "No route kept to this journey's operator filter, so this one uses other operators.",
+    });
+  }
+  if (suggestion.operatorOnly?.length) {
+    const nameOf = (code: string): string => {
+      for (const leg of suggestion.legs) {
+        if (leg.kind === 'train' && leg.operator === code && leg.operatorName) return leg.operatorName;
+      }
+      return code;
+    };
+    badges.push({ label: operatorOnlyLabel(suggestion.operatorOnly, nameOf), tone: 'neutral', reason: null });
+  }
+  return badges;
+}
+
+/** A card's badges: its pick labels (gray), its operator filter badges,
+ * then its ticket fit ("Check your ticket" and "May need a new ticket"
+ * yellow, the rest gray), at most three, the fit and operator badges kept
+ * when there are too many picks. */
 export function suggestionBadges(suggestion: ReplanSuggestion): SuggestionBadge[] {
+  const operators = operatorBadges(suggestion);
   const fit: SuggestionBadge | null = suggestion.fitLabel
     ? {
         label: suggestion.fitLabel,
@@ -235,9 +262,9 @@ export function suggestionBadges(suggestion: ReplanSuggestion): SuggestionBadge[
       }
     : null;
   const picks = suggestion.pickLabels
-    .slice(0, fit ? MAX_BADGES - 1 : MAX_BADGES)
+    .slice(0, Math.max(0, MAX_BADGES - operators.length - (fit ? 1 : 0)))
     .map((label): SuggestionBadge => ({ label, tone: 'neutral', reason: null }));
-  return fit ? [...picks, fit] : picks;
+  return fit ? [...picks, ...operators, fit] : [...picks, ...operators];
 }
 
 const TRANSIT_MODES: ReadonlySet<string> = new Set<TransitMode>([
