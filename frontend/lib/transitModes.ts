@@ -61,3 +61,26 @@ export function directionHeading(direction: {
   if (towards) return `Towards ${towards}`;
   return direction.direction === 'outbound' ? 'One way' : 'The other way';
 }
+
+/** "Towards Edgware, High Barnet or Mill Hill East": where a direction's
+ * branches go, each end once in branch order (at most three, then "and
+ * more"). */
+export function branchesHeading(branches: readonly { stations: readonly TransitStationRef[] }[]): string {
+  const ends = [...new Set(branches.map((branch) => branch.stations.at(-1)?.name).filter((name) => !!name))];
+  if (ends.length === 0) return 'Branches';
+  const shown = ends.slice(0, 3);
+  const more = ends.length > shown.length;
+  const list =
+    shown.length === 1
+      ? shown[0]
+      : more
+        ? `${shown.join(', ')} and more`
+        : `${shown.slice(0, -1).join(', ')} or ${shown.at(-1)}`;
+  return `Towards ${list}`;
+}
+
+/** Whether a line runs often enough that its timetable shows an hour at a
+ * time (the Underground and the DLR) rather than three. */
+export function isHighFrequencyMode(mode: string | null | undefined): boolean {
+  return mode === 'tube' || mode === 'dlr';
+}

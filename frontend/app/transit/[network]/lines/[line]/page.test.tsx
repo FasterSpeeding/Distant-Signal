@@ -8,6 +8,7 @@ import {
   NETWORK,
   NOTHING_REPORTED,
   SITUATIONS,
+  TFL_BRANCHED_LINE,
   TFL_LINE,
   TFL_NETWORK,
 } from '@/test/transitFixtures';
@@ -71,6 +72,22 @@ describe('/transit/[network]/lines/[line]', () => {
     expect(screen.getByText('Every 1 to 3 minutes')).toBeTruthy();
     // The pin is TfL's line, already pinned.
     expect(screen.getByRole('button', { name: /unpin/i })).toBeTruthy();
+  });
+
+  it('lists a branched direction by branch, each with its stops and timetable', async () => {
+    vi.mocked(api.getTransitNetwork).mockResolvedValue(TFL_NETWORK);
+    vi.mocked(api.getTransitLine).mockResolvedValue(TFL_BRANCHED_LINE);
+    renderWithMantine(await TransitLinePage({ params: Promise.resolve({ network: 'tfl', line: 'northern' }) }));
+    expect(screen.getByRole('heading', { level: 2, name: 'Towards Edgware or High Barnet' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Morden to Edgware/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Morden to High Barnet/ })).toBeTruthy();
+    // A TfL station links TfL's stop page.
+    expect(screen.getAllByRole('link', { name: 'Morden', hidden: true })[0]!.getAttribute('href')).toBe(
+      '/tfl/stops/940GZZLUMDN',
+    );
+    expect(
+      screen.getAllByRole('link', { name: 'Timetable for this branch', hidden: true })[1]!.getAttribute('href'),
+    ).toBe('/transit/tfl/lines/northern/timetable?direction=outbound&branch=outbound-2');
   });
 
   it("shows the line's status and its disruptions", async () => {

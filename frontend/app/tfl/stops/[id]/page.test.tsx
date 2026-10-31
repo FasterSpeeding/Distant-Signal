@@ -2,13 +2,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { KINGS_CROSS, RUSSELL_SQUARE, RUSSELL_SQUARE_ARRIVALS, tflLineStatus } from '@/test/tflStopFixtures';
+import { TFL_NETWORK } from '@/test/transitFixtures';
 import * as api from '@/lib/api';
 import { ApiNotFoundError, ApiUnavailableError } from '@/lib/api';
 import TflStopPage, { generateMetadata } from './page';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
-  return { ...actual, getTflStop: vi.fn(), getTflStopArrivals: vi.fn(), getLineStatus: vi.fn() };
+  return {
+    ...actual,
+    getTflStop: vi.fn(),
+    getTflStopArrivals: vi.fn(),
+    getLineStatus: vi.fn(),
+    getTransitNetworks: vi.fn(),
+    getTransitStop: vi.fn(),
+    getTransitDepartures: vi.fn(),
+  };
 });
 
 const notFoundMock = vi.fn(() => {
@@ -19,8 +28,8 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
 }));
 
-async function render(id = '940GZZLURSQ') {
-  const element = await TflStopPage({ params: Promise.resolve({ id }) });
+async function render(id = '940GZZLURSQ', search: Record<string, string> = {}) {
+  const element = await TflStopPage({ params: Promise.resolve({ id }), searchParams: Promise.resolve(search) });
   return renderWithMantine(element);
 }
 
@@ -33,6 +42,85 @@ describe('/tfl/stops/[id]', () => {
     vi.mocked(api.getLineStatus)
       .mockReset()
       .mockResolvedValue([tflLineStatus('piccadilly', 'Piccadilly', 9, 'Minor delays due to a train cancellation')]);
+    // The TfL network is not served unless a test says so.
+    vi.mocked(api.getTransitNetworks).mockReset().mockResolvedValue([]);
+    vi.mocked(api.getTransitStop).mockReset();
+    vi.mocked(api.getTransitDepartures).mockReset();
+  });
+
+  it('has no timetable while the TfL network is not served', async () => {
+    await render();
+    expect(screen.queryByRole('heading', { name: 'Timetable' })).not.toBeInTheDocument();
+    expect(api.getTransitStop).not.toHaveBeenCalled();
+  });
+
+  it("shows the stop's first and last trains and its scheduled departures", async () => {
+    vi.mocked(api.getTransitNetworks).mockResolvedValue([TFL_NETWORK]);
+    vi.mocked(api.getTransitStop).mockResolvedValue({
+      id: '9400ZZLURSQ',
+      name: 'Russell Square',
+      lat: null,
+      lon: null,
+      lines: ['tfl:piccadilly'],
+      railLinks: [],
+      platforms: [],
+      firstLast: [
+        {
+          line: { id: 'tfl:piccadilly', lineId: 'piccadilly', name: 'Piccadilly', colour: null },
+          direction: 'outbound',
+          towards: 'Cockfosters',
+          first: '05:48',
+          last: '00:31',
+        },
+      ],
+    });
+    vi.mocked(api.getTransitDepartures).mockResolvedValue({
+      date: '2026-10-30',
+      departures: [
+        {
+          scheduledDeparture: '2026-10-30T23:40:00+00:00',
+          tripId: 'T1',
+          platformId: '9400ZZLURSQ1',
+          platform: null,
+          line: { id: 'tfl:piccadilly', lineId: 'piccadilly', name: 'Piccadilly', colour: null },
+          replacementBus: false,
+          destination: 'Cockfosters',
+        },
+      ],
+      nextCursor: '85200.T1.9400ZZLURSQ1',
+      outsideHorizon: false,
+      realtime: false,
+      kind: 'scheduled',
+    });
+    await render('940GZZLURSQ', { date: '2026-10-30' });
+    expect(api.getTransitStop).toHaveBeenCalledWith('tfl', '940GZZLURSQ', '2026-10-30');
+    expect(screen.getByRole('heading', { level: 3, name: /^First and last on / })).toBeInTheDocument();
+    expect(api.getTransitDepartures).toHaveBeenCalledWith('tfl', '940GZZLURSQ', {
+      date: '2026-10-30',
+      cursor: undefined,
+      limit: '10',
+    });
+    expect(screen.getByRole('heading', { level: 2, name: 'Timetable' })).toBeInTheDocument();
+    expect(screen.getByText('Piccadilly towards Cockfosters')).toBeInTheDocument();
+    expect(screen.getByText('First 05:48, last 00:31')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Scheduled departures' })).toHaveTextContent('23:40');
+    expect(screen.getByRole('link', { name: 'Later departures' })).toHaveAttribute(
+      'href',
+      '/tfl/stops/940GZZLURSQ?date=2026-10-30&cursor=85200.T1.9400ZZLURSQ1#timetable',
+    );
+    expect(screen.getByRole('link', { name: 'Next day' })).toHaveAttribute(
+      'href',
+      '/tfl/stops/940GZZLURSQ?date=2026-10-31#timetable',
+    );
+  });
+
+  it('has no timetable for a stop the TfL timetable lacks', async () => {
+    vi.mocked(api.getTransitNetworks).mockResolvedValue([TFL_NETWORK]);
+    vi.mocked(api.getTransitStop).mockRejectedValue(new ApiNotFoundError('no such stop'));
+    vi.mocked(api.getTransitDepartures).mockRejectedValue(new ApiNotFoundError('no such stop'));
+    await render();
+    expect(screen.queryByRole('heading', { name: 'Timetable' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Live arrivals' })).toBeInTheDocument();
   });
 
   it('shows the stop, its mode, its live arrivals and when they were fetched', async () => {

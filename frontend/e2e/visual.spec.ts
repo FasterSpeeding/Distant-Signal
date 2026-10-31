@@ -114,7 +114,8 @@ const PAGES: [name: string, path: string][] = [
   // whose board scripts/tfl-arrivals-stub.py answers relative to the
   // server's clock, so each train's expected time is masked; its "2 min"
   // stays put.
-  ['tfl-stop', '/tfl/stops/940GZZLUKSX'],
+  // Dated, so its timetable's board doesn't follow the server's clock.
+  ['tfl-stop', '/tfl/stops/940GZZLUKSX?date=2026-09-17'],
 ];
 
 /** The pages shot with the seed's session cookie (E2E_SESSION_COOKIE). */

@@ -240,6 +240,18 @@ export const TFL_NETWORK: TransitNetworkDetail = {
 
 export const TFL_LINE: TransitLineDetail = {
   ...TFL_NETWORK.lines[0]!,
+  branches: [
+    {
+      id: 'outbound-1',
+      direction: 'outbound',
+      name: 'Brixton to Walthamstow Central',
+      stations: [
+        { id: '9400ZZLUBXN', name: 'Brixton' },
+        { id: '9400ZZLUWWL', name: 'Walthamstow Central' },
+      ],
+      sharePercent: 100,
+    },
+  ],
   statusSource: 'tfl',
   status: MINOR_DELAYS,
   situations: { state: 'current', asOf: '2026-10-30T09:00:00Z', current: [], upcoming: [] },
@@ -269,4 +281,49 @@ export const TFL_LINE: TransitLineDetail = {
       },
     ],
   },
+};
+
+/** A line with two branches one way (the TfL transit design §8.3).
+ * Invented ids. */
+export const TFL_BRANCHED_LINE: TransitLineDetail = {
+  id: 'tfl:northern',
+  lineId: 'northern',
+  name: 'Northern',
+  colour: '#222222',
+  mode: 'tube',
+  statusLineId: 'tfl-northern',
+  statusSource: 'tfl',
+  directions: [
+    {
+      direction: 'outbound',
+      headsign: null,
+      stations: [
+        { id: '9400ZZLUMDN', name: 'Morden' },
+        { id: '9400ZZLUEGW', name: 'Edgware' },
+        { id: '9400ZZLUHBT', name: 'High Barnet' },
+      ],
+    },
+  ],
+  branches: [
+    {
+      id: 'outbound-1',
+      direction: 'outbound',
+      name: 'Morden to Edgware',
+      stations: [
+        { id: '9400ZZLUMDN', name: 'Morden' },
+        { id: '9400ZZLUEGW', name: 'Edgware' },
+      ],
+      sharePercent: 60,
+    },
+    {
+      id: 'outbound-2',
+      direction: 'outbound',
+      name: 'Morden to High Barnet',
+      stations: [
+        { id: '9400ZZLUMDN', name: 'Morden' },
+        { id: '9400ZZLUHBT', name: 'High Barnet' },
+      ],
+      sharePercent: 40,
+    },
+  ],
 };

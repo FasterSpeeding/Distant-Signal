@@ -560,7 +560,9 @@ ON CONFLICT DO NOTHING;
 -- pages, shown because ci.yml's frontend-e2e job lists `tfl` in
 -- API_TRANSIT_NETWORKS). The Victoria line (Underground) and the DLR, a
 -- few trains on 2026-09-17 and today, every few minutes between 07:00 and
--- 07:20 (the line page's frequency summary). Ids and times are invented.
+-- 07:20 (the line page's frequency summary), through King's Cross St.
+-- Pancras, whose TfL stop page (below) then shows its timetable. Ids and
+-- times are invented.
 -- No `tfl-*` line_status rows (see the TfL stops below): the lines show no
 -- status.
 -- ---------------------------------------------------------------------
@@ -569,7 +571,7 @@ INSERT INTO transit_feed_versions
    horizon_from, horizon_to, source, staged_at, produced_at, activated_at)
 VALUES ('tfl', 'e2e-v1', 'active',
   '{"name": "London (TfL)", "mode": "metro", "timezone": "Europe/London", "attribution": {"licence": "TfL-Open-Data", "text": "Powered by TfL Open Data. Timetables: Transport for London''s journey planner timetables. Stops: NaPTAN (Department for Transport), under the Open Government Licence v3.0."}}',
-  '[]', repeat('f', 64), '{"lines": 2, "stops": 8, "patterns": 2, "trips": 6, "service_days": 2}',
+  '[]', repeat('f', 64), '{"lines": 2, "stops": 10, "patterns": 2, "trips": 6, "service_days": 2}',
   '2026-09-01', CURRENT_DATE + 60, '{"url_kind": "e2e", "feed_version": null, "published_at": null}',
   NOW(), NOW(), NOW())
 ON CONFLICT (network, feed_version) DO NOTHING;
@@ -583,7 +585,7 @@ ON CONFLICT (network) DO UPDATE SET active_feed_version = EXCLUDED.active_feed_v
 
 INSERT INTO transit_lines (network, feed_version, line_id, name, colour, sort_order, directions, mode) VALUES
   ('tfl', 'e2e-v1', 'victoria', 'Victoria', '#1f97d4', 1,
-   '[{"direction": "outbound", "headsign": null, "stations": ["9400ZZLUBXN", "9400ZZLUVXL", "9400ZZLUKSX"]}]', 'tube'),
+   '[{"direction": "outbound", "headsign": null, "stations": ["9400ZZLUBXN", "9400ZZLUVXL", "9400ZZLUKSX", "9400ZZLUWWL"]}]', 'tube'),
   ('tfl', 'e2e-v1', 'dlr', 'DLR', '#14a39a', 2,
    '[{"direction": "outbound", "headsign": null, "stations": ["9400ZZDLBNK", "9400ZZDLCAN"]}]', 'dlr')
 ON CONFLICT DO NOTHING;
@@ -595,6 +597,8 @@ INSERT INTO transit_stops (network, feed_version, stop_id, kind, parent_stop_id,
   ('tfl', 'e2e-v1', '9400ZZLUVXL1', 'platform', '9400ZZLUVXL', 'Vauxhall', NULL, NULL, NULL, NULL),
   ('tfl', 'e2e-v1', '9400ZZLUKSX', 'station', NULL, 'King''s Cross St. Pancras', NULL, 51.5302, -0.1238, NULL),
   ('tfl', 'e2e-v1', '9400ZZLUKSX1', 'platform', '9400ZZLUKSX', 'King''s Cross St. Pancras', NULL, NULL, NULL, NULL),
+  ('tfl', 'e2e-v1', '9400ZZLUWWL', 'station', NULL, 'Walthamstow Central', NULL, 51.5830, -0.0199, NULL),
+  ('tfl', 'e2e-v1', '9400ZZLUWWL1', 'platform', '9400ZZLUWWL', 'Walthamstow Central', NULL, NULL, NULL, NULL),
   ('tfl', 'e2e-v1', '9400ZZDLBNK', 'station', NULL, 'Bank', NULL, 51.5133, -0.0886, NULL),
   ('tfl', 'e2e-v1', '9400ZZDLBNK1', 'platform', '9400ZZDLBNK', 'Bank', NULL, NULL, NULL, NULL),
   ('tfl', 'e2e-v1', '9400ZZDLCAN', 'station', NULL, 'Canary Wharf', NULL, 51.5052, -0.0209, NULL),
@@ -609,7 +613,8 @@ ON CONFLICT DO NOTHING;
 INSERT INTO transit_pattern_stops (network, feed_version, pattern_id, seq, stop_id, arr_offset_s, dep_offset_s, pickup, drop_off) VALUES
   ('tfl', 'e2e-v1', 'v1', 0, '9400ZZLUBXN1', 0, 0, 0, 1),
   ('tfl', 'e2e-v1', 'v1', 1, '9400ZZLUVXL1', 180, 180, 0, 0),
-  ('tfl', 'e2e-v1', 'v1', 2, '9400ZZLUKSX1', 900, 900, 1, 0),
+  ('tfl', 'e2e-v1', 'v1', 2, '9400ZZLUKSX1', 900, 900, 0, 0),
+  ('tfl', 'e2e-v1', 'v1', 3, '9400ZZLUWWL1', 1500, 1500, 1, 0),
   ('tfl', 'e2e-v1', 'd1', 0, '9400ZZDLBNK1', 0, 0, 0, 1),
   ('tfl', 'e2e-v1', 'd1', 1, '9400ZZDLCAN1', 600, 600, 1, 0)
 ON CONFLICT DO NOTHING;

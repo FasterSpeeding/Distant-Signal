@@ -596,3 +596,57 @@ TfL's override files with their base files. Measured again on 2026-10-30
 - §12's London Trams network and §13.2's DLR, if built from BODS, would
   carry the duplicates. They are superseded by this design: London Trams
   and the DLR are lines of the `tfl` network, from TfL's file.
+
+## 17. Implementation notes
+
+### 17.1 P1 (DS-212, PR #91)
+
+- **No rail-links file** for `tfl` (§4): TfL's stops already link their
+  National Rail stations (`tfl_stop_crs`), so `/transit/rail-links` lists
+  none for `tfl` and station pages keep their TfL links. P4 reads
+  `tfl_stop_crs` for the planner's walks instead.
+- **Station codes keep three letters** after the prefix (`9400ZZLUHR41`
+  is `9400ZZLUHR4`, not `9400ZZLUHR`), and a catch-all `9400ZZ` prefix
+  takes the Northern line's `9400ZZBPSUST` and `9400ZZNEUGST` as stations.
+  `stop_name_suffixes` has no plain " Station" (it turned "Battersea Power
+  Station" into "Battersea Power").
+- **The freshness alert** for `transit-tfl-timetable` is 36 h like the
+  others (§9 said 8 days): the daily re-send moves it even when TfL's
+  file has not changed, so it pages for a stuck producer, not a stale
+  source.
+- **The short-override guard** of §3.2 (`transit_override_short_total`)
+  is not built: the real part closures (the tram file at 41% of its base)
+  made it noise.
+- **Measured end to end** on TfL's 2026-10-26 export (the producer, Redis,
+  the writer and the api on a local database): a 9.5 s parse, 7,849
+  patterns, 216,766 calls, 58,383 trips, 417 service-day rows; 61 stream
+  entries using 1.1 MB of Redis (the budget allows for 30 MB); 65 MB of
+  transit tables per version (47 MB of pattern stops, 16 MB of trips),
+  inside §10's estimate. The first activation spent 49 s in one reference
+  check, a `NOT EXISTS` the planner ran per trip on unanalysed rows; the
+  checks are `EXCEPT`s now. The api: a line with its frequency in
+  50 to 105 ms, a stop's board 70 ms, the stop list 1 s (cached an hour).
+- **Copy**: the navigation says "Trams and metros"; the National Rail
+  lines' section is "Also run by TfL" (the copy check refuses a heading
+  with a capital after its first word).
+
+### 17.2 P2
+
+- **Branches** (§8.3) are computed on read from the line's patterns, each
+  pattern's stations as a run; a run inside a longer one counts for it,
+  under 5% is dropped. On TfL's export: the Northern line 7 and 6
+  branches (its Bank and Charing Cross runs told apart by `via`), the
+  District 5, the Metropolitan 4, the Circle one each way.
+- **A line page** lists a branched direction as closed panels, one per
+  branch, each with its stations and a link to its timetable; the
+  direction's heading names the branches' ends ("Towards Edgware or High
+  Barnet").
+- **The timetable** shows an hour at a time on the Underground and the
+  DLR (by line mode), three hours on a tram line, and offers the
+  direction's branches.
+- **A TfL stop's timetable** is a section of `/tfl/stops/{id}` under
+  the live arrivals: first and last departures today per line and way,
+  then the next ten scheduled departures for `?date=` (default today),
+  paged by `?cursor=`. `/transit/tfl/stops/{id}` redirects there (308),
+  and every TfL station link points there directly.
+

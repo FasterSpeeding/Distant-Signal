@@ -1353,8 +1353,10 @@ export async function getTransitStops(network: string): Promise<TransitStop[]> {
   return body.stops;
 }
 
-export async function getTransitStop(network: string, stop: string): Promise<TransitStopDetail> {
-  return fetchJson<TransitStopDetail>(transitUrl(network, ['stops', stop]), { next: { revalidate: 60 } });
+/** A station; `date` (`YYYY-MM-DD`) picks the day of its `firstLast`
+ * (default today). */
+export async function getTransitStop(network: string, stop: string, date?: string): Promise<TransitStopDetail> {
+  return fetchJson<TransitStopDetail>(transitUrl(network, ['stops', stop], { date }), { next: { revalidate: 60 } });
 }
 
 /** The network's current and upcoming disruptions. */

@@ -8,6 +8,7 @@ import { getTransitLine, getTransitLineTimetable, getTransitNetwork } from '@/li
 import { formatDate } from '@/lib/dateFormat';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { orNotFound, TRANSIT_ID } from '@/lib/transit';
+import { directionHeading, isHighFrequencyMode } from '@/lib/transitModes';
 import type { TransitDirection } from '@/lib/types';
 
 interface Params {
@@ -20,8 +21,10 @@ interface Search {
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const HOUR = 3600;
-/** The window shown, and how far "Earlier"/"Later" move it. */
+/** The window shown, and how far "Earlier"/"Later" move it: an hour for
+ * the Underground and the DLR, three for a tram line. */
 const WINDOW = 3 * HOUR;
+const BUSY_WINDOW = HOUR;
 const DAY = 24 * HOUR;
 
 function single(value: string | string[] | undefined): string | undefined {
@@ -70,8 +73,10 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 }
 
 /** `/transit/[network]/lines/[line]/timetable`: one direction's scheduled
- * trams in a three-hour window. `?date=`, `?direction=` and `?from=`
- * (`HH:MM`) pick what is shown; the links move between them. */
+ * departures in a three-hour window (an hour on the Underground and the
+ * DLR). `?date=`, `?direction=`, `?branch=` and `?from=` (`HH:MM`) pick
+ * what is shown; the links move between them. A branch (the TfL transit
+ * design §8.3) shows its own stations and the trips that stay on them. */
 export default async function TransitTimetablePage({ params, searchParams }: Params & Search) {
   const { network, line } = await params;
   const search = (await searchParams) ?? {};
@@ -80,19 +85,33 @@ export default async function TransitTimetablePage({ params, searchParams }: Par
   const dateParam = single(search.date);
   const date = dateParam && DATE.test(dateParam) ? dateParam : now.date;
   const direction: TransitDirection = single(search.direction) === 'inbound' ? 'inbound' : 'outbound';
+  const window = isHighFrequencyMode(lineDetail.mode) ? BUSY_WINDOW : WINDOW;
   const from = seconds(single(search.from)) ?? (date === now.date ? now.fromSeconds : 6 * HOUR);
-  const to = Math.min(from + WINDOW, DAY);
+  const to = Math.min(from + window, DAY);
+  const branches = (lineDetail.branches ?? []).filter((branch) => branch.direction === direction);
+  const branchParam = single(search.branch);
+  const branch = branches.length > 1 ? branches.find((b) => b.id === branchParam) : undefined;
   const timetable = await orNotFound(
-    getTransitLineTimetable(network, line, { date, direction, from: hhmm(from), to: hhmm(to) }),
+    getTransitLineTimetable(network, line, {
+      date,
+      direction,
+      from: hhmm(from),
+      to: hhmm(to),
+      branch: branch?.id,
+    }),
   );
 
   const base = `/transit/${network}/lines/${line}/timetable`;
-  const href = (changes: { direction?: TransitDirection; from?: number }) =>
-    `${base}?${new URLSearchParams({
+  const href = (changes: { direction?: TransitDirection; from?: number; branch?: string | null }) => {
+    const query = new URLSearchParams({
       date,
       direction: changes.direction ?? direction,
       from: hhmm(changes.from ?? from),
-    }).toString()}`;
+    });
+    const nextBranch = changes.branch === undefined ? branch?.id : changes.branch;
+    if (nextBranch && !changes.direction) query.set('branch', nextBranch);
+    return `${base}?${query.toString()}`;
+  };
   const other = lineDetail.directions.find((d) => d.direction !== direction);
   const current = lineDetail.directions.find((d) => d.direction === direction);
 
@@ -108,18 +127,36 @@ export default async function TransitTimetablePage({ params, searchParams }: Par
 
       <Stack gap={4}>
         <Text fw={600}>
-          {current?.headsign ? `Towards ${current.headsign}` : 'This direction'}, {formatDate(date)}, {hhmm(from)}–
-          {hhmm(to === DAY ? DAY - 60 : to)}
+          {branch ? branch.name : current ? directionHeading(current) : 'This direction'}, {formatDate(date)},{' '}
+          {hhmm(from)}–{hhmm(to === DAY ? DAY - 60 : to)}
         </Text>
         <Group gap="md">
-          {other && (
-            <TextLink href={href({ direction: other.direction })}>
-              {other.headsign ? `Towards ${other.headsign}` : 'Other direction'}
-            </TextLink>
-          )}
-          {from > 0 && <TextLink href={href({ from: Math.max(0, from - WINDOW) })}>Earlier</TextLink>}
-          {to < DAY && <TextLink href={href({ from: Math.min(from + WINDOW, DAY - WINDOW) })}>Later</TextLink>}
+          {other && <TextLink href={href({ direction: other.direction })}>{directionHeading(other)}</TextLink>}
+          {from > 0 && <TextLink href={href({ from: Math.max(0, from - window) })}>Earlier</TextLink>}
+          {to < DAY && <TextLink href={href({ from: Math.min(from + window, DAY - window) })}>Later</TextLink>}
         </Group>
+        {branches.length > 1 && (
+          <Group gap="md" aria-label="Branches">
+            {branch ? (
+              <TextLink href={href({ branch: null })}>Every branch</TextLink>
+            ) : (
+              <Text size="sm" fw={500}>
+                Every branch
+              </Text>
+            )}
+            {branches.map((b) =>
+              b.id === branch?.id ? (
+                <Text key={b.id} size="sm" fw={500}>
+                  {b.name}
+                </Text>
+              ) : (
+                <TextLink key={b.id} href={href({ branch: b.id })}>
+                  {b.name}
+                </TextLink>
+              ),
+            )}
+          </Group>
+        )}
       </Stack>
 
       <TransitLineTimetable network={network} timetable={timetable} />
