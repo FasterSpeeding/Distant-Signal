@@ -3,6 +3,32 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-31: `preferOperator` on `/Trips/plan` (Compare options)
+
+Additive (planner operator filtering spec, phase P3).
+
+- **`preferOperator=GR`** (`results=options` only) takes the same entries
+  as `operator` (codes, `ds:` operators, `group:NAME`). It doesn't filter
+  anything. After the options and their alternatives are found, it runs
+  one more search on only those operators, every way of riding them as
+  `operator` defines it.
+  - If the result is already an option, that option gains the label
+    `{"kind": "operatorOnly", "operators": ["GR"]}`.
+  - Otherwise the result is added with that label, but only if it is
+    within twice the alternatives' detour allowance of the best option
+    (40 to 180 minutes later; arrive-by: earlier, and at most that much
+    longer) and keeps to `maxChanges`. When the list is already full (5
+    options), it replaces the last alternative.
+- **Echo:** `preferOperator` (always present, `[]` when unused).
+  `preferOperatorResult`, with `preferOperator` only, is `added`,
+  `labelled`, `tooSlow` (found, but too far behind) or `none` (no route on
+  only those operators).
+- **400** for `preferOperator` without `results=options`, and for more
+  than one of `operator`, `avoidOperator` and `preferOperator`. Its
+  entries get the same checks as `operator`'s.
+- Clients that switch on a label's `kind` should treat an unknown kind as
+  "other". `operatorOnly` is new.
+
 ## 2026-10-31: `GET /Trips/operators`, the planner's operator choices
 
 New, unauthenticated, `Cache-Control: public, max-age=300`. It returns

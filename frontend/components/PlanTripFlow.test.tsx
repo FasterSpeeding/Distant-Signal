@@ -1538,3 +1538,62 @@ describe('PlanTripFlow operator filter (2026-10-31)', () => {
     );
   });
 });
+
+describe('PlanTripFlow Prefer (2026-10-31)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    mockStationNames.clear();
+    window.history.replaceState(null, '', '/');
+  });
+
+  const catalogue: PlannerOperatorCatalogue = {
+    operators: [{ code: 'GR', name: 'LNER' }],
+    groups: [],
+    dsOperators: [],
+  };
+
+  async function searchPreferring(plan: TripPlanResponse) {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(plan) }));
+    renderWithMantine(
+      <PlanTripFlow
+        onCreated={vi.fn()}
+        operatorCatalogue={catalogue}
+        initialQuery={{ results: 'options', operatorMode: 'prefer', operators: ['GR'] }}
+      />,
+    );
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+  }
+
+  it('labels the operator-only option by name', async () => {
+    const itinerary = singleSegmentPlan.segments[0]!.itineraries[0]!;
+    await searchPreferring({
+      ...singleSegmentPlan,
+      results: 'options',
+      preferOperator: ['GR'],
+      preferOperatorResult: 'added',
+      segments: [
+        {
+          ...singleSegmentPlan.segments[0]!,
+          itineraries: [{ ...itinerary, labels: [{ kind: 'operatorOnly', operators: ['GR'] }] }],
+        },
+      ],
+    });
+    expect(await screen.findByText('LNER only')).toBeInTheDocument();
+    expect(screen.queryByText(/Showing routes/)).not.toBeInTheDocument();
+  });
+
+  it('says when the operator-only route was too slow to show', async () => {
+    await searchPreferring({
+      ...singleSegmentPlan,
+      results: 'options',
+      preferOperator: ['GR'],
+      preferOperatorResult: 'tooSlow',
+    });
+    expect(
+      await screen.findByText("The best route using only LNER is much slower than these, so it isn't shown."),
+    ).toBeInTheDocument();
+  });
+});

@@ -384,3 +384,32 @@ describe('PlanTripForm operator filter (2026-10-31)', () => {
     expect(await screen.findByText(/Operators couldn.t be loaded/)).toBeInTheDocument();
   });
 });
+
+describe('PlanTripForm Prefer (2026-10-31)', () => {
+  it('offers Prefer with Compare options only, and sends it then', async () => {
+    const onSubmit = vi.fn();
+    renderWithMantine(
+      <PlanTripForm
+        onSubmit={onSubmit}
+        operatorCatalogue={operatorCatalogue}
+        initial={{ operatorMode: 'prefer', operators: ['VT'] }}
+      />,
+    );
+    fillEnds();
+    await openAdvanced();
+    expect(screen.getByRole('radio', { name: 'Prefer' })).toBeDisabled();
+    expect(screen.getByText('Prefer needs Compare options.')).toBeInTheDocument();
+    // With Fastest, a restored Prefer is not sent (the API refuses it).
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+    expect((onSubmit.mock.calls[0]![0] as Record<string, unknown>).operatorMode).toBeUndefined();
+
+    fireEvent.click(screen.getByText('Compare options', { exact: true }));
+    expect(screen.getByRole('radio', { name: 'Prefer' })).toBeEnabled();
+    expect(screen.queryByText('Prefer needs Compare options.')).not.toBeInTheDocument();
+    expect(screen.getByText(/Compare options adds the best route using only these operators/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+    expect(onSubmit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ results: 'options', operatorMode: 'prefer', operators: ['VT'] }),
+    );
+  });
+});

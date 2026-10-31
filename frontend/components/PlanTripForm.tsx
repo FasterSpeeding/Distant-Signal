@@ -347,7 +347,10 @@ export function PlanTripForm({
       ...(advanced.avoidStopCrs?.length ? { avoidStopCrs: advanced.avoidStopCrs } : {}),
       ...(advanced.avoidChangeCrs?.length ? { avoidChangeCrs: advanced.avoidChangeCrs } : {}),
       ...(advanced.maxChanges !== undefined ? { maxChanges: advanced.maxChanges } : {}),
-      ...(advanced.operatorMode && advanced.operators?.length
+      // Prefer only with Compare options (the API refuses it with Fastest).
+      ...(advanced.operatorMode &&
+      advanced.operators?.length &&
+      !(advanced.operatorMode === 'prefer' && results === 'fastest')
         ? { operatorMode: advanced.operatorMode, operators: advanced.operators }
         : {}),
     };

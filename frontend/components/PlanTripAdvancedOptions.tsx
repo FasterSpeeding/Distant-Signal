@@ -112,16 +112,22 @@ export function advancedOptionsSummary(
 }
 
 /** The operator field's mode choices: "Any" is no filter. */
-const OPERATOR_MODES = [
-  { label: 'Any', value: 'any' },
-  { label: 'Only these', value: 'only' },
-  { label: 'Avoid these', value: 'avoid' },
-];
+function operatorModes(results: 'fastest' | 'options') {
+  return [
+    { label: 'Any', value: 'any' },
+    { label: 'Only these', value: 'only' },
+    { label: 'Avoid these', value: 'avoid' },
+    // Prefer adds a labelled option to Compare options; Fastest has one
+    // route only.
+    { label: 'Prefer', value: 'prefer', disabled: results === 'fastest' },
+  ];
+}
 
 /** What each mode's picker means (§4.2 of the operator filtering spec). */
 const OPERATOR_DESCRIPTIONS: Record<OperatorMode, string> = {
   only: "Only routes on these operators' trains, buses, ferries, links and connecting rides. Walks between stations are always allowed. Add London Underground to cross London by Tube.",
   avoid: "Never use these operators' trains, buses, ferries, links or connecting rides.",
+  prefer: 'Compare options adds the best route using only these operators, labelled.',
 };
 
 /** "Operators" (2026-10-31): Any, Only these or Avoid these, and the
@@ -134,12 +140,15 @@ export function OperatorFilterField({
   onChange,
   catalogue,
   operatorName,
+  results = 'options',
 }: {
   mode: OperatorMode | undefined;
   operators: string[];
   onChange: (mode: OperatorMode | undefined, operators: string[]) => void;
   catalogue: PlannerOperatorCatalogue | null | undefined;
   operatorName: (entry: string) => string;
+  /** Prefer needs Compare options. */
+  results?: 'fastest' | 'options';
 }) {
   const labelId = useId();
   const descriptionId = useId();
@@ -170,8 +179,13 @@ export function OperatorFilterField({
         aria-describedby={mode ? descriptionId : undefined}
         value={mode ?? 'any'}
         onChange={(value) => onChange(value === 'any' ? undefined : (value as OperatorMode), operators)}
-        data={OPERATOR_MODES}
+        data={operatorModes(results)}
       />
+      {results === 'fastest' && (
+        <Text size="xs" c="dimmed">
+          Prefer needs Compare options.
+        </Text>
+      )}
       {mode && (
         <>
           <Text id={descriptionId} size="xs" c="dimmed">
@@ -332,6 +346,7 @@ export function PlanTripAdvancedOptions({
           onChange={(operatorMode, operators) => onChange({ ...options, operatorMode, operators })}
           catalogue={operatorCatalogue}
           operatorName={operatorName}
+          results={results}
         />
         <NativeSelect
           label="Most changes"

@@ -76,6 +76,14 @@ Found while building P0 and P1:
 - **Group members aren't checked against the timetable.** Only ATOC codes
   named directly are. A group may hold a code that runs nothing that week;
   `operatorsNotRunning` says so.
+- **Prefer always runs its one search** (P3). §5.4 step 1 would skip it
+  when a kept option already rides only preferred operators. Spotting that
+  needs each kept train's operator, which a journey doesn't carry. Instead
+  the search runs, and if its result equals a kept option, that option is
+  labelled (`labelled`). The cost is the measured +5% to +9% either way.
+- **The picker's operators come from a new `GET /Trips/operators`** (P2):
+  the codes running from today on, rather than a `running` flag on the
+  Trains search's endpoint. That endpoint is left alone (§11 item 10).
 
 ## 1. Summary
 

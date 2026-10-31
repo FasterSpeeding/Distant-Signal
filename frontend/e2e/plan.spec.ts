@@ -149,6 +149,90 @@ test('an operator filter from the URL avoids an operator, and says so', async ({
   await expect(page.getByRole('radio', { name: 'Avoid these' })).toBeFocused();
 });
 
+// Prefer (2026-10-31, P3): Compare options with GR preferred. The api's
+// answer (fulfilled here, as above) adds GR's route as a labelled option.
+test('preferring an operator adds its route to Compare options, labelled', async ({ page }) => {
+  let sent: URLSearchParams | null = null;
+  await page.route('**/api/Trips/plan?*', async (route) => {
+    sent = new URL(route.request().url()).searchParams;
+    await route.fulfill({ json: preferGrPlan });
+  });
+  await openPlan(
+    page,
+    'origin=ZOA&destination=ZOD&date=2026-09-17&departAfter=07:30&results=options&preferOperator=GR',
+  );
+  await expect(page.getByText('Prefer GR', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Find routes' }).click();
+  const cards = page.locator('[data-plan-entry]');
+  await expect(cards).toHaveCount(2);
+  expect(sent!.get('preferOperator')).toBe('GR');
+  expect(sent!.get('results')).toBe('options');
+  await expect(cards.nth(1).getByText('GR only', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-operator-filter-banner]')).toHaveCount(0);
+});
+
+/** `/Trips/plan`'s answer for ZOA to ZOD with `preferOperator=GR`: VT's
+ * fastest route, then GR's, labelled `operatorOnly`. */
+const preferGrPlan = {
+  ...avoidVtPlanBase(),
+  results: 'options',
+  avoidOperator: [],
+  preferOperator: ['GR'],
+  preferOperatorResult: 'added',
+  segments: [
+    {
+      originCrs: 'ZOA',
+      destinationCrs: 'ZOD',
+      cappedByMaxChanges: false,
+      noResultReason: null,
+      itineraries: [
+        { ...trainItinerary('E2EOP1', 'VT', '08:00:00', '09:00:00', 60), labels: [{ kind: 'fastest' }] },
+        {
+          ...trainItinerary('E2EOP2', 'GR', '08:05:00', '09:20:00', 75),
+          labels: [{ kind: 'operatorOnly', operators: ['GR'] }],
+        },
+      ],
+    },
+  ],
+  journeys: [],
+};
+
+/** One direct train itinerary, as the api serves it (trimmed). */
+function trainItinerary(uid: string, operator: string, departure: string, arrival: string, minutes: number) {
+  return {
+    legs: [
+      {
+        kind: 'train',
+        trainUid: uid,
+        serviceDate: '2026-09-17',
+        serviceMode: 'train',
+        originCrs: 'ZOA',
+        destinationCrs: 'ZOD',
+        scheduledDeparture: departure,
+        scheduledArrival: arrival,
+        publicDeparture: departure,
+        publicArrival: arrival,
+        departureDayOffset: 0,
+        arrivalDayOffset: 0,
+        operator,
+      },
+    ],
+    changeCount: 0,
+    totalDurationMinutes: minutes,
+  };
+}
+
+/** The top-level fields every plan answer here shares. */
+function avoidVtPlanBase() {
+  return {
+    maxChanges: 4,
+    operator: [],
+    operatorGroups: {},
+    operatorsNotRunning: [],
+    serviceDates: ['2026-09-17'],
+  };
+}
+
 /** `/Trips/plan`'s answer for ZOA to ZOD from 07:30 avoiding VT: only GR's
  * 08:05 via ZOC (the api's own shape, trimmed to what the page reads). */
 const avoidVtPlan = {

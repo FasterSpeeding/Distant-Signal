@@ -14,8 +14,9 @@ export const UNDERGROUND = 'LT';
 /** `GET /Trips/plan`'s cap on one operator list. */
 export const MAX_OPERATORS = 8;
 
-/** "Only these" or "Avoid these". */
-export type OperatorMode = 'only' | 'avoid';
+/** "Only these", "Avoid these" or "Prefer" (Compare options only: an
+ * extra option on only these operators, labelled; spec §5.4). */
+export type OperatorMode = 'only' | 'avoid' | 'prefer';
 
 export const OPERATOR_GROUP_PREFIX = 'group:';
 export const DS_OPERATOR_PREFIX = 'ds:';
@@ -143,10 +144,35 @@ export function operatorName(entry: string, catalogue: PlannerOperatorCatalogue 
   return catalogue?.operators.find((operator) => operator.code === entry)?.name ?? entry;
 }
 
-/** "Avanti West Coast", "Avanti West Coast and LNER", "A, B and C". */
-export function joinNames(names: readonly string[]): string {
+/** "Avanti West Coast", "Avanti West Coast and LNER", "A, B and C";
+ * `or` joins with "or". */
+export function joinNames(names: readonly string[], conjunction: 'and' | 'or' = 'and'): string {
   if (names.length <= 1) return names.join('');
-  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  return `${names.slice(0, -1).join(', ')} ${conjunction} ${names[names.length - 1]}`;
+}
+
+/** A Compare options `operatorOnly` label: "LNER only", "GTR only",
+ * "Avanti West Coast or LNER only". `entries` are the request's own (a
+ * group named as a group), else the label's codes. */
+export function operatorOnlyLabel(
+  codes: readonly string[],
+  nameOf: (entry: string) => string,
+  entries?: readonly string[],
+): string {
+  return `${joinNames((entries?.length ? entries : codes).map(nameOf), 'or')} only`;
+}
+
+/** What a Prefer search's outcome says when it added nothing visible;
+ * `null` when it added or labelled an option. */
+export function preferOutcomeNote(outcome: string | undefined, names: string): string | null {
+  switch (outcome) {
+    case 'tooSlow':
+      return `The best route using only ${names} is much slower than these, so it isn't shown.`;
+    case 'none':
+      return `No route uses only ${names} from this time.`;
+    default:
+      return null;
+  }
 }
 
 /** The collapsed Advanced options' summary part: "Only Avanti West Coast,
@@ -157,7 +183,8 @@ export function operatorFilterSummary(
   nameOf: (entry: string) => string,
 ): string | null {
   if (!mode || !entries?.length) return null;
-  return `${mode === 'only' ? 'Only' : 'Avoid'} ${entries.map(nameOf).join(', ')}`;
+  const word = mode === 'only' ? 'Only' : mode === 'avoid' ? 'Avoid' : 'Prefer';
+  return `${word} ${entries.map(nameOf).join(', ')}`;
 }
 
 /** The line above filtered results, from what the plan applied (§4.4);

@@ -26,6 +26,12 @@ describe('the operator filter in the /plan URL', () => {
     expect(parsePlanSearchParams(toRaw(avoid))).toMatchObject({ operatorMode: 'avoid', operators: ['LT'] });
   });
 
+  it('round-trips Prefer', () => {
+    const prefer = planPageSearch({ ...base, results: 'options', operatorMode: 'prefer', operators: ['GR'] });
+    expect(new URLSearchParams(prefer).get('preferOperator')).toBe('GR');
+    expect(parsePlanSearchParams(toRaw(prefer))).toMatchObject({ operatorMode: 'prefer', operators: ['GR'] });
+  });
+
   it('normalizes entries, drops malformed ones, and prefers operator over avoidOperator', () => {
     const initial = parsePlanSearchParams({ operator: 'vt,bad!,GROUP:gtr', avoidOperator: 'LT' });
     expect(initial).toMatchObject({ operatorMode: 'only', operators: ['VT', 'group:GTR'] });

@@ -2065,6 +2065,7 @@ mod tests {
         let annotated = |delay: i32| {
             let mut segments = plan_trip(&TripPlanInput {
                 search: SegmentSearch {
+                    prefer: None,
                     connections: &connections,
                     interchange: &interchange,
                     date: date(),
@@ -2331,6 +2332,7 @@ mod tests {
         let mut segments = crate::data::trip_planning_itinerary::plan_trip(
             &crate::data::trip_planning_itinerary::TripPlanInput {
                 search: crate::data::trip_planning_itinerary::SegmentSearch {
+                    prefer: None,
                     connections: &connections,
                     interchange: &interchange,
                     date: date(),
@@ -2445,6 +2447,7 @@ mod tests {
         let mut segments = crate::data::trip_planning_itinerary::plan_trip(
             &crate::data::trip_planning_itinerary::TripPlanInput {
                 search: crate::data::trip_planning_itinerary::SegmentSearch {
+                    prefer: None,
                     connections: &connections,
                     interchange: &interchange,
                     date: date(),

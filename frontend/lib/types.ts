@@ -2081,7 +2081,10 @@ export type TripPlanOptionLabel =
   | { kind: 'fastest' }
   | { kind: 'leavesLatest' }
   | { kind: 'fewestChanges' }
-  | { kind: 'alternative'; viaCrs: string | null };
+  | { kind: 'alternative'; viaCrs: string | null }
+  /** The best route on only the preferred operators (`preferOperator`,
+   * 2026-10-31). */
+  | { kind: 'operatorOnly'; operators: string[] };
 
 /** One whole journey: `segments[s].itineraries[j]` for every segment `s`,
  * with its end-to-end change count. */
@@ -2234,6 +2237,13 @@ export interface TripPlanResponse extends TimetableCertaintyFields {
   operatorGroups?: Record<string, string[]>;
   /** The listed operators that run nothing on the date. */
   operatorsNotRunning?: string[];
+  /** `preferOperator` as applied (2026-10-31), groups expanded. */
+  preferOperator?: string[];
+  /** With `preferOperator`: what its extra search did. `added`: a new
+   * option, labelled; `labelled`: an option already shown was the one;
+   * `tooSlow`: its best route was too far behind these to show; `none`: no
+   * route uses only those operators. */
+  preferOperatorResult?: 'added' | 'labelled' | 'tooSlow' | 'none';
   /** The effective `maxChanges` (the API's default when none was sent). */
   maxChanges?: number;
   /** Present when live data was requested (the default). */

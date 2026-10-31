@@ -66,7 +66,11 @@ export function collectTripPlanStationCodes(response: TripPlanResponse): string[
  * latest", "Fewest changes", or an alternative route's "Via London
  * Marylebone" ("Other route" when no station tells it apart). `nameOf`
  * resolves a station code to its name. */
-export function optionLabelText(label: TripPlanOptionLabel, nameOf: (code: string) => string): string {
+export function optionLabelText(
+  label: TripPlanOptionLabel,
+  nameOf: (code: string) => string,
+  operatorOnly: (operators: string[]) => string = (operators) => `${operators.join(', ')} only`,
+): string {
   switch (label.kind) {
     case 'fastest':
       return 'Fastest';
@@ -76,6 +80,8 @@ export function optionLabelText(label: TripPlanOptionLabel, nameOf: (code: strin
       return 'Fewest changes';
     case 'alternative':
       return label.viaCrs ? `Via ${nameOf(label.viaCrs)}` : 'Other route';
+    case 'operatorOnly':
+      return operatorOnly(label.operators);
   }
 }
 
@@ -193,10 +199,11 @@ export function countAdvancedOptions(options: TripPlanAdvancedOptions): number {
  * `[name, comma-separated entries]`, or `null` with no operator. */
 export function operatorFilterParam(
   query: Pick<TripPlanQuery, 'operatorMode' | 'operators'>,
-): [name: 'operator' | 'avoidOperator', value: string] | null {
+): [name: 'operator' | 'avoidOperator' | 'preferOperator', value: string] | null {
   const operators = query.operators ?? [];
   if (!query.operatorMode || operators.length === 0) return null;
-  return [query.operatorMode === 'only' ? 'operator' : 'avoidOperator', operators.join(',')];
+  const name = { only: 'operator', avoid: 'avoidOperator', prefer: 'preferOperator' } as const;
+  return [name[query.operatorMode], operators.join(',')];
 }
 
 const LIST_PARAMS = [

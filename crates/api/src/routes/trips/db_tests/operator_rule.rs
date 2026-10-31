@@ -6,7 +6,8 @@
 //!
 //! Three direct services ZOA (TOPRA) to ZOB (TOPRB) on a synthetic day:
 //! TOP001 Avanti 10:00-10:30 (the fastest), TOP002 an LNER bus
-//! 10:05-10:50, TOP003 an LNER train 10:10-11:00. TOP002 and TOP003 have
+//! 10:05-10:50, TOP003 an LNER train 10:10-11:00, TOP005 a Southern train
+//! 13:00-13:30. TOP002 and TOP003 have
 //! no `schedule_destination_departures` row at all, as for the buses and
 //! ferries that table misses.
 
@@ -48,6 +49,7 @@ async fn seed(pool: &PgPool) {
         ("TOP001", "10:00", "10:30", "train", "VT"),
         ("TOP002", "10:05", "10:50", "bus", "GR"),
         ("TOP003", "10:10", "11:00", "train", "GR"),
+        ("TOP005", "13:00", "13:30", "train", "SN"),
     ] {
         exec(
             pool,
@@ -123,6 +125,103 @@ async fn the_same_operator_search_rides_that_operators_trains_and_buses_only() {
     // Avoiding LNER leaves Avanti.
     let uids = first_uids(&app, Some(trip_planner::OperatorRule::avoid(lner))).await;
     assert_eq!(uids, ["TOP001"]);
+
+    cleanup(&pool).await;
+}
+
+/// `?preferOperator=` (P3): Compare options from 09:50 is Avanti's direct
+/// train alone; preferring LNER adds its bus, labelled; preferring Avanti
+/// labels the option already there; Southern's only train is far too late.
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api \
+            routes::trips -- --ignored --test-threads=1`"]
+async fn prefer_adds_or_labels_one_operator_only_option() {
+    let pool = connect().await;
+    seed(&pool).await;
+    let plan = |query: &str| {
+        get(
+            test_router(test_app(pool.clone())),
+            format!(
+                "/Trips/plan?origin=ZOA&destination=ZOB&date={DATE}&departAfter=09:50\
+                 &results=options&live=false{query}"
+            ),
+        )
+    };
+    let options = |body: &Value| -> Vec<(String, Value)> {
+        body["segments"][0]["itineraries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|itinerary| {
+                (
+                    itinerary["legs"][0]["trainUid"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                    itinerary["labels"].clone(),
+                )
+            })
+            .collect()
+    };
+
+    let (status, body) = plan("&preferOperator=GR").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["preferOperator"], serde_json::json!(["GR"]));
+    assert_eq!(body["preferOperatorResult"], "added");
+    assert_eq!(
+        options(&body),
+        [
+            (
+                "TOP001".to_string(),
+                serde_json::json!([{ "kind": "fastest" }])
+            ),
+            (
+                "TOP002".to_string(),
+                serde_json::json!([{ "kind": "operatorOnly", "operators": ["GR"] }])
+            ),
+        ]
+    );
+
+    let (_, body) = plan("&preferOperator=VT").await;
+    assert_eq!(body["preferOperatorResult"], "labelled");
+    assert_eq!(
+        options(&body),
+        [(
+            "TOP001".to_string(),
+            serde_json::json!([
+                { "kind": "fastest" },
+                { "kind": "operatorOnly", "operators": ["VT"] }
+            ])
+        )]
+    );
+
+    let (_, body) = plan("&preferOperator=SN").await;
+    assert_eq!(body["preferOperatorResult"], "tooSlow");
+    assert_eq!(options(&body).len(), 1);
+
+    // Prefer with Fastest, or with another operator parameter, is a 400.
+    let (status, body) = get(
+        test_router(test_app(pool.clone())),
+        format!("/Trips/plan?origin=ZOA&destination=ZOB&date={DATE}&preferOperator=GR"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.as_str().unwrap().contains("needs results=options"),
+        "{body}"
+    );
+    let (status, body) = plan("&preferOperator=GR&avoidOperator=VT").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.as_str()
+            .unwrap()
+            .contains("avoidOperator and preferOperator can't be used together"),
+        "{body}"
+    );
+    // Without it, no preferOperatorResult.
+    let (_, body) = plan("").await;
+    assert!(body.get("preferOperatorResult").is_none(), "{body}");
+    assert_eq!(body["preferOperator"], serde_json::json!([]));
 
     cleanup(&pool).await;
 }

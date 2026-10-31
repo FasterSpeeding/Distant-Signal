@@ -130,12 +130,16 @@ export function parsePlanSearchParams(raw: RawSearchParams): PlanFormInitial {
   // `avoidOperator`, which the API would reject alongside it.
   const only = operatorList(first(raw.operator));
   const avoidOperators = operatorList(first(raw.avoidOperator));
+  const prefer = operatorList(first(raw.preferOperator));
   if (only.length > 0) {
     initial.operatorMode = 'only';
     initial.operators = only;
   } else if (avoidOperators.length > 0) {
     initial.operatorMode = 'avoid';
     initial.operators = avoidOperators;
+  } else if (prefer.length > 0) {
+    initial.operatorMode = 'prefer';
+    initial.operators = prefer;
   }
   return initial;
 }

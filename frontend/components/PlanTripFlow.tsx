@@ -33,7 +33,15 @@ import type {
   TripPlanNoResultReason,
   TripPlanResponse,
 } from '@/lib/types';
-import { UNDERGROUND, operatorFilterBanner, operatorName, type OperatorMode } from '@/lib/plannerOperators';
+import {
+  UNDERGROUND,
+  joinNames,
+  operatorFilterBanner,
+  operatorName,
+  operatorOnlyLabel,
+  preferOutcomeNote,
+  type OperatorMode,
+} from '@/lib/plannerOperators';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { trackFeature } from '@/lib/usageAnalytics';
 
@@ -207,7 +215,14 @@ export function PlanTripFlow({
     trackFeature('plan', 'searched');
     if (query.results === 'options') trackFeature('compare_options', 'searched');
     if (query.operatorMode && query.operators?.length) {
-      trackFeature('plan_filters', query.operatorMode === 'only' ? 'operator_only' : 'operator_avoid');
+      trackFeature(
+        'plan_filters',
+        query.operatorMode === 'only'
+          ? 'operator_only'
+          : query.operatorMode === 'avoid'
+            ? 'operator_avoid'
+            : 'operator_prefer',
+      );
     }
     try {
       const sent = apiQuery(query);
@@ -245,6 +260,9 @@ export function PlanTripFlow({
   function selectItinerary(segmentIndex: number, itinerary: TripPlanItinerary) {
     if (isOtherOption(itinerary) && selections[segmentIndex]?.itinerary !== itinerary) {
       trackFeature('compare_options', 'alternative_selected');
+      if (itinerary.labels?.some((label) => label.kind === 'operatorOnly')) {
+        trackFeature('compare_options', 'operator_option_selected');
+      }
     }
     // With waypoints, the segments' itineraries are parts of whole
     // journeys (`plan.journeys`): choosing one part chooses its journey.
@@ -393,6 +411,15 @@ export function PlanTripFlow({
   }
 
   const banner = plan ? operatorFilterBanner(plan, nameOfOperator, answeredQuery?.operators) : null;
+  // Prefer's entries as the visitor chose them (a group as a group).
+  const preferEntries = answeredQuery?.operatorMode === 'prefer' ? answeredQuery.operators : undefined;
+  const preferNote = plan
+    ? preferOutcomeNote(
+        plan.preferOperatorResult,
+        joinNames((preferEntries?.length ? preferEntries : (plan.preferOperator ?? [])).map(nameOfOperator), 'or'),
+      )
+    : null;
+  const operatorOnly = (operators: string[]) => operatorOnlyLabel(operators, nameOfOperator, preferEntries);
 
   return (
     <Stack gap="md">
@@ -443,6 +470,11 @@ export function PlanTripFlow({
           <Anchor component="button" type="button" size="sm" onClick={() => openAdvancedOptions()}>
             Change
           </Anchor>
+        </Text>
+      )}
+      {preferNote && (
+        <Text size="sm" data-prefer-note>
+          {preferNote}
         </Text>
       )}
       {/* A network the plan could not use, such as no tram times for the
@@ -523,6 +555,7 @@ export function PlanTripFlow({
                       groups={groups}
                       stopAccess={plan.access}
                       operatorName={operatorCatalogue ? nameOfOperator : undefined}
+                      operatorOnlyLabel={operatorOnly}
                     />
                   </div>
                 ))}
