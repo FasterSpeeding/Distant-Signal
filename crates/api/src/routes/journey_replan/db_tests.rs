@@ -57,6 +57,7 @@ async fn cleanup(pool: &PgPool) -> FixtureCleanup {
         format!("DELETE FROM trains WHERE service_date = '{DATE}'"),
         format!("DELETE FROM schedule_calling_points_full WHERE service_date = '{DATE}'"),
         format!("DELETE FROM schedule_destination_departures WHERE service_date = '{DATE}'"),
+        format!("DELETE FROM schedule_services WHERE service_date = '{DATE}'"),
         "DELETE FROM tiploc_crs WHERE tiploc IN ('RPTSTC', 'RPTSTD', 'RPTSTE')".to_string(),
     ]);
     FixtureCleanup::new(pool, statements).await
@@ -122,6 +123,15 @@ async fn seed_timetable(pool: &PgPool) {
                       destination_arrival, operator_atoc, public_departure, \
                       public_destination_arrival) \
                  VALUES ('{DATE}', 'ZRD', '{dep}', '{uid}', 'ZRC', '{arr}', 'GR', '{dep}', '{arr}')"
+            ),
+        )
+        .await;
+        // Their operator, as the planner reads it (operator filtering P0).
+        exec(
+            pool,
+            &format!(
+                "INSERT INTO schedule_services (service_date, uid, mode, stp, operator_atoc) \
+                 VALUES ('{DATE}', '{uid}', 'train', 'P', 'GR')"
             ),
         )
         .await;
@@ -1198,4 +1208,199 @@ async fn a_change_that_relies_on_a_late_next_train_is_flagged() {
         }
     }
     assert!(flagged > 0, "{alternatives}");
+}
+
+/// Operator filtering P5 (spec 2026-10-31 §5.6, §6.9): a journey keeps the
+/// operator filter its plan was saved with, its page echoes it, `PUT
+/// .../operator-filter` changes or clears it, and the replans honour it,
+/// falling back to the best unfiltered route, flagged, when it leaves none.
+#[tokio::test]
+#[ignore = "requires a live database: DATABASE_URL"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: one scenario, read top to bottom"
+)]
+async fn a_journeys_operator_filter_is_kept_echoed_and_honoured_by_replans() {
+    let _now = pin_now();
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool).await;
+    seed_timetable(&pool).await;
+    let token = seed_session(&pool, USER).await;
+    let router = router(pool.clone());
+
+    // Saved with "only LNER" (every fixture train is LNER).
+    let (status, body) = call(
+        &router,
+        "POST",
+        "/Journeys/itinerary",
+        Some(&token),
+        Some(serde_json::json!({
+            "legs": [{
+                "trainUid": "RP0001", "serviceDate": DATE,
+                "originCrs": "ZRC", "destinationCrs": "ZRD"
+            }],
+            "operatorFilter": {"mode": "only", "entries": ["gr"]}
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let journey_id = body["journeyId"].as_i64().unwrap();
+    let leg_id = body["legId"].as_i64().unwrap();
+    let (_, detail) = call(
+        &router,
+        "GET",
+        &format!("/Journeys/{journey_id}"),
+        Some(&token),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        detail["operatorFilter"],
+        serde_json::json!({"mode": "only", "codes": ["GR"], "entries": ["GR"]}),
+        "{detail}"
+    );
+
+    // A missed train: the replan rides LNER, no flag.
+    let seeded: i64 = sqlx::query_scalar(
+        "INSERT INTO journey_breaks (journey_id, user_id, cause, fault, severity, \
+             trigger_leg_id, break_position, fingerprint) \
+         VALUES ($1, $2, 'user_missed', 'user', 1, $3, 1, '') RETURNING id",
+    )
+    .bind(journey_id)
+    .bind(USER)
+    .bind(leg_id)
+    .fetch_one(&pool)
+    .await
+    .expect("seed break");
+    let preview = |body: Value| {
+        let router = router.clone();
+        let token = token.clone();
+        async move {
+            call(
+                &router,
+                "POST",
+                &format!("/Journeys/{journey_id}/replan/preview"),
+                Some(&token),
+                Some(body),
+                None,
+            )
+            .await
+        }
+    };
+    let (status, missed) = preview(serde_json::json!({ "breakId": seeded })).await;
+    assert_eq!(status, StatusCode::OK, "{missed}");
+    let suggestions = missed["suggestions"]["suggestions"].as_array().unwrap();
+    assert!(!suggestions.is_empty(), "{missed}");
+    assert!(
+        suggestions
+            .iter()
+            .all(|s| s.get("outsideOperatorFilter").is_none()),
+        "{missed}"
+    );
+
+    // Avoiding LNER leaves nothing: the best route anyway, flagged.
+    let (status, body) = call(
+        &router,
+        "PUT",
+        &format!("/Journeys/{journey_id}/operator-filter"),
+        Some(&token),
+        Some(serde_json::json!({ "operatorFilter": {"mode": "avoid", "entries": ["GR"]} })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (status, avoided) = preview(serde_json::json!({ "breakId": seeded })).await;
+    assert_eq!(status, StatusCode::OK, "{avoided}");
+    let suggestions = avoided["suggestions"]["suggestions"].as_array().unwrap();
+    assert_eq!(suggestions.len(), 1, "{avoided}");
+    assert_eq!(suggestions[0]["outsideOperatorFilter"], true, "{avoided}");
+
+    // Preferring LNER labels its route.
+    call(
+        &router,
+        "PUT",
+        &format!("/Journeys/{journey_id}/operator-filter"),
+        Some(&token),
+        Some(serde_json::json!({ "operatorFilter": {"mode": "prefer", "entries": ["GR"]} })),
+        None,
+    )
+    .await;
+    let (_, preferred) = preview(serde_json::json!({ "breakId": seeded })).await;
+    let suggestions = preferred["suggestions"]["suggestions"].as_array().unwrap();
+    assert!(
+        suggestions
+            .iter()
+            .any(|s| s["operatorOnly"] == serde_json::json!(["GR"])),
+        "{preferred}"
+    );
+
+    // A bad filter is a 400; someone else's journey a 404; null clears it.
+    let (status, _) = call(
+        &router,
+        "PUT",
+        &format!("/Journeys/{journey_id}/operator-filter"),
+        Some(&token),
+        Some(serde_json::json!({ "operatorFilter": {"mode": "sometimes", "entries": ["GR"]} })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = call(
+        &router,
+        "PUT",
+        &format!("/Journeys/{journey_id}/operator-filter"),
+        Some(&token),
+        Some(serde_json::json!({ "operatorFilter": {"mode": "only", "entries": ["Q9"]} })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let other = seed_session(&pool, OTHER).await;
+    let (status, _) = call(
+        &router,
+        "PUT",
+        &format!("/Journeys/{journey_id}/operator-filter"),
+        Some(&other),
+        Some(serde_json::json!({ "operatorFilter": null })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &router,
+        "PUT",
+        &format!("/Journeys/{journey_id}/operator-filter"),
+        Some(&token),
+        Some(serde_json::json!({ "operatorFilter": null })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, detail) = call(
+        &router,
+        "GET",
+        &format!("/Journeys/{journey_id}"),
+        Some(&token),
+        None,
+        None,
+    )
+    .await;
+    assert!(detail.get("operatorFilter").is_none(), "{detail}");
+
+    // Saving with a bad filter is refused, and saves nothing.
+    let (status, body) = call(
+        &router,
+        "POST",
+        "/Journeys/itinerary",
+        Some(&token),
+        Some(serde_json::json!({
+            "legs": [{"trainUid": "RP0002", "serviceDate": DATE}],
+            "operatorFilter": {"mode": "only", "entries": []}
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }

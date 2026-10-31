@@ -19,6 +19,12 @@
 //! Either caller may send 1 to [`MAX_ITINERARY_LEGS`] legs, the journey's
 //! own leg cap, at least one of them a train leg.
 //!
+//! Optional `"operatorFilter": {"mode": "only", "entries": ["VT", "LT"]}`
+//! (2026-10-31): the `/plan` operator filter the route was planned with
+//! (`only`, `avoid` or `prefer`, entries as `/Trips/plan`'s `operator`
+//! takes them), stored on the journey so its replans honour it
+//! (`data::journey_operator_filter`).
+//!
 //! Body (camelCase, unknown fields refused):
 //!
 //! ```json
@@ -67,6 +73,10 @@ struct ItineraryRequest {
     #[serde(default)]
     custom_name: Option<String>,
     legs: Vec<ItineraryLegRequest>,
+    /// The plan's operator filter (additive, 2026-10-31). Last, and skipped
+    /// when absent, so a body without it hashes as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operator_filter: Option<crate::data::journey_operator_filter::OperatorFilterRequest>,
 }
 
 /// One leg, a train leg or (`kind: "untracked"`) an untracked one. Flat
@@ -265,6 +275,48 @@ pub(crate) enum ValidLeg {
 
 fn invalid(message: impl Into<String>) -> RouteError {
     RouteError::coded(StatusCode::BAD_REQUEST, "invalid_itinerary", message)
+}
+
+/// The body's `operatorFilter`, parsed and checked: a `400` for an
+/// unknown mode, a malformed or unknown entry (as `/Trips/plan` judges
+/// them, against the train legs' service dates), or no entry at all.
+async fn check_operator_filter(
+    app: &App,
+    request: Option<&crate::data::journey_operator_filter::OperatorFilterRequest>,
+    legs: &[ValidLeg],
+) -> Result<Option<crate::data::journey_operator_filter::JourneyOperatorFilter>, RouteError> {
+    let Some(request) = request else {
+        return Ok(None);
+    };
+    let filter = crate::data::journey_operator_filter::parse(request).map_err(invalid)?;
+    let codes = filter.named_atoc_codes();
+    if !codes.is_empty() {
+        let mut dates: Vec<NaiveDate> = legs
+            .iter()
+            .filter_map(|leg| match leg {
+                ValidLeg::Train { service_date, .. } => Some(*service_date),
+                ValidLeg::Untracked { .. } => None,
+            })
+            .collect();
+        dates.sort_unstable();
+        dates.dedup();
+        let known = crate::data::reference::known_operator_codes(&app.database, &codes, &dates)
+            .await
+            .map_err(internal("check operator codes"))?;
+        let unknown: Vec<&str> = codes
+            .iter()
+            .filter(|code| !known.contains(*code))
+            .map(String::as_str)
+            .collect();
+        if !unknown.is_empty() {
+            return Err(invalid(format!(
+                "operatorFilter: {} {} not a known train operator code",
+                unknown.join(", "),
+                if unknown.len() == 1 { "is" } else { "are" }
+            )));
+        }
+    }
+    Ok(Some(filter))
 }
 
 /// Parses and validates the body: the leg count, each train leg's UID,
@@ -514,6 +566,8 @@ async fn save_itinerary(
     }
     let (request, custom_name, legs) =
         validate(body, MAX_ITINERARY_LEGS, crate::routes::london_today())?;
+    let operator_filter =
+        check_operator_filter(app, request.operator_filter.as_ref(), &legs).await?;
     let request_hash = {
         let canonical =
             serde_json::to_vec(&request).map_err(|err| internal("hash request")(err.into()))?;
@@ -635,6 +689,16 @@ async fn save_itinerary(
     )
     .await
     .map_err(internal("create journey from itinerary"))?;
+    if let Some(filter) = &operator_filter {
+        crate::data::journey_operator_filter::store(
+            &mut *tx,
+            journey_id,
+            &user.user_id,
+            Some(filter),
+        )
+        .await
+        .map_err(internal("store the operator filter"))?;
+    }
     let (Some(&(first_leg_id, _)), Some(first_tracking_id)) = (
         created.first(),
         created.iter().find_map(|&(_, tracking_id)| tracking_id),
@@ -773,6 +837,32 @@ mod tests {
     /// The idempotency hash is over this serialisation, and a key claimed
     /// before untracked legs existed must replay after the deploy: a train
     /// leg serialises exactly as the old four-field struct did.
+    #[test]
+    fn a_body_without_an_operator_filter_hashes_as_before_and_one_with_it_differs() {
+        let body = br#"{"legs":[{"trainUid":"c12345","serviceDate":"2026-10-20"}]}"#;
+        let request: ItineraryRequest = serde_json::from_slice(body).unwrap();
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"customName":null,"legs":[{"trainUid":"c12345","serviceDate":"2026-10-20","originCrs":null,"destinationCrs":null}]}"#
+        );
+        let with: ItineraryRequest = serde_json::from_slice(
+            br#"{"legs":[{"trainUid":"c12345","serviceDate":"2026-10-20"}],"operatorFilter":{"mode":"only","entries":["VT"]}}"#,
+        )
+        .unwrap();
+        assert!(
+            serde_json::to_string(&with)
+                .unwrap()
+                .ends_with(r#""operatorFilter":{"mode":"only","entries":["VT"]}}"#)
+        );
+        assert!(
+            serde_json::from_slice::<ItineraryRequest>(
+                br#"{"legs":[],"operatorFilter":{"mode":"only","entries":["VT"],"extra":1}}"#
+            )
+            .is_err(),
+            "unknown fields are refused"
+        );
+    }
+
     #[test]
     fn a_train_leg_hashes_as_it_did_before_untracked_legs() {
         let body = br#"{"customName":"Trip","legs":[{"originCrs":"cre","serviceDate":"2026-10-20","trainUid":"c12345"}]}"#;

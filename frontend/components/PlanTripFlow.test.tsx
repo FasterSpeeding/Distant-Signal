@@ -1537,6 +1537,26 @@ describe('PlanTripFlow operator filter (2026-10-31)', () => {
       expect(screen.getByText(/Only Avanti West Coast, Southern, London Underground/)).toBeInTheDocument(),
     );
   });
+
+  it('saves the journey with the filter the plan applied', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(filteredPlan) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
+      });
+    await searchWith(fetchMock, { operatorMode: 'only', operators: ['VT'] });
+    await screen.findByText(/Showing routes using only Avanti West Coast/);
+    const radios = screen.getAllByRole('radio');
+    fireEvent.click(radios[radios.length - 1]!);
+    fireEvent.click(screen.getByText('Track this journey'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const body = JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body)) as {
+      operatorFilter?: unknown;
+    };
+    expect(body.operatorFilter).toEqual({ mode: 'only', entries: ['VT'] });
+  });
 });
 
 describe('PlanTripFlow Prefer (2026-10-31)', () => {

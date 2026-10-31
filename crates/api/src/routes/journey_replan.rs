@@ -86,6 +86,10 @@ pub fn router() -> Router {
             "/Journeys/{journey_id}/suggestions-muted",
             axum::routing::put(put_suggestions_muted),
         )
+        .route(
+            "/Journeys/{journey_id}/operator-filter",
+            axum::routing::put(put_operator_filter),
+        )
 }
 
 /// How long after a change the plan before it can be gone back to
@@ -403,6 +407,14 @@ pub(crate) async fn plan_suggestions(
         .filter_map(|uid| operators.get(uid).map(|op| op.code.clone()))
         .collect();
     replaced_operators.dedup();
+    // The operator filter the journey was planned with (spec 2026-10-31
+    // §5.6): every search below honours it.
+    let operator_filter = crate::data::journey_operator_filter::load(&app.database, journey_id)
+        .await
+        .map_err(|err| internal("read the operator filter")(err))?;
+    let filter_rule = operator_filter
+        .as_ref()
+        .and_then(crate::data::journey_operator_filter::JourneyOperatorFilter::rule);
     let subscription_ids: Vec<i64> = (index..=last_train)
         .filter_map(|i| legs[i].train_subscription_id)
         .collect();
@@ -435,7 +447,7 @@ pub(crate) async fn plan_suggestions(
             depart_after_min,
             results: "options",
             max_changes,
-            operator_rule: None,
+            operator_rule: filter_rule.clone(),
         },
         slot,
     )
@@ -446,6 +458,8 @@ pub(crate) async fn plan_suggestions(
         date,
         through_leg_id: last_leg_id,
         rejoins_leg_id: None,
+        operator_only: None,
+        outside_operator_filter: false,
     }));
     let excluded_uid = timing.map(|t| t.uid.clone());
     let next = next_departures(
@@ -457,7 +471,7 @@ pub(crate) async fn plan_suggestions(
             depart_after_min,
             results: "fastest",
             max_changes,
-            operator_rule: None,
+            operator_rule: filter_rule.clone(),
         },
         NEXT_DEPARTURES,
         excluded_uid.as_deref(),
@@ -469,6 +483,8 @@ pub(crate) async fn plan_suggestions(
         date,
         through_leg_id: last_leg_id,
         rejoins_leg_id: None,
+        operator_only: None,
+        outside_operator_filter: false,
     }));
     if let Some(next) = (index + 1..=last_train).find(|&i| analysis.is_train(i))
         && let (Some(next_timing), Some(next_board)) =
@@ -490,7 +506,7 @@ pub(crate) async fn plan_suggestions(
                 depart_after_min,
                 results: "fastest",
                 max_changes,
-                operator_rule: None,
+                operator_rule: filter_rule.clone(),
             },
             slot,
         )
@@ -509,6 +525,8 @@ pub(crate) async fn plan_suggestions(
                     date,
                     through_leg_id: legs[next - 1].id,
                     rejoins_leg_id: Some(legs[next].id),
+                    operator_only: None,
+                    outside_operator_filter: false,
                 }),
         );
     }
@@ -516,8 +534,12 @@ pub(crate) async fn plan_suggestions(
     // buses and ferries (one code covers all three, from the graph's
     // `schedule_services` operators), with the Tube and any transit free to
     // use between them (operator filtering spec §5.6, §6.3).
+    let ticket_operators = operator_filter.as_ref().map_or_else(
+        || replaced_operators.clone(),
+        |filter| filter.narrow_ticket_operators(&replaced_operators),
+    );
     let same_operators = schedule_query::OperatorMask::of(
-        replaced_operators
+        ticket_operators
             .iter()
             .filter_map(|code| schedule_query::OperatorId::from_atoc(code)),
     );
@@ -545,6 +567,83 @@ pub(crate) async fn plan_suggestions(
             date,
             through_leg_id: last_leg_id,
             rejoins_leg_id: None,
+            operator_only: None,
+            outside_operator_filter: false,
+        }));
+    }
+
+    // A "prefer" filter (spec §5.6): its own search, on only those
+    // operators, labelled; kept within twice the alternatives' detour
+    // allowance of the best other route, as on `/Trips/plan`.
+    if let Some(filter) = operator_filter.as_ref().filter(|f| f.mode == "prefer") {
+        let preferred = next_departures(
+            app,
+            ReplanQuery {
+                origin: origin.clone(),
+                destination: destination.clone(),
+                date,
+                depart_after_min,
+                results: "fastest",
+                max_changes,
+                operator_rule: Some(trip_planner::OperatorRule::only(filter.mask())),
+            },
+            1,
+            excluded_uid.as_deref(),
+            slot,
+        )
+        .await?;
+        let best = plans
+            .iter()
+            .min_by_key(|p| p.itinerary.arrival_min)
+            .map(|p| (p.itinerary.departure_min, p.itinerary.arrival_min));
+        plans.extend(
+            preferred
+                .into_iter()
+                .filter(|itinerary| {
+                    best.is_none_or(|(departure, arrival)| {
+                        let allowance = 2 * trip_planner::options::allowance_minutes(
+                            arrival.saturating_sub(departure),
+                        );
+                        itinerary.arrival_min <= arrival + allowance
+                    })
+                })
+                .map(|itinerary| Planned {
+                    itinerary,
+                    date,
+                    through_leg_id: last_leg_id,
+                    rejoins_leg_id: None,
+                    operator_only: Some(filter.codes.clone()),
+                    outside_operator_filter: false,
+                }),
+        );
+    }
+    // The filter left nothing: the best route without it, flagged, so a
+    // stored preference never strands a traveller (spec §5.6, approved
+    // 2026-10-31).
+    if filter_rule.is_some() && plans.is_empty() {
+        let fallback = next_departures(
+            app,
+            ReplanQuery {
+                origin: origin.clone(),
+                destination: destination.clone(),
+                date,
+                depart_after_min,
+                results: "fastest",
+                max_changes,
+                operator_rule: None,
+            },
+            1,
+            excluded_uid.as_deref(),
+            slot,
+        )
+        .await?;
+        plans.extend(fallback.into_iter().map(|itinerary| Planned {
+            itinerary,
+            date,
+            through_leg_id: last_leg_id,
+            rejoins_leg_id: None,
+            operator_only: None,
+            outside_operator_filter: true,
         }));
     }
 
@@ -701,6 +800,10 @@ pub(crate) struct DetailExtras {
     /// Suggestion pushes muted for this journey (owner only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestions_muted: Option<bool>,
+    /// The `/plan` operator filter the journey keeps (owner only; additive,
+    /// 2026-10-31). Absent when it has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator_filter: Option<crate::data::journey_operator_filter::JourneyOperatorFilter>,
     /// Per current leg, the legs of the plan before it that it replaced.
     #[serde(skip)]
     pub replaces: HashMap<i64, Vec<i64>>,
@@ -803,12 +906,17 @@ async fn detail_extras_inner(
         Some(_) => Some(journey_breaks::suggestions_muted(pool, journey_id).await?),
         None => None,
     };
+    let operator_filter = match owner_user_id {
+        Some(_) => crate::data::journey_operator_filter::load(pool, journey_id).await?,
+        None => None,
+    };
     Ok(DetailExtras {
         open_break: open
             .as_ref()
             .map(|row| OpenBreakSummary::from_row(row, now)),
         revision_count: summary.revision_count,
         suggestions_muted,
+        operator_filter,
         replaces,
     })
 }
@@ -1768,6 +1876,82 @@ async fn put_suggestions_muted(
             )
             .await
             .map_err(internal("mute suggestions"))?
+            {
+                Ok(StatusCode::NO_CONTENT.into_response())
+            } else {
+                Err(not_found())
+            }
+        }
+        .await,
+    )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OperatorFilterBody {
+    operator_filter: Option<crate::data::journey_operator_filter::OperatorFilterRequest>,
+}
+
+/// `PUT /Journeys/{id}/operator-filter` `{operatorFilter: {mode, entries} |
+/// null}` (2026-10-31): changes or clears the operator filter the journey's
+/// replans honour (spec §6.9). 204; 400 for a filter `/Trips/plan` would
+/// refuse (its codes checked against the journey's legs' dates); 404 for a
+/// journey that isn't the caller's. Replans already stored are not redone.
+async fn put_operator_filter(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(journey_id): Path<i64>,
+    Json(body): Json<OperatorFilterBody>,
+) -> Response {
+    render(
+        async {
+            let filter = match &body.operator_filter {
+                None => None,
+                Some(request) => {
+                    let filter = crate::data::journey_operator_filter::parse(request)
+                        .map_err(|message| RouteError::from((StatusCode::BAD_REQUEST, message)))?;
+                    let codes = filter.named_atoc_codes();
+                    if !codes.is_empty() {
+                        let dates: Vec<NaiveDate> = sqlx::query_scalar(
+                            "SELECT DISTINCT service_date FROM journey_legs WHERE journey_id = $1",
+                        )
+                        .bind(journey_id)
+                        .fetch_all(&app.database)
+                        .await
+                        .map_err(|err| internal("read the journey's dates")(err.into()))?;
+                        let known = crate::data::reference::known_operator_codes(
+                            &app.database,
+                            &codes,
+                            &dates,
+                        )
+                        .await
+                        .map_err(internal("check operator codes"))?;
+                        let unknown: Vec<&str> = codes
+                            .iter()
+                            .filter(|code| !known.contains(*code))
+                            .map(String::as_str)
+                            .collect();
+                        if !unknown.is_empty() {
+                            return Err(RouteError::from((
+                                StatusCode::BAD_REQUEST,
+                                format!(
+                                    "operatorFilter: {} is not a known train operator code",
+                                    unknown.join(", ")
+                                ),
+                            )));
+                        }
+                    }
+                    Some(filter)
+                }
+            };
+            if crate::data::journey_operator_filter::store(
+                &app.database,
+                journey_id,
+                &user.id,
+                filter.as_ref(),
+            )
+            .await
+            .map_err(internal("store the operator filter"))?
             {
                 Ok(StatusCode::NO_CONTENT.into_response())
             } else {

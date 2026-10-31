@@ -323,7 +323,8 @@ pub const FEATURE_STEPS: &[(&str, &[&str])] = &[
         ],
     ),
     // A `/plan` search with an operator filter (2026-10-31): its kind
-    // only, never the operators; and the "Add London Underground" button.
+    // only, never the operators; the "Add London Underground" button; and
+    // a saved journey's filter changed or removed on its page.
     (
         "plan_filters",
         &[
@@ -331,6 +332,8 @@ pub const FEATURE_STEPS: &[(&str, &[&str])] = &[
             "operator_avoid",
             "operator_prefer",
             "operator_add_underground",
+            "journey_operator_filter_changed",
+            "journey_operator_filter_removed",
         ],
     ),
     // The planner's "Compare options": a search with it on, and an option

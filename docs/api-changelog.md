@@ -3,6 +3,31 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-31: Journeys remember their operator filter
+
+Additive (planner operator filtering spec, phase P5).
+
+- **`POST /Journeys/itinerary`** takes an optional last field
+  `"operatorFilter": {"mode": "only" | "avoid" | "prefer", "entries":
+  ["VT", "group:GTR"]}`: the `/plan` filter the route was planned with.
+  Entries are checked as `/Trips/plan`'s `operator` checks them (ATOC codes
+  named directly against the train legs' dates); a bad one is a **400** and
+  saves nothing. A body without it hashes as before, so idempotency keys
+  are unchanged.
+- **`GET /Journeys/{id}`** (owner only) gains `operatorFilter: {mode,
+  codes, entries}`: `codes` as applied (groups expanded), `entries` as
+  chosen. Absent when the journey has none.
+- **`PUT /Journeys/{id}/operator-filter`** with `{"operatorFilter": {mode,
+  entries}}` sets it, `{"operatorFilter": null}` clears it: **204**, **400**
+  for a bad filter, **404** for someone else's journey.
+- **Replans honour it.** `only`/`avoid` apply to every replan search, and
+  narrow the ticket's "same operator" search. `prefer` adds one route on
+  only those operators, within twice the detour allowance, labelled with
+  the suggestion's new `operatorOnly: ["GR"]`. When `only`/`avoid` leaves
+  no suggestion at all, the best one without it is offered, with
+  `outsideOperatorFilter: true`. Both suggestion fields are absent
+  otherwise.
+
 ## 2026-10-31: `preferOperator` on `/Trips/plan` (Compare options)
 
 Additive (planner operator filtering spec, phase P3).

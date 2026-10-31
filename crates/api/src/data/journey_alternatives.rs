@@ -107,6 +107,14 @@ pub struct Suggestion {
     pub pick_labels: Vec<String>,
     /// One of the (at most three) cards; the rest are "More options".
     pub card: bool,
+    /// The best route on only the journey's preferred operators
+    /// (additive, 2026-10-31): their codes. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_only: Option<Vec<String>>,
+    /// The journey's operator filter left no suggestion, so this one uses
+    /// other operators (additive, 2026-10-31). Absent when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside_operator_filter: bool,
 }
 
 impl Suggestion {
@@ -266,6 +274,13 @@ pub struct Planned {
     pub date: NaiveDate,
     pub through_leg_id: i64,
     pub rejoins_leg_id: Option<i64>,
+    /// From the journey's "prefer" operator filter's own search
+    /// (2026-10-31): the preferred operators, for the suggestion's
+    /// `operatorOnly`.
+    pub operator_only: Option<Vec<String>>,
+    /// The fallback when the journey's operator filter left nothing
+    /// (2026-10-31, spec §5.6): served flagged `outsideOperatorFilter`.
+    pub outside_operator_filter: bool,
 }
 
 fn instant(date: NaiveDate, minute: u32) -> Option<DateTime<Utc>> {
@@ -531,7 +546,8 @@ pub struct SetInputs {
 /// live times dropped, at most [`MAX_SUGGESTIONS`] kept, cards first.
 #[expect(
     clippy::implicit_hasher,
-    reason = "callers always use the default hasher"
+    clippy::too_many_lines,
+    reason = "callers always use the default hasher; one linear pass from plans to the ranked set"
 )]
 pub fn build_set(
     plans: Vec<Planned>,
@@ -559,6 +575,16 @@ pub fn build_set(
                 SuggestionLeg::Untracked { .. } => None,
             })
             .collect();
+        // The same route from the "prefer" search: the kept one is it.
+        if planned.operator_only.is_some()
+            && let Some(index) = seen.iter().position(|seen| *seen == key)
+        {
+            kept[index]
+                .0
+                .operator_only
+                .clone_from(&planned.operator_only);
+            continue;
+        }
         if key.is_empty()
             || seen.contains(&key)
             || inputs
@@ -612,6 +638,8 @@ pub fn build_set(
                 pick_labels: ranked.picks.iter().map(|p| p.label().to_string()).collect(),
                 picks: ranked.picks,
                 card: ranked.card,
+                operator_only: planned.operator_only.clone(),
+                outside_operator_filter: planned.outside_operator_filter,
             }
         })
         .collect();

@@ -102,7 +102,14 @@ export const FEATURE_STEPS = {
   ],
   /** A `/plan` search with an operator filter (its kind only, never the
    * operators), and the "Add London Underground" button. */
-  plan_filters: ['operator_only', 'operator_avoid', 'operator_prefer', 'operator_add_underground'],
+  plan_filters: [
+    'operator_only',
+    'operator_avoid',
+    'operator_prefer',
+    'operator_add_underground',
+    'journey_operator_filter_changed',
+    'journey_operator_filter_removed',
+  ],
   /** The planner's "Compare options": a search with it on, an option other
    * than the fastest chosen, and that saved as a journey. */
   compare_options: ['searched', 'alternative_selected', 'alternative_saved', 'operator_option_selected'],

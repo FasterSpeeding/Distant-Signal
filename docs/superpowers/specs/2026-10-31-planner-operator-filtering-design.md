@@ -84,6 +84,19 @@ Found while building P0 and P1:
 - **The picker's operators come from a new `GET /Trips/operators`** (P2):
   the codes running from today on, rather than a `running` flag on the
   Trains search's endpoint. That endpoint is left alone (§11 item 10).
+- **A journey's filter changes through `PUT /Journeys/{id}/operator-filter`**
+  (P5), body `{"operatorFilter": {...} | null}`, not a `PATCH /Journeys/{id}`
+  field. It follows `PUT /Journeys/{id}/suggestions-muted`; `PATCH` there
+  renames the journey and keeps its strict body. `GET` leaves
+  `operatorFilter` out (rather than `null`) when there is none, and shows it
+  to the owner only.
+- **The fallback suggestion's badge always reads "Uses other operators"**
+  (P5). The card doesn't know the journey's mode, and the badge's tap text
+  explains it. The fallback is the next departure without the filter
+  (not the main options search), so the missed train itself is never
+  offered back.
+- **`/plan` sends the filter from `PlanTripFlow`** (P5), next to the body
+  it already builds, not from `tripPlanSave.ts`.
 
 ## 1. Summary
 

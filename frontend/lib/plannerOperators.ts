@@ -1,5 +1,5 @@
 import type { ComboboxItem, ComboboxParsedItem, OptionsFilter } from '@mantine/core';
-import type { PlannerOperatorCatalogue, TripPlanResponse } from './types';
+import type { JourneyOperatorFilter, PlannerOperatorCatalogue, TripPlanResponse } from './types';
 
 /** The planner's operator filters (`GET /Trips/plan`'s `operator` and
  * `avoidOperator`, docs/api-changelog.md 2026-10-31): their modes, the
@@ -210,4 +210,48 @@ export function operatorFilterBanner(
       : `Showing routes that avoid ${names}.`;
   }
   return null;
+}
+
+/** `POST /Journeys/itinerary`'s `operatorFilter` (2026-10-31). */
+export interface SavedOperatorFilter {
+  mode: 'only' | 'avoid' | 'prefer';
+  entries: string[];
+}
+
+/** The filter a saved journey keeps, from what the plan **applied** (its
+ * response echo, §6.9), not the form; `null` when none applied. `query`
+ * is the search that made the plan: its entries (a group named as a
+ * group) are kept when its mode matches, else the echoed codes. */
+export function savedOperatorFilter(
+  plan: Pick<TripPlanResponse, 'operator' | 'avoidOperator' | 'preferOperator'>,
+  query?: { operatorMode?: string | undefined; operators?: readonly string[] | undefined } | null,
+): SavedOperatorFilter | null {
+  const applied: [SavedOperatorFilter['mode'], string[] | undefined][] = [
+    ['only', plan.operator],
+    ['avoid', plan.avoidOperator],
+    ['prefer', plan.preferOperator],
+  ];
+  for (const [mode, codes] of applied) {
+    if (!codes?.length) continue;
+    const entries = query?.operatorMode === mode && query.operators?.length ? query.operators : codes;
+    return { mode, entries: [...entries] };
+  }
+  return null;
+}
+
+/** The journey page's line (§6.9): "Planned using only Avanti West
+ * Coast", "Planned avoiding GTR", "Planned preferring LNER". */
+export function journeyOperatorFilterLine(
+  filter: Pick<JourneyOperatorFilter, 'mode' | 'entries'>,
+  nameOf: (entry: string) => string,
+): string {
+  const names = (conjunction: 'and' | 'or') => joinNames(filter.entries.map(nameOf), conjunction);
+  switch (filter.mode) {
+    case 'only':
+      return `Planned using only ${names('and')}`;
+    case 'avoid':
+      return `Planned avoiding ${names('and')}`;
+    case 'prefer':
+      return `Planned preferring ${names('or')}`;
+  }
 }
