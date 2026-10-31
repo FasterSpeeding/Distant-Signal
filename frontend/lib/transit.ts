@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { ApiNotFoundError, getTransitNetwork } from './api';
+import { ApiNotFoundError, getTransitNetwork, getTransitNetworks } from './api';
 import type { TransitLine, TransitLineStatus } from './types';
 
 // In their own module so a Client Component (`lib/stationSearch.ts`) can
@@ -15,6 +15,23 @@ export async function orNotFound<T>(value: Promise<T>): Promise<T> {
   } catch (err) {
     if (err instanceof ApiNotFoundError) notFound();
     throw err;
+  }
+}
+
+/** A TfL line's timetable page (`tfl-victoria` to
+ * `/transit/tfl/lines/victoria`, the TfL transit design §8) while the api
+ * serves the TfL network and it has the line; `null` otherwise, or on any
+ * failure (the link is an extra, never a reason to fail a page). */
+export async function tflTimetableHref(tflLineId: string): Promise<string | null> {
+  const local = tflLineId.startsWith('tfl-') ? tflLineId.slice('tfl-'.length) : null;
+  if (!local) return null;
+  try {
+    const networks = await getTransitNetworks();
+    if (!networks.some((network) => network.id === 'tfl')) return null;
+    const detail = await getTransitNetwork('tfl');
+    return detail.lines.some((line) => line.lineId === local) ? `/transit/tfl/lines/${local}` : null;
+  } catch {
+    return null;
   }
 }
 

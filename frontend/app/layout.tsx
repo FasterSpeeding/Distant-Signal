@@ -133,7 +133,7 @@ export const viewport: Viewport = {
 // every logged-in user gets the chat, so it needs no request of its own.
 async function NavBarWithSession({ freshness }: { freshness: DataFreshness }) {
   // `getTransitNetworks()` never throws ([] on failure) and is cached for
-  // five minutes, so the "Trams" entry costs no round trip on most renders.
+  // five minutes, so the "Trams and metros" entry costs no round trip on most renders.
   const [session, transitNetworks] = await Promise.all([getSessionOrLoggedOut(), getTransitNetworks()]);
   // The opt-in usage tracker (DS-190) rides on this same session fetch:
   // it needs to know who is logged in and the account's choice, and costs

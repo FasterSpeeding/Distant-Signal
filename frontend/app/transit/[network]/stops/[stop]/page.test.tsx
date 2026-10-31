@@ -107,7 +107,7 @@ describe('/transit/[network]/stops/[stop]', () => {
   it('says when the board is empty or the date is outside the timetable', async () => {
     vi.mocked(api.getTransitDepartures).mockResolvedValue({ ...BOARD, departures: [], nextCursor: null });
     await render();
-    expect(screen.getByText('No more scheduled trams this day.')).toBeTruthy();
+    expect(screen.getByText('No more scheduled departures this day.')).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'Later departures' })).toBeNull();
     cleanup();
     vi.mocked(api.getTransitDepartures).mockResolvedValue({

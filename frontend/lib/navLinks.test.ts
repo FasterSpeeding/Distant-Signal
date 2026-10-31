@@ -24,7 +24,7 @@ describe('TRANSIT_DESTINATION', () => {
   it('sits straight after Lines, and never in the bar', () => {
     const hrefs = navDrawerDestinations(false, true).map((d) => d.href);
     expect(hrefs[hrefs.indexOf('/lines') + 1]).toBe(TRANSIT_DESTINATION.href);
-    expect(TRANSIT_DESTINATION.label).toBe('Trams');
+    expect(TRANSIT_DESTINATION.label).toBe('Trams and metros');
     expect(PRIMARY_NAV_DESTINATIONS).not.toContain(TRANSIT_DESTINATION);
   });
 });

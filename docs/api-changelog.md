@@ -46,6 +46,42 @@ answered exactly as before. They are not on `/Trips/plan`.
   page now offers it as "Starts at" in Advanced options, beside
   "Terminates at".
 
+## 2026-10-31: the `tfl` transit network, line modes and frequencies
+
+Additive, and dark until `API_TRANSIT_NETWORKS` lists `tfl` (DS-212;
+docs/superpowers/specs/2026-10-30-tfl-transit-design.md;
+`crates/api/src/routes/transit.rs`).
+
+- **A new network id, `tfl`:** TfL's Underground, DLR and London Trams
+  from TfL's own timetable. Its lines are TfL's ids (`victoria`,
+  `hammersmith-city`, `dlr`, `tram`); public ids `tfl:victoria`. Station
+  ids are NaPTAN access nodes (`9400ZZLUBXN`); TfL's stop pages use the
+  stop-area spelling (`940GZZLUBXN`).
+- **Every line** (`/public/transit/{network}`'s `lines[]`, a line, and a
+  board row's `line`) gains `mode` (`tube`, `dlr`, `tram`, or the
+  network's own mode, `tram` for Metrolink and NET) and `statusLineId`:
+  the `line_status` id its `status` comes from and a pin of it should
+  store. It is the line's public id, except on `tfl`, where it is TfL's
+  own line (`tfl-victoria`): those pins are TfL line pins, as before.
+- **`/public/transit/{network}` and `/public/transit/{network}/lines/{line}`**
+  gain `statusSource`: `situations` (the network's published disruptions,
+  as before) or `tfl` (TfL's own line status, from `tfl-<line>` rows;
+  `situations` lists are then always empty, and `/Line/tfl-<line>/Status`
+  has the detail). `/public/transit/tfl` also has `nationalRailLines`
+  (`[{id, name}]`): TfL's lines that are National Rail catalogue lines
+  here (the Elizabeth line and the Overground lines).
+- **`/public/transit/{network}/lines/{line}?date=YYYY-MM-DD`** gains
+  `frequency` (default date: today in London): `{date, outsideHorizon,
+  directions: [{direction, station: {id, name}, first, last, bands:
+  [{band, from, to, departures, minGapMinutes, maxGapMinutes}]}]}`. For
+  each direction, its departures (replacement buses left out) from its
+  busiest station: the first and last (`HH:MM`), and per band of the day
+  (`early` to 07:00, `morning-peak`, `daytime` 10:00 to 16:00,
+  `evening-peak`, `evening` 19:00 to 22:00, `late` from 22:00) the count
+  and the shortest and longest gap in whole minutes (`null` with one
+  departure; gaps under a minute, two branches meeting, are left out).
+  Scheduled only, like every transit route.
+
 ## 2026-10-30: stop filters on the `/trains` boards (`calls_at`, `via`, `avoid`, `avoid_stop`)
 
 Additive: four optional query parameters on `GET /public/trains/search`

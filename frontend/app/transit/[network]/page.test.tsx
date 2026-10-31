@@ -2,7 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { cardOf } from '@/test/clickableCard';
-import { MINOR_DELAYS, NETWORK, NOTHING_REPORTED, SITUATIONS, STATUS_UNAVAILABLE, STOPS } from '@/test/transitFixtures';
+import {
+  MINOR_DELAYS,
+  NETWORK,
+  NOTHING_REPORTED,
+  SITUATIONS,
+  STATUS_UNAVAILABLE,
+  STOPS,
+  TFL_NETWORK,
+} from '@/test/transitFixtures';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import TransitNetworkPage, { generateMetadata } from './page';
@@ -56,6 +64,18 @@ describe('/transit/[network]', () => {
     renderWithMantine(await TransitNetworkPage(params('metrolink')));
     expect(screen.queryByRole('heading', { name: 'Disruptions' })).toBeNull();
     expect(screen.queryByText(/reported disruption|Status unavailable/)).toBeNull();
+  });
+
+  it("groups the TfL network's lines by mode, with TfL's status and no disruptions list", async () => {
+    vi.mocked(api.getTransitNetwork).mockResolvedValue(TFL_NETWORK);
+    renderWithMantine(await TransitNetworkPage(params('tfl')));
+    expect(screen.getByText(/Each stop's page has live arrivals/)).toBeTruthy();
+    expect(screen.queryByText(/We don't have live tram times/)).toBeNull();
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+    expect(headings.slice(0, 3)).toEqual(['Underground', 'DLR', 'Also run by TfL']);
+    expect(cardOf(screen.getByRole('link', { name: 'Victoria' })).textContent).toContain('Minor delays');
+    expect(screen.getByRole('link', { name: 'Elizabeth line' }).getAttribute('href')).toBe('/lines/elizabeth-line');
+    expect(screen.queryByRole('heading', { name: 'Disruptions' })).toBeNull();
   });
 
   it("shows each line's status and the network's disruptions", async () => {
@@ -137,7 +157,15 @@ describe('/transit', () => {
   it('lists the served networks', async () => {
     vi.mocked(api.getTransitNetworks).mockResolvedValue([NETWORK]);
     renderWithMantine(await TransitIndexPage());
-    expect(screen.getByRole('heading', { level: 1, name: 'Trams' })).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Trams and metros' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Manchester Metrolink' }).getAttribute('href')).toBe('/transit/metrolink');
+  });
+
+  it('says what the TfL network runs', async () => {
+    vi.mocked(api.getTransitNetworks).mockResolvedValue([NETWORK, TFL_NETWORK]);
+    renderWithMantine(await TransitIndexPage());
+    expect(cardOf(screen.getByRole('link', { name: 'London (TfL)' })).textContent).toContain(
+      'Underground, DLR and London Trams',
+    );
   });
 });

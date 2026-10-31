@@ -382,6 +382,27 @@ export const TRANSIT_DATA_SOURCES: Readonly<Record<string, DataSource>> = {
     ),
     licence: <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>,
   },
+  // The TfL network (the TfL transit design §12): TfL's own credit,
+  // "Powered by TfL Open Data", is always shown above (once: the e2e test
+  // finds it by its text); this adds its timetables and NaPTAN's stops.
+  tfl: {
+    id: 'tfl-timetables',
+    title: 'TfL timetables (Underground, DLR and London Trams)',
+    use: 'Scheduled Underground, DLR and London Trams times, and their stop names.',
+    statement: (
+      <>
+        Timetables: Transport for London&apos;s journey planner timetables. Stops:{' '}
+        <ExternalLink href={NAPTAN_URL}>NaPTAN</ExternalLink> (Department for Transport), under the{' '}
+        <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>.
+      </>
+    ),
+    licence: (
+      <>
+        <ExternalLink href={TFL_TERMS_URL}>TfL transport data service terms</ExternalLink> (based on the Open Government
+        Licence v2.0).
+      </>
+    ),
+  },
 };
 
 /** Full content of `/attribution`. `transitNetworks` are the ids of the

@@ -61,7 +61,7 @@ describe('/transit/[network]/lines/[line]/timetable', () => {
   it('says when there are no trams or no published timetable', async () => {
     vi.mocked(api.getTransitLineTimetable).mockResolvedValue({ ...TIMETABLE, trips: [] });
     await render({ date: '2026-10-14', from: '02:00' });
-    expect(screen.getByText('No scheduled trams in this window.')).toBeTruthy();
+    expect(screen.getByText('No scheduled departures in this window.')).toBeTruthy();
     cleanup();
     vi.mocked(api.getTransitLineTimetable).mockResolvedValue({ ...TIMETABLE, trips: [], outsideHorizon: true });
     await render({ date: '2027-06-01' });
