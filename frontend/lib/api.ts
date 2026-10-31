@@ -36,6 +36,7 @@ import type {
   TrainSearchPage,
   TrainSearchDates,
   TrainSearchOperator,
+  PlannerOperatorCatalogue,
   TrackedTrainListItem,
   TrackedTrainTicket,
   DelayRepayEstimateResponse,
@@ -819,6 +820,16 @@ export async function getTrainSearchOperators(): Promise<TrainSearchOperator[]> 
     next: { revalidate: 3600 },
   });
   return body.operators;
+}
+
+/** `GET /Trips/operators` (2026-10-31) -- the planner's operator filter
+ * choices: the operators running in the published window, the named groups
+ * and the operators with no ATOC code. Cached for five minutes, as the
+ * endpoint says. */
+export async function getPlannerOperators(): Promise<PlannerOperatorCatalogue> {
+  return fetchJson<PlannerOperatorCatalogue>(`${baseUrl()}/Trips/operators`, {
+    next: { revalidate: 300 },
+  });
 }
 
 /** `init` is optional and additive so existing call sites are unchanged.

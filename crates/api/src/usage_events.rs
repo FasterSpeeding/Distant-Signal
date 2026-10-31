@@ -323,6 +323,16 @@ pub const FEATURE_STEPS: &[(&str, &[&str])] = &[
             "terminates_at",
         ],
     ),
+    // A `/plan` search with an operator filter (2026-10-31): its kind
+    // only, never the operators; and the "Add London Underground" button.
+    (
+        "plan_filters",
+        &[
+            "operator_only",
+            "operator_avoid",
+            "operator_add_underground",
+        ],
+    ),
     // The planner's "Compare options": a search with it on, and an option
     // other than the fastest chosen, then saved as a journey.
     (
@@ -366,6 +376,7 @@ const FEATURES: &[&str] = &[
     "connected_app",
     "trains",
     "trains_filters",
+    "plan_filters",
     "compare_options",
     "shared_journeys",
     "leg_stops",

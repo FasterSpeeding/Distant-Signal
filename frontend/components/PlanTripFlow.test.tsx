@@ -3,7 +3,8 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import { renderWithMantine } from '@/test/render';
 import { PlanTripFlow } from './PlanTripFlow';
 import { resetStationGroupsCache } from '@/lib/stationGroups';
-import type { TripPlanResponse } from '@/lib/types';
+import type { PlannerOperatorCatalogue, TripPlanResponse } from '@/lib/types';
+import type { PlanFormInitial } from '@/lib/tripPlanUrl';
 import { byVisibleText } from '@/test/routeText';
 import { RAIL_TRAM_RAIL } from '@/test/transitPlanFixtures';
 
@@ -1435,5 +1436,105 @@ describe('PlanTripFlow with tram legs', () => {
     };
     expect(body.legs.map((leg) => leg.transitMode ?? 'train')).toEqual(['train', 'walk', 'tram', 'walk', 'train']);
     expect(body.legs[2]).toMatchObject({ kind: 'untracked', originStopId: '9400ZZMAPIC' });
+  });
+});
+
+describe('PlanTripFlow operator filter (2026-10-31)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    mockStationNames.clear();
+    window.history.replaceState(null, '', '/');
+  });
+
+  const operatorCatalogue: PlannerOperatorCatalogue = {
+    operators: [
+      { code: 'LT', name: 'London Underground' },
+      { code: 'SN', name: 'Southern' },
+      { code: 'VT', name: 'Avanti West Coast' },
+    ],
+    groups: [],
+    dsOperators: [],
+  };
+
+  const filteredPlan: TripPlanResponse = {
+    ...singleSegmentPlan,
+    operator: ['VT'],
+    avoidOperator: [],
+    segments: [
+      {
+        ...singleSegmentPlan.segments[0]!,
+        itineraries: [
+          {
+            ...singleSegmentPlan.segments[0]!.itineraries[0]!,
+            legs: [{ ...(singleSegmentPlan.segments[0]!.itineraries[0]!.legs[0] as object), operator: 'VT' } as never],
+          },
+        ],
+      },
+    ],
+  };
+
+  const noTubePlan: TripPlanResponse = {
+    results: 'fastest',
+    operator: ['SN', 'VT'],
+    avoidOperator: [],
+    segments: [
+      {
+        originCrs: 'MAN',
+        destinationCrs: 'BTN',
+        itineraries: [],
+        cappedByMaxChanges: false,
+        noResultReason: {
+          constraint: 'operator',
+          values: ['SN', 'VT'],
+          linkOperators: ['LT'],
+          message:
+            'No itinerary from MAN to BTN while using only SN, VT: the route needs LT, which this filter leaves out.',
+        },
+      },
+    ],
+  };
+
+  async function searchWith(fetchMock: ReturnType<typeof vi.fn>, initial: PlanFormInitial) {
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <PlanTripFlow onCreated={vi.fn()} operatorCatalogue={operatorCatalogue} initialQuery={initial} />,
+    );
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'MAN' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'BTN' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+  }
+
+  it('says which filter the results used, and names each leg operator', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(filteredPlan) });
+    await searchWith(fetchMock, { operatorMode: 'only', operators: ['VT'] });
+    expect(
+      await screen.findByText(
+        /Showing routes using only Avanti West Coast\. Walks between stations are included; the Tube is not\./,
+      ),
+    ).toBeInTheDocument();
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('operator=VT');
+    expect(screen.getByText('Avanti West Coast', { selector: '[data-leg-operator]' })).toBeInTheDocument();
+    // "Change" opens Advanced options.
+    fireEvent.click(screen.getByRole('button', { name: 'Change' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Advanced options/ })).toHaveAttribute('aria-expanded', 'true'),
+    );
+  });
+
+  it('adds London Underground and searches again when the route needs the Tube', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noTubePlan) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(filteredPlan) });
+    await searchWith(fetchMock, { operatorMode: 'only', operators: ['VT', 'SN'] });
+    expect(await screen.findByText(/Crossing London needs the Tube/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add London Underground' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(new URL(String(fetchMock.mock.calls[1]![0]), 'http://x').searchParams.get('operator')).toBe('VT,SN,LT');
+    // The form now holds it too.
+    await waitFor(() =>
+      expect(screen.getByText(/Only Avanti West Coast, Southern, London Underground/)).toBeInTheDocument(),
+    );
   });
 });

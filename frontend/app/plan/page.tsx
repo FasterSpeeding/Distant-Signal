@@ -2,7 +2,7 @@ import { Stack, Text, Title } from '@mantine/core';
 import type { Metadata } from 'next';
 import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import type { UntrackedLegOrigin } from '@/components/UntrackedLegStartForm';
-import { getTflStop, getTrainSearchDates } from '@/lib/api';
+import { getPlannerOperators, getTflStop, getTrainSearchDates } from '@/lib/api';
 import { parseJourneyEntryMode } from '@/lib/journeyEntryMode';
 import { PLAN_JOURNEY_HREF, PLAN_JOURNEY_LABEL } from '@/lib/navLinks';
 import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
@@ -78,9 +78,13 @@ export default async function PlanPage({
   // The planner's date picker's last day: what the timetable search accepts
   // (`getTrainSearchDates`, cached for a few minutes), as on `/trains`. A
   // failure leaves `null`, and the picker falls back to a week ahead.
-  const [searchDates, untrackedOrigin] = await Promise.all([
+  // The operator filter's choices (`GET /Trips/operators`, cached for a
+  // few minutes); `null` on failure, and the field says it can't offer
+  // them.
+  const [searchDates, untrackedOrigin, operators] = await Promise.all([
     getTrainSearchDates().catch(() => null),
     untrackedOriginFrom(params[JOURNEY_FROM_TFL_STOP_PARAM]),
+    getPlannerOperators().catch(() => null),
   ]);
 
   return (
@@ -99,6 +103,7 @@ export default async function PlanPage({
         planOrigin={planOrigin}
         planQuery={planQuery}
         planSearchDates={searchDates}
+        planOperators={operators}
         untrackedOrigin={untrackedOrigin}
       />
     </Stack>

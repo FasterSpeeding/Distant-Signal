@@ -100,6 +100,9 @@ export const FEATURE_STEPS = {
     'origin',
     'terminates_at',
   ],
+  /** A `/plan` search with an operator filter (its kind only, never the
+   * operators), and the "Add London Underground" button. */
+  plan_filters: ['operator_only', 'operator_avoid', 'operator_add_underground'],
   /** The planner's "Compare options": a search with it on, an option other
    * than the fastest chosen, and that saved as a journey. */
   compare_options: ['searched', 'alternative_selected', 'alternative_saved'],
@@ -121,6 +124,7 @@ export const FEATURES = [
   'connected_app',
   'trains',
   'trains_filters',
+  'plan_filters',
   'compare_options',
   'shared_journeys',
   'leg_stops',

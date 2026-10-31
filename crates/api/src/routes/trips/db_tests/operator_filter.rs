@@ -277,3 +277,30 @@ async fn the_operator_groups_catalogue_is_served() {
     assert_eq!(body["dsOperators"][0]["code"], "ds:DLR");
     assert_eq!(body["names"]["TW"], "Tyne and Wear Metro");
 }
+
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api \
+            routes::trips -- --ignored --test-threads=1`"]
+async fn the_planner_operators_are_the_timetables_from_today_on() {
+    let pool = connect().await;
+    seed(&pool, true).await;
+    let (status, body) = get(
+        test_router(test_app(pool.clone())),
+        "/Trips/operators".to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let codes: Vec<&str> = body["operators"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|op| op["code"].as_str())
+        .collect();
+    for code in ["VT", "SN", "GR", "LT"] {
+        assert!(codes.contains(&code), "{code} in {codes:?}");
+    }
+    assert!(codes.windows(2).all(|pair| pair[0] < pair[1]), "{codes:?}");
+    assert_eq!(body["groups"][0]["code"], "GTR");
+    assert_eq!(body["dsOperators"][0]["code"], "ds:DLR");
+    cleanup(&pool).await;
+}

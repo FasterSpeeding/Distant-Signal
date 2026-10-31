@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderWithMantine } from '@/test/render';
 import { PlanTripForm } from './PlanTripForm';
 import { resetStationGroupsCache } from '@/lib/stationGroups';
+import type { PlannerOperatorCatalogue } from '@/lib/types';
 
 // Plain async functions, not `vi.fn()` (see `PlanTripFlow.test.tsx`'s C2
 // note). Every picker, the via one included, uses the planner search,
@@ -302,5 +303,84 @@ describe('PlanTripForm station groups (2026-10-07)', () => {
         .getAllByRole('listitem')
         .map((item) => item.textContent),
     ).toEqual([`1.${label}`, '2.STA', `3.${label}`]);
+  });
+});
+
+const operatorCatalogue: PlannerOperatorCatalogue = {
+  operators: [
+    { code: 'LT', name: 'London Underground' },
+    { code: 'VT', name: 'Avanti West Coast' },
+  ],
+  groups: [{ code: 'GTR', name: 'GTR (Thameslink, Great Northern, Southern, Gatwick Express)', members: ['TL'] }],
+  dsOperators: [{ code: 'ds:DLR', name: 'DLR' }],
+};
+
+describe('PlanTripForm operator filter (2026-10-31)', () => {
+  it('offers Any, Only these and Avoid these, with the picker only once filtering', async () => {
+    renderWithMantine(<PlanTripForm onSubmit={vi.fn()} operatorCatalogue={operatorCatalogue} />);
+    await openAdvanced();
+    const modes = screen.getByRole('radiogroup', { name: 'Operators' });
+    expect(within(modes).getByRole('radio', { name: 'Any' })).toBeChecked();
+    expect(screen.queryByRole('combobox', { name: 'Operators' })).not.toBeInTheDocument();
+    fireEvent.click(within(modes).getByRole('radio', { name: 'Only these' }));
+    expect(await screen.findByRole('combobox', { name: 'Operators' })).toBeInTheDocument();
+    expect(screen.getByText(/Walks between stations are always allowed/)).toBeInTheDocument();
+    fireEvent.click(within(modes).getByRole('radio', { name: 'Avoid these' }));
+    expect(screen.getByText(/Never use these operators/)).toBeInTheDocument();
+  });
+
+  it('sends the picked operators, with London Underground one tap away', async () => {
+    const onSubmit = vi.fn();
+    renderWithMantine(<PlanTripForm onSubmit={onSubmit} operatorCatalogue={operatorCatalogue} />);
+    fillEnds();
+    await openAdvanced();
+    fireEvent.click(screen.getByRole('radio', { name: 'Only these' }));
+    const picker = await screen.findByRole('combobox', { name: 'Operators' });
+    fireEvent.click(picker);
+    fireEvent.change(picker, { target: { value: 'avanti' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'VT · Avanti West Coast', hidden: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add London Underground' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Add London Underground' })).not.toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ operatorMode: 'only', operators: ['VT', 'LT'] }));
+  });
+
+  it('sends nothing for Any, even with operators picked before', async () => {
+    const onSubmit = vi.fn();
+    renderWithMantine(
+      <PlanTripForm
+        onSubmit={onSubmit}
+        operatorCatalogue={operatorCatalogue}
+        initial={{ operatorMode: 'avoid', operators: ['LT'] }}
+      />,
+    );
+    fillEnds();
+    await openAdvanced();
+    fireEvent.click(screen.getByRole('radio', { name: 'Any' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+    const sent = onSubmit.mock.calls[0]![0] as Record<string, unknown>;
+    expect(sent.operatorMode).toBeUndefined();
+    expect(sent.operators).toBeUndefined();
+  });
+
+  it('counts and summarizes a restored filter while collapsed', () => {
+    renderWithMantine(
+      <PlanTripForm
+        onSubmit={vi.fn()}
+        operatorCatalogue={operatorCatalogue}
+        initial={{ operatorMode: 'only', operators: ['group:GTR', 'VT'] }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Advanced options (1 set)' })).toBeInTheDocument();
+    expect(screen.getByText('Only GTR, Avanti West Coast')).toBeInTheDocument();
+  });
+
+  it('says when the operators could not be loaded', async () => {
+    renderWithMantine(<PlanTripForm onSubmit={vi.fn()} operatorCatalogue={null} />);
+    await openAdvanced();
+    fireEvent.click(screen.getByRole('radio', { name: 'Only these' }));
+    expect(await screen.findByText(/Operators couldn.t be loaded/)).toBeInTheDocument();
   });
 });

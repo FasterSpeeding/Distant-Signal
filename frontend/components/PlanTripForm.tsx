@@ -18,6 +18,8 @@ import type { TripPlanAdvancedOptions, TripPlanQuery } from '@/lib/tripPlan';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
 import { timingMode, type TimingMode } from '@/lib/tripPlanTiming';
 import { PlanTripAdvancedOptions, advancedOptionErrors } from './PlanTripAdvancedOptions';
+import { operatorName as catalogueOperatorName, type OperatorMode } from '@/lib/plannerOperators';
+import type { PlannerOperatorCatalogue } from '@/lib/types';
 import { ButtonSpinner } from '@/components/LoadingText';
 import { StationField } from '@/components/StationField';
 
@@ -142,6 +144,9 @@ export function PlanTripForm({
   initialOriginCrs = '',
   initial = {},
   searchDates,
+  operatorCatalogue,
+  operatorPatch,
+  advancedOpenRequest = 0,
 }: {
   onSubmit: (query: TripPlanQuery) => void;
   searching?: boolean;
@@ -156,6 +161,16 @@ export function PlanTripForm({
    * (`lib/searchDates.ts`). Absent (a caller that doesn't read the range),
    * the picker has no upper bound. */
   searchDates?: TrainSearchDates | null | undefined;
+  /** `GET /Trips/operators`, for the operator field; `null` when the read
+   * failed. */
+  operatorCatalogue?: PlannerOperatorCatalogue | null | undefined;
+  /** A change to the operator filter made outside the form (the results'
+   * "Add London Underground"): applied to the fields whenever its `id`
+   * changes. */
+  operatorPatch?: { id: number; mode: OperatorMode; operators: string[] } | undefined;
+  /** Each change opens Advanced options and moves focus to the operator
+   * field (the results' filter banner's "Change"). */
+  advancedOpenRequest?: number | undefined;
 }) {
   const maxDate = searchDates === undefined ? undefined : searchDateBounds(searchDates, londonToday()).maxDate;
   const [originCrs, setOriginCrs] = useState(initial.originCrs ?? initialOriginCrs);
@@ -167,8 +182,40 @@ export function PlanTripForm({
     avoidStopCrs: initial.avoidStopCrs,
     avoidChangeCrs: initial.avoidChangeCrs,
     maxChanges: initial.maxChanges,
+    operatorMode: initial.operatorMode,
+    operators: initial.operators,
   }));
+  // A patch from outside the form, applied once per `id` while rendering
+  // (React's "adjust state when a prop changes" pattern, not an effect).
+  const [appliedPatch, setAppliedPatch] = useState(operatorPatch?.id);
+  if (operatorPatch && operatorPatch.id !== appliedPatch) {
+    setAppliedPatch(operatorPatch.id);
+    setAdvanced((current) => ({ ...current, operatorMode: operatorPatch.mode, operators: operatorPatch.operators }));
+  }
+  const operatorName = useMemo(
+    () => (entry: string) => catalogueOperatorName(entry, operatorCatalogue),
+    [operatorCatalogue],
+  );
   const [advancedOpened, setAdvancedOpened] = useState(false);
+  // The banner's "Change": open the disclosure (while rendering, as above),
+  // then focus the operator field once its panel is there.
+  const [seenOpenRequest, setSeenOpenRequest] = useState(advancedOpenRequest);
+  if (advancedOpenRequest !== seenOpenRequest) {
+    setSeenOpenRequest(advancedOpenRequest);
+    setAdvancedOpened(true);
+  }
+  useEffect(() => {
+    if (advancedOpenRequest === 0) return;
+    // The panel mounts as its transition starts: try for up to a second.
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      const mode = document.querySelector<HTMLInputElement>('[data-operator-field] input[type="radio"]:checked');
+      tries += 1;
+      if (mode) mode.focus();
+      if (mode || tries >= 20) window.clearInterval(timer);
+    }, 50);
+    return () => window.clearInterval(timer);
+  }, [advancedOpenRequest]);
   // Code -> name for the advanced options' rows: filled as stations are
   // picked, and once on mount for codes restored from the URL.
   const [names, setNames] = useState<Map<string, string>>(new Map());
@@ -300,6 +347,9 @@ export function PlanTripForm({
       ...(advanced.avoidStopCrs?.length ? { avoidStopCrs: advanced.avoidStopCrs } : {}),
       ...(advanced.avoidChangeCrs?.length ? { avoidChangeCrs: advanced.avoidChangeCrs } : {}),
       ...(advanced.maxChanges !== undefined ? { maxChanges: advanced.maxChanges } : {}),
+      ...(advanced.operatorMode && advanced.operators?.length
+        ? { operatorMode: advanced.operatorMode, operators: advanced.operators }
+        : {}),
     };
   }
 
@@ -432,6 +482,8 @@ export function PlanTripForm({
         errors={errors}
         opened={advancedOpened}
         onOpenedChange={setAdvancedOpened}
+        operatorCatalogue={operatorCatalogue}
+        operatorName={operatorName}
         results={results}
       />
       {/* The advanced options' first problem, repeated next to the button it

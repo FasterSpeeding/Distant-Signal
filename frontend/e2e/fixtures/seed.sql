@@ -748,6 +748,15 @@ VALUES
   ('2026-09-17', 'E2EOP2', 2, 'E2EOPD', 'terminate', '09:20:00', NULL, 0)
 ON CONFLICT DO NOTHING;
 
+-- Their operators, for /plan's operator filter (2026-10-31; plan.spec.ts):
+-- the fast one VT, the other GR. No `tocs` rows, so the page shows the
+-- codes themselves.
+INSERT INTO schedule_services (service_date, uid, mode, operator_atoc, stp)
+VALUES
+  ('2026-09-17', 'E2EOP1', 'train', 'VT', 'P'),
+  ('2026-09-17', 'E2EOP2', 'train', 'GR', 'P')
+ON CONFLICT DO NOTHING;
+
 -- ---------------------------------------------------------------------
 -- A rail, tram, rail route for /plan (transit trip planning, DS-164;
 -- plan.spec.ts, with ci.yml's API_TRIP_PLAN_TRANSIT_NETWORKS=metrolink),

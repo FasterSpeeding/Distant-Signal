@@ -1,3 +1,4 @@
+import { MAX_OPERATORS, UNDERGROUND, type OperatorMode } from './plannerOperators';
 import { isGroupCode, isTflStopCode, normalizeLocationCode, tflStopPlaceName } from './stationLabel';
 import { isTransitStopCode, transitNetworkName, transitStopPlaceName } from './transitStops';
 import type {
@@ -153,6 +154,13 @@ export interface TripPlanQuery {
   /** 0 to [`MAX_CHANGES_LIMIT`]; absent means the API's default
    * ([`DEFAULT_MAX_CHANGES`]). */
   maxChanges?: number | undefined;
+  /** The operator filter (2026-10-31, `lib/plannerOperators.ts`): ride only
+   * `operators`, or never them. Both kept while the visitor switches
+   * mode; sent only with at least one operator. */
+  operatorMode?: OperatorMode | undefined;
+  /** ATOC codes, `ds:` operators and `group:` names, at most
+   * [`MAX_OPERATORS`]. */
+  operators?: string[] | undefined;
   results: 'fastest' | 'options';
 }
 
@@ -164,12 +172,13 @@ export const MAX_VIAS = 3;
 export const MAX_AVOIDED = 8;
 export const MAX_CHANGES_LIMIT = 12;
 export const DEFAULT_MAX_CHANGES = 4;
+export { MAX_OPERATORS };
 
 /** The advanced options the planner form groups behind its "Advanced"
  * disclosure. */
 export type TripPlanAdvancedOptions = Pick<
   TripPlanQuery,
-  'viaCrs' | 'avoidCrs' | 'avoidStopCrs' | 'avoidChangeCrs' | 'maxChanges'
+  'viaCrs' | 'avoidCrs' | 'avoidStopCrs' | 'avoidChangeCrs' | 'maxChanges' | 'operatorMode' | 'operators'
 >;
 
 /** How many of the advanced options are set: each non-empty list counts
@@ -177,7 +186,17 @@ export type TripPlanAdvancedOptions = Pick<
 export function countAdvancedOptions(options: TripPlanAdvancedOptions): number {
   const lists = [options.viaCrs, options.avoidCrs, options.avoidStopCrs, options.avoidChangeCrs];
   const setLists = lists.filter((list) => (list ?? []).length > 0).length;
-  return setLists + (options.maxChanges !== undefined ? 1 : 0);
+  return setLists + (options.maxChanges !== undefined ? 1 : 0) + (operatorFilterParam(options) !== null ? 1 : 0);
+}
+
+/** The operator filter as `GET /Trips/plan` (and the `/plan` URL) take it:
+ * `[name, comma-separated entries]`, or `null` with no operator. */
+export function operatorFilterParam(
+  query: Pick<TripPlanQuery, 'operatorMode' | 'operators'>,
+): [name: 'operator' | 'avoidOperator', value: string] | null {
+  const operators = query.operators ?? [];
+  if (!query.operatorMode || operators.length === 0) return null;
+  return [query.operatorMode === 'only' ? 'operator' : 'avoidOperator', operators.join(',')];
 }
 
 const LIST_PARAMS = [
@@ -216,6 +235,8 @@ export function buildTripPlanQuery(query: TripPlanQuery): string {
   if (query.maxChanges !== undefined) {
     params.set('maxChanges', String(query.maxChanges));
   }
+  const operatorFilter = operatorFilterParam(query);
+  if (operatorFilter) params.set(...operatorFilter);
   return params.toString();
 }
 
@@ -321,8 +342,13 @@ export function isTooLargeSearchError(error: TripPlanError): boolean {
  * constraints a visitor set in the form's "Advanced options" (and the
  * change cap); `null` for the rest, whose own message already says it all.
  * `name` turns a code into what the visitor saw in the picker. */
-export function noResultHint(reason: TripPlanNoResultReason, name: (code: string) => string): string | null {
+export function noResultHint(
+  reason: TripPlanNoResultReason,
+  name: (code: string) => string,
+  operatorName: (code: string) => string = (code) => code,
+): string | null {
   const names = reason.values.map(name).join(', ');
+  const needsUnderground = (reason.linkOperators ?? []).includes(UNDERGROUND);
   switch (reason.constraint) {
     case 'via':
       return (
@@ -343,7 +369,15 @@ export function noResultHint(reason: TripPlanNoResultReason, name: (code: string
     case 'departAfter':
       return 'Try an earlier departure time, or search by arrival time.';
     case 'avoidCombined':
-      return 'Try removing some of the stations in Advanced options: together they rule out every route.';
+      return 'Try removing some of the stations or operators in Advanced options: together they rule out every route.';
+    case 'operator':
+      return needsUnderground
+        ? 'Crossing London needs the Tube: add London Underground to "Only these".'
+        : 'Try adding operators to "Only these", or remove the operator filter in Advanced options.';
+    case 'avoidOperator':
+      return needsUnderground
+        ? 'Every route needs the Tube somewhere: remove London Underground from "Avoid these".'
+        : `Try removing ${reason.values.map(operatorName).join(', ') || 'an operator'} from "Avoid these".`;
     default:
       return null;
   }

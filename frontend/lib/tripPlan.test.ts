@@ -433,6 +433,57 @@ describe('advanced options', () => {
     expect(countAdvancedOptions({ viaCrs: ['STA', 'CRE'], avoidCrs: [], maxChanges: 0 })).toBe(2);
   });
 
+  it('sends the operator filter as operator or avoidOperator, and only with an operator', () => {
+    const base = {
+      originCrs: 'EUS',
+      destinationCrs: 'GLA',
+      waypointCrs: [],
+      date: '2026-10-08',
+      results: 'fastest' as const,
+    };
+    const only = new URLSearchParams(
+      buildTripPlanQuery({ ...base, operatorMode: 'only', operators: ['VT', 'group:GTR', 'ds:DLR'] }),
+    );
+    expect(only.get('operator')).toBe('VT,group:GTR,ds:DLR');
+    expect(only.has('avoidOperator')).toBe(false);
+    const avoid = new URLSearchParams(buildTripPlanQuery({ ...base, operatorMode: 'avoid', operators: ['LT'] }));
+    expect(avoid.get('avoidOperator')).toBe('LT');
+    for (const query of [
+      { ...base, operatorMode: 'only' as const, operators: [] },
+      { ...base, operators: ['VT'] },
+    ]) {
+      const params = new URLSearchParams(buildTripPlanQuery(query));
+      expect(params.has('operator') || params.has('avoidOperator')).toBe(false);
+    }
+  });
+
+  it('counts the operator filter once, only when it filters', () => {
+    expect(countAdvancedOptions({ operatorMode: 'only', operators: ['VT', 'GR'] })).toBe(1);
+    expect(countAdvancedOptions({ operators: ['VT'] })).toBe(0);
+    expect(countAdvancedOptions({ operatorMode: 'avoid', operators: [] })).toBe(0);
+  });
+
+  it('suggests a fix for an operator filter, and names the Tube when a route needs it', () => {
+    const name = (code: string) => code;
+    const operatorName = (code: string) => (code === 'VT' ? 'Avanti West Coast' : code);
+    expect(
+      noResultHint({ constraint: 'operator', values: ['VT'], message: '', linkOperators: ['LT'] }, name, operatorName),
+    ).toBe('Crossing London needs the Tube: add London Underground to "Only these".');
+    expect(noResultHint({ constraint: 'operator', values: ['VT'], message: '' }, name, operatorName)).toBe(
+      'Try adding operators to "Only these", or remove the operator filter in Advanced options.',
+    );
+    expect(
+      noResultHint(
+        { constraint: 'avoidOperator', values: ['LT'], message: '', linkOperators: ['LT'] },
+        name,
+        operatorName,
+      ),
+    ).toBe('Every route needs the Tube somewhere: remove London Underground from "Avoid these".');
+    expect(noResultHint({ constraint: 'avoidOperator', values: ['VT'], message: '' }, name, operatorName)).toBe(
+      'Try removing Avanti West Coast from "Avoid these".',
+    );
+  });
+
   it('labels how each via was passed', () => {
     expect(viaSatisfiedLabel({ crs: 'STA', how: 'pass' }, 'Stafford')).toBe('Passes through Stafford without stopping');
     expect(viaSatisfiedLabel({ crs: 'STA', how: 'call' }, 'Stafford')).toBe('Calls at Stafford');

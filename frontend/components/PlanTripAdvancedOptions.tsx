@@ -1,6 +1,17 @@
 'use client';
 
-import { NativeSelect, Stack } from '@mantine/core';
+import { useId, useMemo } from 'react';
+import { Button, Group, MultiSelect, NativeSelect, SegmentedControl, Stack, Text } from '@mantine/core';
+import {
+  MAX_OPERATORS,
+  UNDERGROUND,
+  operatorChoices,
+  operatorFilterSummary,
+  operatorSearchFilter,
+  type OperatorMode,
+} from '@/lib/plannerOperators';
+import type { PlannerOperatorCatalogue } from '@/lib/types';
+import { noOptionsFound } from './noOptionsFound';
 import { AdvancedOptionsDisclosure, STOP_LIST_FIELDS } from './AdvancedOptionsDisclosure';
 import { StationListPicker } from './StationListPicker';
 import { searchPlannerLocations } from '@/lib/suggestions';
@@ -79,8 +90,13 @@ export function advancedOptionErrors(
 }
 
 /** One line saying which advanced options are set, for the collapsed
- * section: e.g. "Pass through STA · Max 1 change". */
-export function advancedOptionsSummary(options: TripPlanAdvancedOptions, names = new Map<string, string>()): string {
+ * section: e.g. "Pass through STA · Max 1 change · Only Avanti West Coast".
+ * `operatorName` names an operator entry (`lib/plannerOperators.ts`). */
+export function advancedOptionsSummary(
+  options: TripPlanAdvancedOptions,
+  names = new Map<string, string>(),
+  operatorName: (entry: string) => string = (entry) => entry,
+): string {
   const parts: string[] = [];
   const list = (codes: string[] | undefined) => (codes ?? []).map((code) => names.get(code) ?? code).join(', ');
   if (options.viaCrs?.length) parts.push(`Pass through ${list(options.viaCrs)}`);
@@ -90,7 +106,114 @@ export function advancedOptionsSummary(options: TripPlanAdvancedOptions, names =
   if (options.maxChanges !== undefined) {
     parts.push(`Max ${options.maxChanges} ${options.maxChanges === 1 ? 'change' : 'changes'}`);
   }
+  const operators = operatorFilterSummary(options.operatorMode, options.operators, operatorName);
+  if (operators) parts.push(operators);
   return parts.join(' · ');
+}
+
+/** The operator field's mode choices: "Any" is no filter. */
+const OPERATOR_MODES = [
+  { label: 'Any', value: 'any' },
+  { label: 'Only these', value: 'only' },
+  { label: 'Avoid these', value: 'avoid' },
+];
+
+/** What each mode's picker means (§4.2 of the operator filtering spec). */
+const OPERATOR_DESCRIPTIONS: Record<OperatorMode, string> = {
+  only: "Only routes on these operators' trains, buses, ferries, links and connecting rides. Walks between stations are always allowed. Add London Underground to cross London by Tube.",
+  avoid: "Never use these operators' trains, buses, ferries, links or connecting rides.",
+};
+
+/** "Operators" (2026-10-31): Any, Only these or Avoid these, and the
+ * operators and groups (`GET /Trips/operators`). The picks stay while the
+ * mode changes; "Any" hides them and sends nothing. Without a catalogue
+ * (the read failed) the field says it can't offer operators. */
+export function OperatorFilterField({
+  mode,
+  operators,
+  onChange,
+  catalogue,
+  operatorName,
+}: {
+  mode: OperatorMode | undefined;
+  operators: string[];
+  onChange: (mode: OperatorMode | undefined, operators: string[]) => void;
+  catalogue: PlannerOperatorCatalogue | null | undefined;
+  operatorName: (entry: string) => string;
+}) {
+  const labelId = useId();
+  const descriptionId = useId();
+  const choices = useMemo(() => (catalogue ? operatorChoices(catalogue) : []), [catalogue]);
+  const filter = useMemo(() => operatorSearchFilter(choices), [choices]);
+  // A restored pick the catalogue doesn't list (a stale URL) still shows,
+  // under its code.
+  const data = useMemo(() => {
+    const listed = new Set(choices.flatMap((section) => section.items.map((item) => item.value)));
+    const extra = operators.filter((entry) => !listed.has(entry));
+    return [
+      ...choices.map((section) => ({
+        group: section.group,
+        items: section.items.map(({ value, label }) => ({ value, label })),
+      })),
+      ...(extra.length > 0
+        ? [{ group: 'Other', items: extra.map((entry) => ({ value: entry, label: operatorName(entry) })) }]
+        : []),
+    ];
+  }, [choices, operators, operatorName]);
+  return (
+    <Stack gap={6} data-operator-field>
+      <Text id={labelId} size="sm" fw={500}>
+        Operators
+      </Text>
+      <SegmentedControl
+        aria-labelledby={labelId}
+        aria-describedby={mode ? descriptionId : undefined}
+        value={mode ?? 'any'}
+        onChange={(value) => onChange(value === 'any' ? undefined : (value as OperatorMode), operators)}
+        data={OPERATOR_MODES}
+      />
+      {mode && (
+        <>
+          <Text id={descriptionId} size="xs" c="dimmed">
+            {OPERATOR_DESCRIPTIONS[mode]}
+          </Text>
+          {catalogue ? (
+            <MultiSelect
+              aria-labelledby={labelId}
+              aria-describedby={descriptionId}
+              placeholder={operators.length > 0 ? undefined : 'Search operators'}
+              data={data}
+              value={operators}
+              onChange={(next) => onChange(mode, next)}
+              filter={filter}
+              maxValues={MAX_OPERATORS}
+              searchable
+              clearable
+              hidePickedOptions
+              nothingFoundMessage={noOptionsFound('No matching operators')}
+              clearButtonProps={{ 'aria-label': 'Clear operator filter', className: 'iconHitArea24' }}
+            />
+          ) : (
+            <Text size="sm" c="dimmed">
+              Operators couldn&apos;t be loaded. Reload the page to choose them.
+            </Text>
+          )}
+          {mode === 'only' && operators.length > 0 && !operators.includes(UNDERGROUND) && (
+            <Group>
+              <Button
+                variant="subtle"
+                size="compact-sm"
+                onClick={() => onChange(mode, [...operators, UNDERGROUND])}
+                disabled={operators.length >= MAX_OPERATORS}
+              >
+                Add London Underground
+              </Button>
+            </Group>
+          )}
+        </>
+      )}
+    </Stack>
+  );
 }
 
 /** "Pass through" also offers the station groups
@@ -108,9 +231,10 @@ const MAX_CHANGES_OPTIONS = [
 ];
 
 /** The planner form's "Advanced options": pass-through vias, the three
- * avoid lists and the change cap (`GET /Trips/plan`'s `via`, `avoid`,
- * `avoidStop`, `avoidChange`, `maxChanges`; docs/api-changelog.md,
- * 2026-09-29 and 2026-10-06).
+ * avoid lists, the operator filter and the change cap (`GET /Trips/plan`'s
+ * `via`, `avoid`, `avoidStop`, `avoidChange`, `operator`/`avoidOperator`,
+ * `maxChanges`; docs/api-changelog.md, 2026-09-29, 2026-10-06 and
+ * 2026-10-31).
  *
  * Collapsed by default (`AdvancedOptionsDisclosure`, shared with the
  * `/trains` boards' `TrainsAdvancedOptions`, as are the three station
@@ -129,6 +253,8 @@ export function PlanTripAdvancedOptions({
   opened,
   onOpenedChange,
   results,
+  operatorCatalogue,
+  operatorName = (entry) => entry,
 }: {
   options: TripPlanAdvancedOptions;
   onChange: (options: TripPlanAdvancedOptions) => void;
@@ -138,12 +264,16 @@ export function PlanTripAdvancedOptions({
   opened: boolean;
   onOpenedChange: (opened: boolean) => void;
   results: 'fastest' | 'options';
+  /** `GET /Trips/operators`, read by the page; `null` when it failed. */
+  operatorCatalogue?: PlannerOperatorCatalogue | null | undefined;
+  /** Names an operator entry for the summary and the field. */
+  operatorName?: ((entry: string) => string) | undefined;
 }) {
   return (
     <AdvancedOptionsDisclosure
       count={countAdvancedOptions(options)}
       problems={Object.keys(errors).length}
-      summary={advancedOptionsSummary(options, names)}
+      summary={advancedOptionsSummary(options, names, operatorName)}
       opened={opened}
       onOpenedChange={onOpenedChange}
     >
@@ -195,6 +325,13 @@ export function PlanTripAdvancedOptions({
           allowStops
           error={errors.avoidChangeCrs}
           itemNoun="no-change station"
+        />
+        <OperatorFilterField
+          mode={options.operatorMode}
+          operators={options.operators ?? []}
+          onChange={(operatorMode, operators) => onChange({ ...options, operatorMode, operators })}
+          catalogue={operatorCatalogue}
+          operatorName={operatorName}
         />
         <NativeSelect
           label="Most changes"
