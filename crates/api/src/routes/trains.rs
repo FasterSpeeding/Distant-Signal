@@ -143,6 +143,7 @@ use crate::data::train_resolve;
 use crate::render::calling_point_departure_json;
 
 mod boards;
+pub(crate) mod leg_filters;
 mod stop_filters;
 
 /// Page size when the caller does not ask for one.
@@ -4887,6 +4888,134 @@ mod db_tests {
             .iter()
             .map(|row| row["uid"].as_str().unwrap().to_string())
             .collect()
+    }
+
+    /// The uids of a ZQS-to-ZQT leg's candidates on `date` with `filters`
+    /// (`leg_filters::resolve`, then `search_journey_leg_candidates_filtered`).
+    async fn leg_candidate_uids(
+        app: &App,
+        filters: &crate::data::journeys::LegSearchFilters,
+        date: chrono::NaiveDate,
+    ) -> Vec<String> {
+        let resolved = leg_filters::resolve(app, filters, "ZQS", "ZQT")
+            .await
+            .expect("filters resolve");
+        let page = queries::search_journey_leg_candidates_filtered(
+            &app.database,
+            &queries::LegCandidateSearch {
+                origin_crs: "ZQS",
+                destination_crs: "ZQT",
+                service_date: date,
+                depart_after: None,
+                depart_before: None,
+                arrive_after: None,
+                arrive_before: None,
+                operators: resolved.operators.as_deref(),
+                starts_at: resolved.starts_at.as_deref(),
+                terminates_at: resolved.terminates_at.as_deref(),
+                stop_filter: resolved.stop_filter.as_ref(),
+                after: None,
+                limit: 50,
+            },
+        )
+        .await
+        .expect("candidates read")
+        .expect("the fixture date is published");
+        page.departures
+            .iter()
+            .map(|row| row["uid"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// DS-215: a journey window leg's candidates apply the Between
+    /// stations filters exactly as `/trains/search` does between the same
+    /// two stations (`leg_filters::resolve`, then
+    /// `search_journey_leg_candidates_filtered`): each filter, on the
+    /// stop-filter fixture from ZQS to ZQT, keeps the same trains on both.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn leg_candidates_apply_the_stop_filters_as_the_between_search_does() {
+        use crate::data::journeys::LegSearchFilters;
+        let (pool, _guards) = connect().await;
+        let date = seed_advanced(&pool).await;
+        let app = test_app(pool.clone());
+        // Each case: the `/trains` query, the same filter as the leg
+        // stores it, and the trains it keeps.
+        let cases: [(&str, Value, &[&str]); 9] = [
+            (
+                "calls_at=ZQA",
+                serde_json::json!({"callsAt": "ZQA"}),
+                &["ADV001", "ADV003"],
+            ),
+            (
+                "via=ZQJ",
+                serde_json::json!({"via": "ZQJ"}),
+                &["ADV001", "ADV002"],
+            ),
+            (
+                "avoid=ZQJ",
+                serde_json::json!({"avoid": "ZQJ"}),
+                &["ADV003", "ADV004"],
+            ),
+            (
+                "avoid_stop=ZQJ",
+                serde_json::json!({"avoidStop": "ZQJ"}),
+                &["ADV001", "ADV003", "ADV004"],
+            ),
+            (
+                "previously_calls_at=ZQO",
+                serde_json::json!({"previouslyCallsAt": "ZQO"}),
+                &["ADV001", "ADV002"],
+            ),
+            (
+                "previously_stops_at=ZQA",
+                serde_json::json!({"previouslyStopsAt": "ZQA"}),
+                &[],
+            ),
+            (
+                "origin=ZQO",
+                serde_json::json!({"startsAt": "ZQO"}),
+                &["ADV001", "ADV002"],
+            ),
+            (
+                "terminates_at=ZQT",
+                serde_json::json!({"terminatesAt": "ZQT"}),
+                &["ADV001", "ADV002", "ADV003", "ADV004"],
+            ),
+            (
+                "calls_at=ZQA&avoid=ZQJ",
+                serde_json::json!({"callsAt": "ZQA", "avoid": "ZQJ"}),
+                &["ADV003"],
+            ),
+        ];
+        for (query, filters, expected) in cases {
+            let filters: LegSearchFilters = serde_json::from_value(filters).expect("leg filters");
+            let between = advanced_uids(
+                &pool,
+                "/trains/search",
+                &format!("station=ZQS&stops_at=ZQT&{query}"),
+                date,
+            )
+            .await;
+            let leg = leg_candidate_uids(&app, &filters, date).await;
+            assert_eq!(leg, expected, "{query}: the leg's candidates");
+            assert_eq!(leg, between, "{query}: the same trains as /trains/search");
+        }
+
+        // The same 400 as the search for a filter that contradicts the leg.
+        let error = leg_filters::resolve(
+            &app,
+            &LegSearchFilters {
+                avoid: Some("ZQT".into()),
+                ..LegSearchFilters::default()
+            },
+            "ZQS",
+            "ZQT",
+        )
+        .await
+        .expect_err("an avoided destination");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(error.1.contains("the leg's destination"), "{}", error.1);
     }
 
     #[tokio::test]

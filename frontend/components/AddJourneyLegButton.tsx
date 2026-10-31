@@ -22,6 +22,10 @@ import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { railCrsForStop, searchStations } from '@/lib/suggestions';
 import { resolveStationCode } from '@/lib/suggestionAutocomplete';
 import { StationField } from './StationField';
+import { LegFilterFields } from './LegFilterFields';
+import { NO_LEG_FILTERS, legFilterErrors, legFiltersToApi, type LegFilters } from '@/lib/legFilters';
+import { setStopFilterParams } from '@/lib/trainStopFilters';
+import { trackFeature } from '@/lib/usageAnalytics';
 
 type LegMode = NewJourneyLegRequest['mode'];
 
@@ -88,7 +92,16 @@ type LegMode = NewJourneyLegRequest['mode'];
  * departure date as the service date and its departure time as the latest
  * arrival, again with no interchange margin. Only a first leg that starts
  * somewhere no station is ("Home") opens on "Tube, bus or walk" instead,
- * ending at that place. */
+ * ending at that place.
+ *
+ * The time-window search also has the Trains section's Between stations
+ * filters (DS-215, `LegFilterFields`): Operator, then the collapsed
+ * Advanced options (Starts at, Previously calls at, Previously stops at,
+ * Terminates at, Call at, Pass through, Avoid completely, Don't stop at),
+ * the same components, labels, caps and checks as `/trains`. They are
+ * saved with the leg (`filters`), so its candidate trains are only the
+ * ones they allow, and start empty each time the dialog opens: they
+ * belong to the leg being added, not to the journey. */
 export function AddJourneyLegButton({
   journeyId,
   priorDestinationCrs,
@@ -176,6 +189,7 @@ export function AddJourneyLegButton({
     arriveTo: false,
   });
   const [untrackedDraft, setUntrackedDraft] = useState<UntrackedLegDraft>(() => newUntrackedLegDraft({ date: '' }));
+  const [legFilters, setLegFilters] = useState<LegFilters>(NO_LEG_FILTERS);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
@@ -237,6 +251,7 @@ export function AddJourneyLegButton({
     setArriveFrom('');
     setArriveTo(inserting ? (nextLegStart?.departure?.time ?? '') : '');
     setIncompleteTimes({ departFrom: false, departTo: false, arriveFrom: false, arriveTo: false });
+    setLegFilters(NO_LEG_FILTERS);
     setUntrackedDraft(
       beforeLegId === null
         ? newUntrackedLegDraft({
@@ -259,16 +274,18 @@ export function AddJourneyLegButton({
 
   function currentRequest(): NewJourneyLegRequest | null {
     if (mode === 'untracked') return untrackedDraftRequest(untrackedDraft);
-    return mode === 'knownTrain'
-      ? { mode: 'knownTrain', trainUid, serviceDate }
-      : {
-          mode: 'window',
-          originCrs: resolvedOrigin ?? '',
-          destinationCrs: resolvedDestination ?? '',
-          serviceDate,
-          departWindow: { after: departFrom || null, before: departTo || null },
-          arriveWindow: { after: arriveFrom || null, before: arriveTo || null },
-        };
+    if (mode === 'knownTrain') return { mode: 'knownTrain', trainUid, serviceDate };
+    const filters = legFiltersToApi(legFilters);
+    return {
+      mode: 'window',
+      originCrs: resolvedOrigin ?? '',
+      destinationCrs: resolvedDestination ?? '',
+      serviceDate,
+      departWindow: { after: departFrom || null, before: departTo || null },
+      arriveWindow: { after: arriveFrom || null, before: arriveTo || null },
+      // Only when set: a request without them is the one this always sent.
+      ...(filters && { filters }),
+    };
   }
 
   const windowTimesComplete = !Object.values(incompleteTimes).some(Boolean);
@@ -293,6 +310,11 @@ export function AddJourneyLegButton({
       ? 'Must be a 3-letter station code'
       : null;
 
+  // The Advanced options' own checks, as on `/trains`: shown on their
+  // fields (`LegFilterFields`), and here they stop the leg being added.
+  const filtersValid =
+    Object.keys(legFilterErrors(legFilters, { origin: resolvedOrigin, destination: resolvedDestination })).length === 0;
+
   const isValid =
     mode === 'untracked'
       ? untrackedDraftRequest(untrackedDraft) !== null
@@ -303,7 +325,8 @@ export function AddJourneyLegButton({
           serviceDateValid &&
           windowTimesComplete &&
           windowHasABound &&
-          windowOrderValid;
+          windowOrderValid &&
+          filtersValid;
 
   async function handleSubmit() {
     const body = currentRequest();
@@ -332,6 +355,11 @@ export function AddJourneyLegButton({
       // `router.refresh()` re-pull `GET /Journeys/{id}` server-side, same
       // convention as `AddTrainToGroupButton.tsx`.
       const result = (await response.json()) as AddJourneyLegResponse;
+      // Usage counts (DS-190): which advanced options a window leg was
+      // added with, their kinds only, as `/trains` counts its searches.
+      if (body.mode === 'window') {
+        for (const param of setStopFilterParams(legFilters.stops)) trackFeature('trains_filters', param);
+      }
       setSubmitting(false);
       close();
       if (onAdded) {
@@ -470,6 +498,12 @@ export function AddJourneyLegButton({
                   error={null}
                 />
               </Group>
+              <LegFilterFields
+                filters={legFilters}
+                onChange={setLegFilters}
+                origin={resolvedOrigin}
+                destination={resolvedDestination}
+              />
             </>
           )}
           {mode === 'knownTrain' && (
