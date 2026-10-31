@@ -457,6 +457,29 @@ describe('advanced options', () => {
     }
   });
 
+  it('sends Prefer as preferOperator, and words its label', () => {
+    const params = new URLSearchParams(
+      buildTripPlanQuery({
+        originCrs: 'EUS',
+        destinationCrs: 'GLA',
+        waypointCrs: [],
+        date: '2026-10-08',
+        results: 'options',
+        operatorMode: 'prefer',
+        operators: ['GR'],
+      }),
+    );
+    expect(params.get('preferOperator')).toBe('GR');
+    expect(optionLabelText({ kind: 'operatorOnly', operators: ['GR'] }, (code) => code)).toBe('GR only');
+    expect(
+      optionLabelText(
+        { kind: 'operatorOnly', operators: ['GR'] },
+        (code) => code,
+        () => 'LNER only',
+      ),
+    ).toBe('LNER only');
+  });
+
   it('counts the operator filter once, only when it filters', () => {
     expect(countAdvancedOptions({ operatorMode: 'only', operators: ['VT', 'GR'] })).toBe(1);
     expect(countAdvancedOptions({ operators: ['VT'] })).toBe(0);

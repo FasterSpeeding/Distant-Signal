@@ -853,6 +853,7 @@ mod tests {
             origin_crs: "MKC".to_owned(),
             destination_crs: "VXH".to_owned(),
             itineraries: vec![crate::data::trip_planning_itinerary::PlannedItinerary {
+                operator_only: false,
                 legs,
                 change_count: 0,
                 access_change_count: 0,
@@ -1293,6 +1294,7 @@ mod db_tests {
             origin_crs: "Z8A".to_owned(),
             destination_crs: "Z8B".to_owned(),
             itineraries: vec![crate::data::trip_planning_itinerary::PlannedItinerary {
+                operator_only: false,
                 legs: vec![
                     transfer("TUBE", "Z8A", "Z8B"),
                     transfer("WALK", "Z8A", "Z8B"),
@@ -1384,6 +1386,7 @@ mod db_tests {
             origin_crs: "Z8A".to_owned(),
             destination_crs: "Z8C".to_owned(),
             itineraries: vec![crate::data::trip_planning_itinerary::PlannedItinerary {
+                operator_only: false,
                 legs,
                 change_count: 0,
                 access_change_count: 0,

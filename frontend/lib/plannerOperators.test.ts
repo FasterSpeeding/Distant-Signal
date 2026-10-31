@@ -8,7 +8,9 @@ import {
   operatorFilterSummary,
   operatorList,
   operatorName,
+  operatorOnlyLabel,
   operatorSearchFilter,
+  preferOutcomeNote,
 } from './plannerOperators';
 import type { PlannerOperatorCatalogue } from './types';
 
@@ -123,5 +125,25 @@ describe('operator names', () => {
       'Showing routes that avoid GTR.',
     );
     expect(operatorFilterBanner({ operator: [], avoidOperator: [] }, nameOf)).toBeNull();
+  });
+});
+
+describe('Prefer (2026-10-31)', () => {
+  const nameOf = (entry: string) => operatorName(entry, catalogue);
+
+  it('labels the operator-only option, a group by its name', () => {
+    expect(operatorOnlyLabel(['GR'], nameOf)).toBe('LNER only');
+    expect(operatorOnlyLabel(['VT', 'GR'], nameOf)).toBe('Avanti West Coast or LNER only');
+    expect(operatorOnlyLabel(['TL', 'GN', 'SN', 'GX'], nameOf, ['group:GTR'])).toBe('GTR only');
+  });
+
+  it('summarizes Prefer and explains an option it could not add', () => {
+    expect(operatorFilterSummary('prefer', ['GR'], nameOf)).toBe('Prefer LNER');
+    expect(preferOutcomeNote('tooSlow', 'LNER')).toBe(
+      "The best route using only LNER is much slower than these, so it isn't shown.",
+    );
+    expect(preferOutcomeNote('none', 'LNER')).toBe('No route uses only LNER from this time.');
+    expect(preferOutcomeNote('added', 'LNER')).toBeNull();
+    expect(preferOutcomeNote(undefined, 'LNER')).toBeNull();
   });
 });

@@ -130,6 +130,7 @@ export function ItineraryOption({
   groups = [],
   stopAccess,
   operatorName,
+  operatorOnlyLabel,
 }: {
   itinerary: TripPlanItinerary;
   selected: boolean;
@@ -153,6 +154,8 @@ export function ItineraryOption({
   /** Names a train, bus or ferry leg's operator (`leg.operator`, an ATOC
    * code) under it (2026-10-31); without it, no operator is shown. */
   operatorName?: ((code: string) => string) | undefined;
+  /** Words an `operatorOnly` label ("LNER only", 2026-10-31). */
+  operatorOnlyLabel?: ((operators: string[]) => string) | undefined;
 }) {
   const hasTrainLeg = itinerary.legs.some((leg) => leg.kind === 'train');
   const changes = changesBadge(itinerary);
@@ -241,8 +244,11 @@ export function ItineraryOption({
           {itinerary.labels && itinerary.labels.length > 0 && (
             <Group gap={4} justify="flex-end" data-option-labels>
               {itinerary.labels.map((label, labelIndex) => (
-                <StateBadge key={labelIndex} tone={label.kind === 'alternative' ? 'neutral' : 'action'}>
-                  {optionLabelText(label, (code) => stationNames.get(code) ?? code)}
+                <StateBadge
+                  key={labelIndex}
+                  tone={label.kind === 'alternative' || label.kind === 'operatorOnly' ? 'neutral' : 'action'}
+                >
+                  {optionLabelText(label, (code) => stationNames.get(code) ?? code, operatorOnlyLabel)}
                 </StateBadge>
               ))}
             </Group>

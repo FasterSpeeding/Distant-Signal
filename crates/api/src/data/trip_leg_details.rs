@@ -547,6 +547,7 @@ mod tests {
             origin_crs: "AAA".to_string(),
             destination_crs: "BBB".to_string(),
             itineraries: vec![PlannedItinerary {
+                operator_only: false,
                 legs,
                 change_count: 0,
                 access_change_count: 0,

@@ -330,6 +330,7 @@ pub const FEATURE_STEPS: &[(&str, &[&str])] = &[
         &[
             "operator_only",
             "operator_avoid",
+            "operator_prefer",
             "operator_add_underground",
         ],
     ),
@@ -337,7 +338,12 @@ pub const FEATURE_STEPS: &[(&str, &[&str])] = &[
     // other than the fastest chosen, then saved as a journey.
     (
         "compare_options",
-        &["searched", "alternative_selected", "alternative_saved"],
+        &[
+            "searched",
+            "alternative_selected",
+            "alternative_saved",
+            "operator_option_selected",
+        ],
     ),
     // Home's "Shared with you" list: shown, and one of its journeys opened.
     ("shared_journeys", &["shown", "opened"]),

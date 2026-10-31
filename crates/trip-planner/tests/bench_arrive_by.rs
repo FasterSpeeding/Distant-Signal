@@ -1836,3 +1836,120 @@ fn bench_operator_filter_links_cpu() {
         assert!(ratio <= 1.02 * 1.10, "avoid 1 of 10 with links, {name}");
     }
 }
+
+/// `?preferOperator=` (spec 2026-10-31 §5.4, §7.3): an options request's
+/// work (RAPTOR's Pareto set at the default cap, then the alternatives)
+/// against the same plus Prefer's one extra search, a Connection Scan for
+/// only one of ten operators, over 20 pairs, interleaved, CPU time.
+/// Asserted: at most +10% (with 10% for CPU-time noise).
+#[test]
+#[ignore = "benchmark; see the module doc"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "bench code: one measurement, read top to bottom"
+)]
+fn bench_prefer_cpu() {
+    use schedule_query::{OperatorId, OperatorMask};
+    use trip_planner::OperatorRule;
+
+    if !bench_requested() {
+        return;
+    }
+    let reps: usize = std::env::var("DS_BENCH_REPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(9);
+    let codes = ["VT", "GR", "GW", "SW", "SN", "SE", "NT", "SR", "XC", "LM"];
+    let (mut connections, interchange) = network();
+    for connection in &mut connections {
+        let line: usize = connection.uid[1..connection.uid.find('D').unwrap()]
+            .parse()
+            .unwrap();
+        connection.operator = OperatorId::from_atoc(codes[line % codes.len()]).unwrap();
+    }
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    let mut rng = Rng(0x0b71_0950);
+    let pairs: Vec<(Vec<String>, Vec<String>)> = (0..20)
+        .map(|_| {
+            (
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+            )
+        })
+        .collect();
+    let prefer =
+        Restrictions::default().with_operator_rule(OperatorRule::only(OperatorMask::of([
+            OperatorId::from_atoc(codes[1]).unwrap(),
+        ])));
+    let scan = |from: &[String], to: &[String], restrictions: &Restrictions| {
+        scan_connections_restricted(
+            ScanOptions {
+                connections: &connections,
+                interchange: &interchange,
+                from_tiplocs: from,
+                to_tiplocs: to,
+                departure_min: 480,
+                date,
+            },
+            None,
+            Some(restrictions),
+        )
+        .map(trip_planner::RaptorJourney::from)
+    };
+    let options = |with_prefer: bool| {
+        pairs
+            .iter()
+            .map(|(from, to)| {
+                let base: Vec<_> = raptor_search_restricted(
+                    RaptorOptions {
+                        connections: &connections,
+                        interchange: &interchange,
+                        from_tiplocs: from,
+                        to_tiplocs: to,
+                        departure_min: 480,
+                        date,
+                        max_rounds: 6,
+                    },
+                    None,
+                    None,
+                )
+                .into_iter()
+                .filter(|j| j.changes <= 4)
+                .collect();
+                let found = trip_planner::diversify(
+                    base,
+                    &trip_planner::DiversifyOptions {
+                        connections: &connections,
+                        interchange: &interchange,
+                        restrictions: None,
+                        protected: [from.clone(), to.clone()].concat(),
+                        direction: trip_planner::options::Direction::DepartAfter,
+                        max_changes: 4,
+                    },
+                    |restrictions| scan(from, to, restrictions),
+                )
+                .len();
+                found + usize::from(with_prefer && scan(from, to, &prefer).is_some())
+            })
+            .sum::<usize>()
+    };
+    let mut samples = [Vec::new(), Vec::new()];
+    let mut found = [0, 0];
+    for _ in 0..reps {
+        for (case, with_prefer) in [false, true].into_iter().enumerate() {
+            let started = thread_cpu();
+            found[case] = options(with_prefer);
+            samples[case].push(thread_cpu().saturating_sub(started));
+        }
+    }
+    let [plain, preferred] = samples.map(|mut times: Vec<Duration>| {
+        times.sort();
+        times[times.len() / 2]
+    });
+    let ratio = preferred.as_secs_f64() / plain.as_secs_f64();
+    println!(
+        "options {plain:>9.2?} ({}), with prefer {preferred:>9.2?} ({}): {ratio:.3}x",
+        found[0], found[1]
+    );
+    assert!(ratio <= 1.10 * 1.10, "prefer {ratio:.3}x");
+}

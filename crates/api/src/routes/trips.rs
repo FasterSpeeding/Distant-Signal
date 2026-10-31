@@ -349,24 +349,58 @@ struct TripPlanParams {
     /// way. Not together with `operator`.
     #[serde(default)]
     avoid_operator: Option<String>,
+    /// `?preferOperator=GR` (2026-10-31), `results=options` only: also
+    /// offer the best route on only these operators, labelled
+    /// `operatorOnly` (`trip_planning_itinerary::Prefer`). Not together with
+    /// `operator` or `avoidOperator`.
+    #[serde(default)]
+    prefer_operator: Option<String>,
 }
 
-/// A request's operator filter (2026-10-31): `?operator=` (only) or
-/// `?avoidOperator=`.
+/// Which operator parameter a request used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilterMode {
+    Only,
+    Avoid,
+    Prefer,
+}
+
+/// A request's operator filter (2026-10-31): `?operator=` (only),
+/// `?avoidOperator=` or `?preferOperator=`.
 #[derive(Debug, Clone)]
 struct OperatorFilter {
-    only: bool,
+    mode: FilterMode,
     list: operator_groups::OperatorList,
 }
 
 impl OperatorFilter {
     /// The search rule: one operator, every way of riding it (spec §5.1).
-    fn rule(&self) -> trip_planner::OperatorRule {
-        if self.only {
-            trip_planner::OperatorRule::only(self.list.mask())
-        } else {
-            trip_planner::OperatorRule::avoid(self.list.mask())
+    /// `None` for Prefer, which filters nothing ([`Self::prefer`]).
+    fn rule(&self) -> Option<trip_planner::OperatorRule> {
+        match self.mode {
+            FilterMode::Only => Some(trip_planner::OperatorRule::only(self.list.mask())),
+            FilterMode::Avoid => Some(trip_planner::OperatorRule::avoid(self.list.mask())),
+            FilterMode::Prefer => None,
         }
+    }
+
+    /// Prefer's extra search ([`trip_planning_itinerary::Prefer`]).
+    fn prefer(&self) -> Option<trip_planning_itinerary::Prefer> {
+        (self.mode == FilterMode::Prefer).then(|| {
+            trip_planning_itinerary::Prefer::new(
+                trip_planner::OperatorRule::only(self.list.mask()),
+                self.list.codes(),
+            )
+        })
+    }
+
+    /// The expanded codes when this filter is `mode`, else none: the
+    /// response's `operator`, `avoidOperator`, `preferOperator`.
+    fn codes_if(filter: Option<&Self>, mode: FilterMode) -> Vec<String> {
+        filter
+            .filter(|f| f.mode == mode)
+            .map(|f| f.list.codes())
+            .unwrap_or_default()
     }
 
     /// The listed operators with nothing in any of `graphs`.
@@ -380,31 +414,54 @@ impl OperatorFilter {
     }
 }
 
-/// Parses and checks `?operator=` and `?avoidOperator=` (at most one), a
-/// `400` for: both; a malformed entry, an unknown `group:` or `ds:` name,
+/// Parses and checks `?operator=`, `?avoidOperator=` and
+/// `?preferOperator=` (at most one), a `400` for: two of them;
+/// `preferOperator` without `results=options`; a malformed entry, an
+/// unknown `group:` or `ds:` name,
 /// more than 8 entries ([`operator_groups::parse_operator_list`]); an ATOC
 /// code neither `tocs` nor the timetable of `service_dates` knows (the
 /// Trains search's rule, `reference::known_operator_codes`). A known code
 /// that runs nothing those days is fine (`operatorsNotRunning`).
 async fn parse_operator_filter(
     app: &App,
-    only: Option<&str>,
-    avoid: Option<&str>,
+    params: &TripPlanParams,
     service_dates: &[NaiveDate],
 ) -> Result<Option<OperatorFilter>, (StatusCode, String)> {
     let bad = |message: String| (StatusCode::BAD_REQUEST, message);
-    let only = operator_groups::parse_operator_list("operator", only).map_err(bad)?;
-    let avoid = operator_groups::parse_operator_list("avoidOperator", avoid).map_err(bad)?;
-    let filter = match (only, avoid) {
-        (Some(_), Some(_)) => {
-            return Err(bad(
-                "operator and avoidOperator can't be used together: choose one".to_string(),
-            ));
+    let mut given = Vec::new();
+    for (name, mode, raw) in [
+        ("operator", FilterMode::Only, params.operator.as_deref()),
+        (
+            "avoidOperator",
+            FilterMode::Avoid,
+            params.avoid_operator.as_deref(),
+        ),
+        (
+            "preferOperator",
+            FilterMode::Prefer,
+            params.prefer_operator.as_deref(),
+        ),
+    ] {
+        if let Some(list) = operator_groups::parse_operator_list(name, raw).map_err(bad)? {
+            given.push((name, OperatorFilter { mode, list }));
         }
-        (Some(list), None) => OperatorFilter { only: true, list },
-        (None, Some(list)) => OperatorFilter { only: false, list },
-        (None, None) => return Ok(None),
+    }
+    let filter = match given.len() {
+        0 => return Ok(None),
+        1 => given.remove(0).1,
+        _ => {
+            let names: Vec<&str> = given.iter().map(|(name, _)| *name).collect();
+            return Err(bad(format!(
+                "{} can't be used together: choose one",
+                names.join(" and ")
+            )));
+        }
     };
+    if filter.mode == FilterMode::Prefer && params.results != "options" {
+        return Err(bad(
+            "preferOperator needs results=options: it adds a labelled option".to_string(),
+        ));
+    }
     let codes = filter.list.named_atoc_codes();
     if !codes.is_empty() {
         let known =
@@ -433,7 +490,11 @@ async fn parse_operator_filter(
     }
     metrics::counter!(
         common::metrics::metric_name("api_trip_plan_operator_filter_total"),
-        "mode" => if filter.only { "only" } else { "avoid" }
+        "mode" => match filter.mode {
+            FilterMode::Only => "only",
+            FilterMode::Avoid => "avoid",
+            FilterMode::Prefer => "prefer",
+        }
     )
     .increment(1);
     Ok(Some(filter))
@@ -859,13 +920,11 @@ async fn plan_trip_request(
     let service_dates_searched: Vec<NaiveDate> = std::iter::once(params.date)
         .chain(params.date.succ_opt().filter(|_| across_midnight))
         .collect();
-    let operator_filter = parse_operator_filter(
-        &app,
-        params.operator.as_deref(),
-        params.avoid_operator.as_deref(),
-        &service_dates_searched,
-    )
-    .await?;
+    let operator_filter = parse_operator_filter(&app, &params, &service_dates_searched).await?;
+    let prefer = operator_filter
+        .as_ref()
+        .and_then(OperatorFilter::prefer)
+        .map(Arc::new);
     // A `TfL` stop end (DS-135): its access candidates, read before the
     // permit like the other checks (a few hundred `tfl_stops` rows). A tram
     // stop end of a planner network is a graph node instead (spec §12.2).
@@ -934,7 +993,8 @@ async fn plan_trip_request(
         alternatives,
         max_changes,
         live_requested,
-        operator_rule: operator_filter.as_ref().map(OperatorFilter::rule),
+        operator_rule: operator_filter.as_ref().and_then(OperatorFilter::rule),
+        prefer: prefer.clone(),
         access: access.clone(),
         transit,
     };
@@ -988,7 +1048,12 @@ async fn plan_trip_request(
         _ => (first.segments, first.live, vec![date]),
     };
     if params.results == "options" {
-        trip_planning_itinerary::label_options(&mut segments, request.interchange(&graph), time);
+        trip_planning_itinerary::label_options(
+            &mut segments,
+            request.interchange(&graph),
+            time,
+            prefer.as_deref().map(|prefer| prefer.codes.as_slice()),
+        );
     }
     let live_summary = live_outcome.map(|outcome| {
         let label = match &outcome {
@@ -1069,8 +1134,9 @@ async fn plan_trip_request(
         // expanded to its operators (`[]` when unused), the groups it named
         // (`{}` when none), and the chosen operators that run nothing on
         // `date`.
-        "operator": operator_filter.as_ref().filter(|f| f.only).map(|f| f.list.codes()).unwrap_or_default(),
-        "avoidOperator": operator_filter.as_ref().filter(|f| !f.only).map(|f| f.list.codes()).unwrap_or_default(),
+        "operator": OperatorFilter::codes_if(operator_filter.as_ref(), FilterMode::Only),
+        "avoidOperator": OperatorFilter::codes_if(operator_filter.as_ref(), FilterMode::Avoid),
+        "preferOperator": OperatorFilter::codes_if(operator_filter.as_ref(), FilterMode::Prefer),
         "operatorGroups": operator_filter.as_ref().map(|f| f.list.groups.clone()).unwrap_or_default(),
         "operatorsNotRunning": operator_filter
             .as_ref()
@@ -1140,6 +1206,11 @@ async fn plan_trip_request(
     if let Some(summary) = live_summary {
         body["live"] = summary;
     }
+    // Additive (2026-10-31), with `preferOperator` only: what the extra
+    // search did (`added`, `labelled`, `tooSlow` or `none`).
+    if let Some(prefer) = &prefer {
+        body["preferOperatorResult"] = prefer.outcome().into();
+    }
     // Additive (2026-10-23, DS-135), only when an end is a `TfL` stop: each
     // stop end with its access candidates (`null` for a station end).
     if let Some(access) = &access {
@@ -1208,6 +1279,9 @@ struct DateInputs {
     /// Ride only what this allows (a journey alternative's "same
     /// operator" search, `plan_for_journey`); `None` for `/Trips/plan`.
     operator_rule: Option<trip_planner::OperatorRule>,
+    /// `?preferOperator=` (2026-10-31): the extra labelled option, shared by
+    /// both dates of an `acrossMidnight` plan.
+    prefer: Option<Arc<trip_planning_itinerary::Prefer>>,
     /// The `TfL` stop ends and their access candidates (DS-135); `None`
     /// when both ends are stations.
     access: Option<Arc<tfl_access::AccessEnds>>,
@@ -1427,6 +1501,7 @@ async fn plan_on_date(
         results: inputs.results.clone(),
         alternatives: inputs.alternatives,
         max_changes: inputs.max_changes,
+        prefer: inputs.prefer.clone(),
     });
     // The live overlay: requested, switched on, and a service date with
     // trains running now. `Ok(now)` when it applies.
@@ -1734,6 +1809,8 @@ struct PlanRequest {
     results: String,
     alternatives: bool,
     max_changes: u32,
+    /// `?preferOperator=`'s extra option, see [`DateInputs`].
+    prefer: Option<Arc<trip_planning_itinerary::Prefer>>,
 }
 
 impl PlanRequest {
@@ -1764,6 +1841,7 @@ async fn run_plan(
         let _permit = permit;
         trip_planning_itinerary::plan_trip(&trip_planning_itinerary::TripPlanInput {
             search: trip_planning_itinerary::SegmentSearch {
+                prefer: request.prefer.as_deref(),
                 connections: &graph.connections,
                 interchange: request.interchange(&graph),
                 date: request.date,
@@ -2069,6 +2147,7 @@ pub(crate) async fn plan_for_journey(
         return Ok(None);
     };
     let inputs = DateInputs {
+        prefer: None,
         origin: query.origin.clone(),
         destination: query.destination.clone(),
         waypoints: Vec::new(),
