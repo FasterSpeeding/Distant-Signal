@@ -439,10 +439,14 @@ async fn a_tfl_stop_end_rides_the_tube_timetable_when_opted_in() {
     // replacement bus has no line, so no mode, and stays unknown (it passes
     // every filter).
     let app = crate::test_support::inert_app(pool.clone());
-    let graph = super::load_graph(&app, today(), None)
-        .await
-        .unwrap()
-        .expect("a graph");
+    let graph = super::load_graph(
+        &app,
+        today(),
+        crate::data::trip_planning::GraphMarker::default(),
+    )
+    .await
+    .unwrap()
+    .expect("a graph");
     let transit = graph.transit.as_ref().expect("the transit graph");
     let mut tube_connections = 0;
     for connection in graph
@@ -526,4 +530,141 @@ async fn a_walk_between_one_hubs_stations_names_both_tfl_stops() {
     assert_eq!(hub["minutes"], 2);
 
     cleanup_tfl(&pool).await;
+}
+
+/// DS-225: the graph cache's key is the schedule publish marker and the
+/// transit feeds, so a new publish or a feed activation rebuilds a cached
+/// graph, and nothing else before the max age does; the prewarm builds
+/// today's and tomorrow's graphs ahead of requests, only with a planning
+/// slot free; and both count in `api_trip_plan_graph_builds_total`.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database); --test-threads=1"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario in order: startup, a publish, a feed, a busy process, the metrics"
+)]
+async fn the_graph_cache_follows_publishes_and_feeds_and_prewarms() {
+    use crate::data::trip_planning::{BuildReason, CacheOutcome, GraphCache};
+
+    let pool = ds_store::test_support::connect().await;
+    seed(&pool, NETWORK, today()).await;
+    seed_rail(&pool).await;
+    let owner = ds_store::test_support::schedule_fixture_pool(&pool).await;
+    let cleanup_publishes = || async {
+        sqlx::query("DELETE FROM schedule_reference_publishes WHERE delivery LIKE 'TEST-DS225-%'")
+            .execute(&owner)
+            .await
+            .expect("clean up publishes");
+    };
+    cleanup_publishes().await;
+    let publish = |n: u32| {
+        let owner = owner.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO schedule_reference_publishes (delivery, completed_at) \
+                 SELECT $1, COALESCE(max(completed_at), now()) + interval '1 second' \
+                 FROM schedule_reference_publishes",
+            )
+            .bind(format!("TEST-DS225-{n}"))
+            .execute(&owner)
+            .await
+            .expect("record a publish");
+        }
+    };
+    let _switch = set_switch_for_tests(&[NETWORK]);
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
+    super::register_graph_metrics();
+
+    let app = crate::test_support::inert_app(pool.clone());
+    let cache = std::sync::Arc::new(GraphCache::new(2, std::time::Duration::from_secs(3600)));
+    let slots = tokio::sync::Semaphore::new(1);
+    let prewarm = || super::prewarm_once(&cache, &app, today(), &slots);
+
+    // Startup: both dates built, then nothing to do.
+    assert_eq!(
+        prewarm().await.unwrap(),
+        [
+            (today(), BuildReason::Absent),
+            (tomorrow(), BuildReason::Absent)
+        ]
+    );
+    assert_eq!(prewarm().await.unwrap(), []);
+    let marker = super::read_graph_marker(&pool, &[NETWORK.to_string()])
+        .await
+        .unwrap();
+    let feed = &marker.transit.as_ref().expect("the feed read")[0];
+    assert_eq!(feed.network, NETWORK);
+    assert!(feed.feed_version.is_some(), "{marker:?}");
+    let (_, outcome) =
+        super::load_graph_in(&cache, &app, today(), marker, super::BuildTrigger::Request)
+            .await
+            .unwrap()
+            .expect("a graph");
+    assert_eq!(outcome, CacheOutcome::Hit, "a request after the prewarm");
+
+    // A completed publish rebuilds both.
+    publish(1).await;
+    assert_eq!(
+        prewarm().await.unwrap(),
+        [
+            (today(), BuildReason::Marker),
+            (tomorrow(), BuildReason::Marker)
+        ]
+    );
+
+    // So does the network's feed being activated again.
+    sqlx::query(
+        "UPDATE transit_networks SET activated_at = activated_at + interval '1 minute' \
+         WHERE network = $1",
+    )
+    .bind(NETWORK)
+    .execute(&owner)
+    .await
+    .expect("re-activate the feed");
+    assert_eq!(
+        prewarm().await.unwrap(),
+        [
+            (today(), BuildReason::Marker),
+            (tomorrow(), BuildReason::Marker)
+        ]
+    );
+
+    // With every planning slot taken, the prewarm leaves the stale graphs
+    // for later rather than queue.
+    publish(2).await;
+    {
+        let _busy = slots.try_acquire().unwrap();
+        assert_eq!(prewarm().await.unwrap(), []);
+    }
+    assert_eq!(
+        prewarm().await.unwrap(),
+        [
+            (today(), BuildReason::Marker),
+            (tomorrow(), BuildReason::Marker)
+        ]
+    );
+
+    let rendered = handle.render();
+    for (reason, trigger, count) in [
+        ("absent", "prewarm", 2),
+        ("marker", "prewarm", 6),
+        ("expired", "prewarm", 0),
+        ("absent", "request", 0),
+    ] {
+        let series = format!(
+            "distant_signal_api_trip_plan_graph_builds_total{{reason=\"{reason}\",trigger=\"{trigger}\"}} {count}"
+        );
+        assert!(rendered.contains(&series), "{series} in\n{rendered}");
+    }
+    assert!(
+        rendered
+            .contains("distant_signal_api_trip_plan_graph_build_seconds_count{phase=\"read\"} 8"),
+        "{rendered}"
+    );
+
+    cleanup_publishes().await;
+    cleanup(&pool, NETWORK).await;
+    cleanup_rail(&pool).await;
 }

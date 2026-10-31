@@ -144,9 +144,11 @@ static PLAN_SLOTS: LazyLock<tokio::sync::Semaphore> =
 const GRAPH_CACHE_DATES_ENV: &str = "TRIP_PLAN_GRAPH_CACHE_DATES";
 const DEFAULT_GRAPH_CACHE_DATES: usize = 2;
 /// Oldest a cached graph may be before it is rebuilt even with no new
-/// publish marker. `TRIP_PLAN_GRAPH_CACHE_MAX_AGE_SECS`, default 600.
+/// publish marker or feed: a safety net for changes no marker records (see
+/// [`trip_planning::GraphCache`]). `TRIP_PLAN_GRAPH_CACHE_MAX_AGE_SECS`,
+/// default 21600 (6 hours; 600 until DS-225).
 const GRAPH_CACHE_MAX_AGE_ENV: &str = "TRIP_PLAN_GRAPH_CACHE_MAX_AGE_SECS";
-const DEFAULT_GRAPH_CACHE_MAX_AGE_SECS: u64 = 600;
+const DEFAULT_GRAPH_CACHE_MAX_AGE_SECS: u64 = 21_600;
 
 /// TRIPS-1: built graphs, shared across requests for the same date. See
 /// [`trip_planning::GraphCache`].
@@ -961,7 +963,7 @@ async fn plan_trip_request(
     let permit = Arc::new(permit);
     let marker = graph_marker(&app, &transit_networks).await?;
     let date = params.date;
-    let Some(graph) = load_graph(&app, date, marker).await? else {
+    let Some(graph) = load_graph(&app, date, marker.clone()).await? else {
         return Err((
             StatusCode::NOT_FOUND,
             format!(
@@ -1306,108 +1308,109 @@ struct DatePlan {
 }
 
 /// TRIPS-1: `date`'s graph from the per-date cache, keyed on the latest
-/// schedule publish; only a miss reads and builds it. `None` when nothing
-/// is published for `date`.
+/// schedule publish and the transit feeds ([`graph_marker`]); only a miss
+/// reads and builds it. `None` when nothing is published for `date`.
 async fn load_graph(
     app: &App,
     date: NaiveDate,
-    marker: Option<chrono::DateTime<chrono::Utc>>,
+    marker: trip_planning::GraphMarker,
 ) -> Result<Option<Arc<trip_planning::PlanningGraph>>, (StatusCode, String)> {
+    load_graph_in(&GRAPH_CACHE, app, date, marker, BuildTrigger::Request)
+        .await
+        .map(|loaded| loaded.map(|(graph, _)| graph))
+        .map_err(internal_error("build the connections graph"))
+}
+
+/// What asked for a graph build: `api_trip_plan_graph_builds_total`'s
+/// `trigger`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuildTrigger {
+    /// A plan (or a journey replan) found no usable graph.
+    Request,
+    /// [`prewarm_graphs`], ahead of any request.
+    Prewarm,
+}
+
+impl BuildTrigger {
+    const ALL: [Self; 2] = [Self::Request, Self::Prewarm];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Prewarm => "prewarm",
+        }
+    }
+}
+
+/// The graph-build metrics (DS-225), registered at 0 by
+/// [`register_graph_metrics`]:
+///
+/// - `api_trip_plan_graph_build_seconds{phase}`: one build's `read` (every
+///   database read, the day's ~490k calling points above all), `cpu` (the
+///   sort and the transit and operator passes, on the blocking pool) and
+///   `total`;
+/// - `api_trip_plan_graph_builds_total{reason, trigger}`: builds by why
+///   (`absent`, `marker`, `expired`; see [`trip_planning::BuildReason`])
+///   and by what asked (`request`, `prewarm`).
+///
+/// `api_trip_plan_graph_cache_total{result}` still counts every lookup's
+/// `hit` or `miss`, a prewarm's included.
+pub const GRAPH_BUILD_SECONDS_METRIC: &str = "api_trip_plan_graph_build_seconds";
+pub const GRAPH_BUILDS_METRIC: &str = "api_trip_plan_graph_builds_total";
+const GRAPH_BUILD_PHASES: [&str; 3] = ["read", "cpu", "total"];
+
+/// Registers [`GRAPH_BUILDS_METRIC`]'s series at 0 and
+/// [`GRAPH_BUILD_SECONDS_METRIC`]'s phases, so the first build after a
+/// restart is visible to `increase()`.
+pub fn register_graph_metrics() {
+    for reason in trip_planning::BuildReason::ALL {
+        for trigger in BuildTrigger::ALL {
+            metrics::counter!(
+                common::metrics::metric_name(GRAPH_BUILDS_METRIC),
+                "reason" => reason.label(),
+                "trigger" => trigger.label()
+            )
+            .increment(0);
+        }
+    }
+    for phase in GRAPH_BUILD_PHASES {
+        let _ = metrics::histogram!(
+            common::metrics::metric_name(GRAPH_BUILD_SECONDS_METRIC),
+            "phase" => phase
+        );
+    }
+}
+
+fn record_build_phase(phase: &'static str, elapsed: std::time::Duration) {
+    metrics::histogram!(
+        common::metrics::metric_name(GRAPH_BUILD_SECONDS_METRIC),
+        "phase" => phase
+    )
+    .record(elapsed.as_secs_f64());
+}
+
+/// [`load_graph`] on `cache`, for `trigger`, with the lookup's outcome:
+/// what [`prewarm_once`] and the tests call with a cache of their own.
+async fn load_graph_in(
+    cache: &Arc<trip_planning::GraphCache<trip_planning::PlanningGraph>>,
+    app: &App,
+    date: NaiveDate,
+    marker: trip_planning::GraphMarker,
+    trigger: BuildTrigger,
+) -> anyhow::Result<
+    Option<(
+        Arc<trip_planning::PlanningGraph>,
+        trip_planning::CacheOutcome,
+    )>,
+> {
     let pool = app.database.clone();
     // Read here, not in the build: the build may run on another task.
     let transit_networks = transit_planning::enabled_networks();
-    let cached = GRAPH_CACHE
+    let cached = cache
         .get_or_build(date, marker, move || async move {
-            let Some(mut calling_points) =
-                trip_planning::fetch_calling_points_for_date(&pool, date).await?
-            else {
-                return Ok(None);
-            };
-            let mut interchange = trip_planning::fetch_interchange_data(&pool).await?;
-            // Who runs each link (operator filtering spec §5.1), before the
-            // transit graph copies the rail interchange data.
-            let unattributed_links = planner_operators::attribute_fixed_links(&mut interchange);
-            // The estimated walks a filter that rules the Tube out uses
-            // instead (spec §5.1); no other request ever sees them.
-            let positions =
-                planner_operators::fetch_tube_station_positions(&pool, &interchange).await?;
-            planner_operators::add_tube_stand_in_walks(&mut interchange, &positions);
-            let operators = planner_operators::OperatorTable::fetch(&pool, date).await?;
-            let road_or_water = trip_planning::fetch_road_or_water_tiplocs(&pool).await?;
-            // Per-UID published modes; an error degrades to the bus-stop
-            // heuristic for every UID rather than failing the plan.
-            let modes = crate::data::schedule_services::all_modes_for_date(&pool, date)
-                .await
-                .unwrap_or_else(|err| {
-                    tracing::warn!(error = ?err, %date, "could not read service modes");
-                    std::collections::HashMap::new()
-                });
-            interchange.modal_change = trip_planning::modal_change_buffer(
-                &calling_points,
-                &modes,
-                &road_or_water,
-                trip_planning::road_water_change_minutes(),
-            );
-            // The transit networks' trips join the trains before the one
-            // sort (DS-164); with the switch empty, nothing is read.
-            let transit_days = if transit_networks.is_empty() {
-                None
-            } else {
-                let (days, skipped) =
-                    transit_planning::read_days(&pool, &transit_networks, date).await;
-                calling_points.extend(transit_planning::calling_points(&days));
-                Some((days, skipped))
-            };
-            // The sort over every calling point of the day, on the blocking
-            // pool (bound 4 in `get_trip_plan`'s doc comment), and the
-            // transit interchange data (a copy of the rail data).
-            let (connections, passes, interchange, transit, operators, unknown_operators, running) =
-                tokio::task::spawn_blocking(move || {
-                    let (mut connections, passes) =
-                        trip_planning::build_connections_with_passes(calling_points);
-                    let transit = transit_days.map(|(days, skipped)| {
-                        transit_planning::build_transit_graph(
-                            &interchange,
-                            &days,
-                            &transit_planning::count_connections(&connections),
-                            skipped,
-                            transit_planning::change_minutes(),
-                            trip_planning::road_water_change_minutes(),
-                        )
-                    });
-                    // After the transit graph: a `tfl` trip's operator
-                    // follows its line's mode (spec §6.2).
-                    let unknown_operators = operators
-                        .attribute_connections(&mut connections, |uid| {
-                            transit.as_ref().and_then(|graph| graph.trip_mode(uid))
-                        });
-                    let running = planner_operators::running_operators(&connections, &interchange);
-                    (
-                        connections,
-                        passes,
-                        interchange,
-                        transit,
-                        operators,
-                        unknown_operators,
-                        running,
-                    )
-                })
-                .await?;
-            if let Some(transit) = &transit {
-                transit_planning::record_connections(transit);
-            }
-            planner_operators::record_attribution(date, unknown_operators, &unattributed_links);
-            Ok(Some(trip_planning::PlanningGraph {
-                connections,
-                interchange,
-                passes,
-                transit,
-                operators,
-                running,
-            }))
+            build_planning_graph(&pool, date, &transit_networks).await
         })
-        .await
-        .map_err(internal_error("build the connections graph"))?;
+        .await?;
     let Some((graph, outcome)) = cached else {
         return Ok(None);
     };
@@ -1415,11 +1418,125 @@ async fn load_graph(
         common::metrics::metric_name("api_trip_plan_graph_cache_total"),
         "result" => match outcome {
             trip_planning::CacheOutcome::Hit => "hit",
-            trip_planning::CacheOutcome::Built => "miss",
+            trip_planning::CacheOutcome::Built(_) => "miss",
         }
     )
     .increment(1);
-    Ok(Some(graph))
+    if let trip_planning::CacheOutcome::Built(reason) = outcome {
+        metrics::counter!(
+            common::metrics::metric_name(GRAPH_BUILDS_METRIC),
+            "reason" => reason.label(),
+            "trigger" => trigger.label()
+        )
+        .increment(1);
+    }
+    Ok(Some((graph, outcome)))
+}
+
+/// Reads and builds `date`'s [`trip_planning::PlanningGraph`]; `None` when
+/// nothing is published for `date`. Times its read and CPU phases
+/// ([`GRAPH_BUILD_SECONDS_METRIC`]).
+async fn build_planning_graph(
+    pool: &sqlx::PgPool,
+    date: NaiveDate,
+    transit_networks: &[String],
+) -> anyhow::Result<Option<trip_planning::PlanningGraph>> {
+    let started = std::time::Instant::now();
+    let Some(mut calling_points) = trip_planning::fetch_calling_points_for_date(pool, date).await?
+    else {
+        return Ok(None);
+    };
+    let mut interchange = trip_planning::fetch_interchange_data(pool).await?;
+    // Who runs each link (operator filtering spec §5.1), before the
+    // transit graph copies the rail interchange data.
+    let unattributed_links = planner_operators::attribute_fixed_links(&mut interchange);
+    // The estimated walks a filter that rules the Tube out uses
+    // instead (spec §5.1); no other request ever sees them.
+    let positions = planner_operators::fetch_tube_station_positions(pool, &interchange).await?;
+    planner_operators::add_tube_stand_in_walks(&mut interchange, &positions);
+    let operators = planner_operators::OperatorTable::fetch(pool, date).await?;
+    let road_or_water = trip_planning::fetch_road_or_water_tiplocs(pool).await?;
+    // Per-UID published modes; an error degrades to the bus-stop
+    // heuristic for every UID rather than failing the plan.
+    let modes = crate::data::schedule_services::all_modes_for_date(pool, date)
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = ?err, %date, "could not read service modes");
+            std::collections::HashMap::new()
+        });
+    interchange.modal_change = trip_planning::modal_change_buffer(
+        &calling_points,
+        &modes,
+        &road_or_water,
+        trip_planning::road_water_change_minutes(),
+    );
+    // The transit networks' trips join the trains before the one
+    // sort (DS-164); with the switch empty, nothing is read.
+    let transit_days = if transit_networks.is_empty() {
+        None
+    } else {
+        let (days, skipped) = transit_planning::read_days(pool, transit_networks, date).await;
+        calling_points.extend(transit_planning::calling_points(&days));
+        Some((days, skipped))
+    };
+    let read = started.elapsed();
+    // The sort over every calling point of the day, on the blocking
+    // pool (bound 4 in `get_trip_plan`'s doc comment), and the
+    // transit interchange data (a copy of the rail data).
+    let (connections, passes, interchange, transit, operators, unknown_operators, running) =
+        tokio::task::spawn_blocking(move || {
+            let (mut connections, passes) =
+                trip_planning::build_connections_with_passes(calling_points);
+            let transit = transit_days.map(|(days, skipped)| {
+                transit_planning::build_transit_graph(
+                    &interchange,
+                    &days,
+                    &transit_planning::count_connections(&connections),
+                    skipped,
+                    transit_planning::change_minutes(),
+                    trip_planning::road_water_change_minutes(),
+                )
+            });
+            // After the transit graph: a `tfl` trip's operator
+            // follows its line's mode (spec §6.2).
+            let unknown_operators = operators.attribute_connections(&mut connections, |uid| {
+                transit.as_ref().and_then(|graph| graph.trip_mode(uid))
+            });
+            let running = planner_operators::running_operators(&connections, &interchange);
+            (
+                connections,
+                passes,
+                interchange,
+                transit,
+                operators,
+                unknown_operators,
+                running,
+            )
+        })
+        .await?;
+    if let Some(transit) = &transit {
+        transit_planning::record_connections(transit);
+    }
+    planner_operators::record_attribution(date, unknown_operators, &unattributed_links);
+    let total = started.elapsed();
+    record_build_phase("read", read);
+    record_build_phase("cpu", total.saturating_sub(read));
+    record_build_phase("total", total);
+    tracing::info!(
+        %date,
+        connections = connections.len(),
+        read_ms = read.as_millis(),
+        total_ms = total.as_millis(),
+        "built the trip-planning graph"
+    );
+    Ok(Some(trip_planning::PlanningGraph {
+        connections,
+        interchange,
+        passes,
+        transit,
+        operators,
+        running,
+    }))
 }
 
 /// Plans `inputs` on one service date's `graph`, from `time` on that
@@ -1635,27 +1752,115 @@ fn planning_interchange(
     }
 }
 
-/// The graph cache key (TRIPS-1): the latest schedule publish, or (DS-164)
-/// the latest activation of a switched-on transit network's feed when that
-/// is later. With the switch empty, the publish marker alone, as before.
+/// The graph cache key (TRIPS-1; DS-164; DS-225): the latest schedule
+/// publish and each switched-on transit network's active feed. With the
+/// switch empty, the publish marker and no feeds.
 async fn graph_marker(
     app: &App,
     transit_networks: &[String],
-) -> Result<Option<chrono::DateTime<chrono::Utc>>, (StatusCode, String)> {
-    let schedule = trip_planning::latest_schedule_publish(&app.database)
+) -> Result<trip_planning::GraphMarker, (StatusCode, String)> {
+    read_graph_marker(&app.database, transit_networks)
         .await
-        .map_err(internal_error("read the latest schedule publish"))?;
-    // A failed read only loses the early invalidation (the cache's
-    // max-age still applies): a rail plan never fails because of trams.
-    let activation =
-        match transit_planning::latest_activation(&app.database, transit_networks).await {
-            Ok(activation) => activation,
-            Err(err) => {
-                tracing::warn!(error = ?err, "could not read the transit activation marker");
-                None
+        .map_err(internal_error("read the latest schedule publish"))
+}
+
+/// [`graph_marker`]'s reads. Only the schedule read can fail it: a failed
+/// transit read is `transit: None` (see [`trip_planning::GraphMarker`]),
+/// so a rail plan never fails because of trams.
+async fn read_graph_marker(
+    pool: &sqlx::PgPool,
+    transit_networks: &[String],
+) -> anyhow::Result<trip_planning::GraphMarker> {
+    let schedule = trip_planning::latest_schedule_publish(pool).await?;
+    let transit = match transit_planning::active_feeds(pool, transit_networks).await {
+        Ok(feeds) => Some(feeds),
+        Err(err) => {
+            tracing::warn!(error = ?err, "could not read the transit feed versions");
+            None
+        }
+    };
+    Ok(trip_planning::GraphMarker { schedule, transit })
+}
+
+/// How often [`prewarm_graphs`] checks today's and tomorrow's graphs, 0 to
+/// turn it off. `TRIP_PLAN_GRAPH_PREWARM_INTERVAL_SECS`, default 60.
+const GRAPH_PREWARM_INTERVAL_ENV: &str = "TRIP_PLAN_GRAPH_PREWARM_INTERVAL_SECS";
+const DEFAULT_GRAPH_PREWARM_INTERVAL_SECS: u64 = 60;
+/// How long the least recently used cached graph must have gone unused
+/// before a prewarm may evict it for today's or tomorrow's.
+const GRAPH_PREWARM_IDLE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// DS-225: keeps today's and tomorrow's (London) graphs built, so a plan
+/// rarely pays the ~2.7 s build: at startup, within an interval of a new
+/// schedule publish or transit feed, and when the cache's max age expires
+/// one. Spawned beside the server, so it never holds up readiness; until
+/// shutdown.
+///
+/// It stays inside the limits a request does: one build at a time (the
+/// cache's own build lock, shared with requests), and a build only while a
+/// planning slot is free ([`PLAN_SLOTS`], held for the build), so the
+/// memory bound of four concurrent plans is never exceeded and a busy
+/// process skips the tick instead of queueing. It never evicts a graph a
+/// client used in the last 15 minutes (see
+/// [`trip_planning::GraphCache::prewarm_reason`]), and does nothing with
+/// the cache off (`TRIP_PLAN_GRAPH_CACHE_DATES=0`).
+pub async fn prewarm_graphs(app: App, stop: impl Future<Output = ()> + Send) {
+    let interval = std::time::Duration::from_secs(env_or_default(
+        GRAPH_PREWARM_INTERVAL_ENV,
+        DEFAULT_GRAPH_PREWARM_INTERVAL_SECS,
+    ));
+    tracing::info!(
+        interval_secs = interval.as_secs(),
+        "trip-plan graph prewarm (TRIP_PLAN_GRAPH_PREWARM_INTERVAL_SECS)"
+    );
+    if interval.is_zero() || GRAPH_CACHE.capacity() == 0 {
+        return;
+    }
+    let run = async {
+        loop {
+            let today = super::london_today();
+            if let Err(err) = prewarm_once(&GRAPH_CACHE, &app, today, &PLAN_SLOTS).await {
+                tracing::warn!(error = ?err, "trip-plan graph prewarm failed");
             }
+            tokio::time::sleep(interval).await;
+        }
+    };
+    tokio::select! {
+        () = run => {}
+        () = stop => {}
+    }
+}
+
+/// One prewarm pass over `today` and the day after, on `cache`: builds each
+/// date [`trip_planning::GraphCache::prewarm_reason`] says needs it, holding
+/// one of `slots` per build. Returns the dates built and why.
+async fn prewarm_once(
+    cache: &Arc<trip_planning::GraphCache<trip_planning::PlanningGraph>>,
+    app: &App,
+    today: NaiveDate,
+    slots: &tokio::sync::Semaphore,
+) -> anyhow::Result<Vec<(NaiveDate, trip_planning::BuildReason)>> {
+    let transit_networks = transit_planning::enabled_networks();
+    let marker = read_graph_marker(&app.database, &transit_networks).await?;
+    let mut built = Vec::new();
+    for date in [Some(today), today.succ_opt()].into_iter().flatten() {
+        if cache
+            .prewarm_reason(date, &marker, GRAPH_PREWARM_IDLE)
+            .is_none()
+        {
+            continue;
+        }
+        let Ok(_slot) = slots.try_acquire() else {
+            tracing::debug!(%date, "every planning slot is busy; prewarm skipped");
+            break;
         };
-    Ok(transit_planning::cache_marker(schedule, activation))
+        if let Some((_, trip_planning::CacheOutcome::Built(reason))) =
+            load_graph_in(cache, app, date, marker.clone(), BuildTrigger::Prewarm).await?
+        {
+            built.push((date, reason));
+        }
+    }
+    Ok(built)
 }
 
 /// `?transit=`: `true` or `false` (default). Read only while the switch
@@ -2757,6 +2962,30 @@ mod transit_db_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every build reason and trigger is registered at 0, and each phase of
+    /// the build timing, before any build (DS-225).
+    #[test]
+    fn the_graph_build_series_are_registered_before_any_build() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, register_graph_metrics);
+        let rendered = handle.render();
+        for reason in ["absent", "marker", "expired"] {
+            for trigger in ["request", "prewarm"] {
+                let series = format!(
+                    "distant_signal_api_trip_plan_graph_builds_total{{reason=\"{reason}\",trigger=\"{trigger}\"}} 0"
+                );
+                assert!(rendered.contains(&series), "{series} in\n{rendered}");
+            }
+        }
+        for phase in GRAPH_BUILD_PHASES {
+            let series = format!(
+                "distant_signal_api_trip_plan_graph_build_seconds_count{{phase=\"{phase}\"}} 0"
+            );
+            assert!(rendered.contains(&series), "{series} in\n{rendered}");
+        }
+    }
 
     /// Regression test for a final-whole-branch-review finding: without
     /// `#[serde(rename_all = "camelCase")]` on `TripPlanParams`, this

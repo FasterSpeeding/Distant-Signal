@@ -316,6 +316,8 @@ async fn server_main() -> anyhow::Result<()> {
         // a rare route's first request after a restart is visible to
         // increase()/rate(). See `api::route_metrics`.
         api::route_metrics::register();
+        // The trip-plan graph builds' counter and timing (DS-225).
+        routes::trips::register_graph_metrics();
         // Usage analytics' feature and event counters at 0 (DS-190).
         api::usage_events::register();
         tokio::spawn(data::db_health::probe_loop(app.database.clone()));
@@ -624,16 +626,26 @@ fn spawn_background_loops(app: &App, shutdown: &api::shutdown::ShutdownSignal) -
     // runs here whatever API_BACKGROUND_LOOPS says (the ingest-writer
     // cannot run it).
     let break_sweep = spawn_journey_break_sweep(app, shutdown);
+    // Today's and tomorrow's trip-plan graphs, built ahead of requests in
+    // this process's own cache (DS-225), whatever API_BACKGROUND_LOOPS says.
+    let prewarm = tokio::spawn(routes::trips::prewarm_graphs(
+        app.clone(),
+        shutdown.triggered(),
+    ));
+    let break_sweep: Vec<tokio::task::JoinHandle<()>> = break_sweep
+        .into_iter()
+        .chain(std::iter::once(prewarm))
+        .collect();
     if !app.config.background_loops {
         tracing::info!(
             "API_BACKGROUND_LOOPS is false: the api runs no background loops \
              (the ingest-writer and the api-maintenance CronJob run them)"
         );
-        return BackgroundLoops(break_sweep.into_iter().collect());
+        return BackgroundLoops(break_sweep);
     }
     let runner = api_loop_runner(app);
     let session = std::sync::Arc::clone(runner.session());
-    let mut tasks: Vec<tokio::task::JoinHandle<()>> = break_sweep.into_iter().collect();
+    let mut tasks: Vec<tokio::task::JoinHandle<()>> = break_sweep;
     // The periodic sweeps, until shutdown; then the lock session is closed.
     tasks.push(tokio::spawn(
         runner
