@@ -30,10 +30,19 @@ vi.mock('@/lib/api', async () => {
 const notFoundMock = vi.fn(() => {
   throw new Error('NEXT_NOT_FOUND');
 });
+const redirectMock = vi.fn((to: string) => {
+  throw new Error(`NEXT_REDIRECT ${to}`);
+});
 vi.mock('next/navigation', () => ({
   notFound: () => notFoundMock(),
-  // `null`, as outside the app router: "Find a stop" keeps its props.
-  useSearchParams: () => null,
+  redirect: (to: string) => redirectMock(to),
+  useRouter: () => ({ push: vi.fn() }),
+}));
+// A plain GET form: `next/form` needs the app router.
+vi.mock('next/form', () => ({
+  default: ({ prefetch: _prefetch, ...props }: React.ComponentProps<'form'> & { prefetch?: boolean }) => (
+    <form method="get" {...props} />
+  ),
 }));
 
 const params = (network: string) => ({ params: Promise.resolve({ network }) });
@@ -41,22 +50,40 @@ const params = (network: string) => ({ params: Promise.resolve({ network }) });
 describe('/transit/[network]', () => {
   beforeEach(() => {
     cleanup();
-    notFoundMock.mockClear();
+    vi.clearAllMocks();
     vi.mocked(api.getTransitNetwork).mockResolvedValue(NETWORK);
     vi.mocked(api.getTransitStops).mockResolvedValue(STOPS);
     vi.mocked(api.getTransitSituations).mockResolvedValue({ state: 'none', asOf: null, current: [], upcoming: [] });
   });
 
-  it('lists the lines and stops, with the data credit', async () => {
+  it('lists the lines and finds stops, without listing or fetching them', async () => {
     renderWithMantine(await TransitNetworkPage(params('metrolink')));
     expect(screen.getByRole('heading', { level: 1, name: 'Manchester Metrolink' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Blue Line' }).getAttribute('href')).toBe('/transit/metrolink/lines/blue');
-    const stops = screen.getByRole('list', { name: 'Stops' });
-    expect(within(stops).getByRole('link', { name: 'Piccadilly' }).getAttribute('href')).toBe(
-      '/transit/metrolink/stops/9400ZZMAPIC',
+    // A finder, not a list: no stop is on the page, and none was fetched.
+    expect(screen.getByRole('combobox', { name: 'Find a stop' })).toBeTruthy();
+    expect(screen.queryByRole('list', { name: 'Stops' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Piccadilly' })).toBeNull();
+    expect(api.getTransitStops).not.toHaveBeenCalled();
+    expect(screen.getByRole('link', { name: 'All stops, A to Z' }).getAttribute('href')).toBe(
+      '/transit/metrolink/stops',
     );
     expect(screen.getByText(/We don't have live tram times/)).toBeTruthy();
     expect(screen.getByText(/Open Government Licence/)).toBeTruthy();
+  });
+
+  it('sends the old in-page search (`?q=`) to the A to Z', async () => {
+    await expect(
+      TransitNetworkPage({ ...params('metrolink'), searchParams: Promise.resolve({ q: 'picc' }) }),
+    ).rejects.toThrow('NEXT_REDIRECT /transit/metrolink/stops?q=picc');
+  });
+
+  it("fetches the TfL network's stops for nothing", async () => {
+    vi.mocked(api.getTransitNetwork).mockResolvedValue(TFL_NETWORK);
+    renderWithMantine(await TransitNetworkPage(params('tfl')));
+    expect(api.getTransitStops).not.toHaveBeenCalled();
+    expect(api.getTransitSituations).toHaveBeenCalled();
+    expect(screen.getByRole('combobox', { name: 'Find a stop' })).toBeTruthy();
   });
 
   it('shows no status or disruptions while the network has no disruptions feed', async () => {
@@ -101,6 +128,14 @@ describe('/transit/[network]', () => {
     expect(within(byLine).getByRole('link', { name: SITUATIONS.current[0]!.summary }).getAttribute('href')).toBe(
       '/transit/metrolink/incidents/S1',
     );
+    // The line's own row carries the same headline, linking its page.
+    expect(
+      cardOf(screen.getByRole('link', { name: 'Blue Line' }))
+        .querySelector('[data-line-disruption]')
+        ?.querySelector('a')
+        ?.getAttribute('href'),
+    ).toBe('/transit/metrolink/incidents/S1');
+    expect(api.getTransitStops).not.toHaveBeenCalled();
     expect(within(byLine).queryByText(/Green Line/)).toBeNull();
     const notices = screen.getByRole('list', { name: 'Other notices' });
     expect(within(notices).getByRole('link', { name: SITUATIONS.current[1]!.summary }).getAttribute('href')).toBe(

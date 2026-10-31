@@ -5,18 +5,99 @@ import { test, expect, type Page } from '@playwright/test';
 // frontend-e2e job). A smoke test: each page renders its data, and the
 // board says it is scheduled, not live.
 
-/** The network page's A to Z of stops. */
+/** The A to Z of stops (`/transit/[network]/stops`). */
 function stopList(page: Page) {
   return page.getByRole('list', { name: 'Stops' });
 }
 
+/** The network page's "Find a stop" type-ahead. */
+function stopFinder(page: Page) {
+  return page.getByRole('combobox', { name: 'Find a stop' });
+}
+
+/** Any request for a network's full stop list. */
+const STOPS_REQUEST = /\/api\/transit\/[a-z0-9-]+\/stops$/;
+
+/** Ceilings for the network page's weight (DS-229): it used to render every
+ * stop (about 215 KB of HTML for Metrolink's 99, 345 KB for TfL's 356 on
+ * prod). The seed has a handful of stops, so these catch a list of them
+ * coming back with room to spare, not a few bytes' drift. */
+const NETWORK_PAGE_MAX_HTML_BYTES = 120_000;
+const NETWORK_PAGE_MAX_ELEMENTS = 700;
+
 test.describe('transit pages', () => {
-  test('the network page lists its lines and stops', async ({ page }) => {
+  test('the network page lists its lines, and finds a stop without listing them all', async ({ page }) => {
+    const stopRequests: string[] = [];
+    page.on('request', (request) => {
+      if (STOPS_REQUEST.test(new URL(request.url()).pathname)) stopRequests.push(request.url());
+    });
     await page.goto('/transit/metrolink');
     await expect(page.getByRole('heading', { level: 1, name: 'Manchester Metrolink' })).toBeVisible();
     await expect(page.getByRole('link', { name: /^Blue Line/ })).toBeVisible();
-    await expect(stopList(page).getByRole('link', { name: 'Piccadilly' })).toBeVisible();
+    // No A to Z on the page, and no stop list fetched until the finder is used.
+    await expect(stopList(page)).toHaveCount(0);
+    expect(stopRequests).toEqual([]);
+
+    await stopFinder(page).fill('picc');
+    await page.getByRole('option', { name: /^Piccadilly/ }).click();
+    await expect(page).toHaveURL(/\/transit\/metrolink\/stops\/9400ZZMAPIC$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Piccadilly' })).toBeVisible();
+    expect(stopRequests).toHaveLength(1);
   });
+
+  test('the finder works by keyboard, and its A to Z link lists every stop', async ({ page }) => {
+    await page.goto('/transit/metrolink');
+    await stopFinder(page).focus();
+    await page.keyboard.type('ecc');
+    await expect(page.getByRole('status').filter({ hasText: '1 stop matches.' })).toBeAttached();
+    await page.keyboard.press('ArrowDown');
+    await expect(stopFinder(page)).toHaveAttribute('aria-activedescendant', /.+/);
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/transit\/metrolink\/stops\/9400ZZMAECC$/);
+
+    await page.goto('/transit/metrolink');
+    await page.getByRole('link', { name: 'All stops, A to Z' }).click();
+    await expect(page).toHaveURL(/\/transit\/metrolink\/stops$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Manchester Metrolink stops' })).toBeVisible();
+    await expect(stopList(page).getByRole('link')).toHaveText(['Deansgate-Castlefield', 'Eccles', 'Piccadilly']);
+  });
+
+  test('Enter on several matches opens the A to Z filtered, and the old ?q= goes there too', async ({ page }) => {
+    await page.goto('/transit/tfl');
+    await stopFinder(page).fill('a');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await stopFinder(page).press('Enter');
+    await expect(page).toHaveURL(/\/transit\/tfl\/stops\?q=a$/);
+    await expect(page.getByRole('textbox', { name: 'Find a stop' })).toHaveValue('a');
+
+    await page.goto('/transit/metrolink?q=picc');
+    await expect(page).toHaveURL(/\/transit\/metrolink\/stops\?q=picc$/);
+    await expect(stopList(page).getByRole('link')).toHaveText(['Piccadilly']);
+  });
+
+  test("the TfL network's finder opens TfL's own stop page", async ({ page }) => {
+    await page.goto('/transit/tfl');
+    await stopFinder(page).fill('kings cross');
+    const option = page.getByRole('option', { name: /^King's Cross St\. Pancras/ });
+    // Named with its lines.
+    await expect(option).toContainText('Victoria');
+    await option.click();
+    await expect(page).toHaveURL(/\/tfl\/stops\/940GZZLUKSX$/);
+    await expect(page.getByRole('heading', { level: 1, name: "King's Cross St. Pancras" })).toBeVisible();
+  });
+
+  for (const network of ['metrolink', 'tfl']) {
+    test(`the ${network} network page stays light: no stop list in its HTML or DOM`, async ({ page, request }) => {
+      const response = await request.get(`/transit/${network}`);
+      const html = await response.text();
+      expect(html.length).toBeLessThan(NETWORK_PAGE_MAX_HTML_BYTES);
+      expect(html).not.toContain('aria-label="Stops"');
+      await page.goto(`/transit/${network}`);
+      await expect(stopFinder(page)).toBeVisible();
+      const elements = await page.evaluate(() => document.getElementsByTagName('*').length);
+      expect(elements).toBeLessThan(NETWORK_PAGE_MAX_ELEMENTS);
+    });
+  }
 
   test('a stop shows its scheduled departures, a replacement bus labelled', async ({ page }) => {
     await page.goto('/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17');
@@ -95,17 +176,17 @@ test.describe('transit pages', () => {
     await expect(page.getByRole('rowheader', { name: 'Eccles' })).toBeVisible();
   });
 
-  test('clicking a stop on the network page opens its stop page', async ({ page }) => {
+  test('clicking a stop in the A to Z opens its stop page', async ({ page }) => {
     const stopHeading = page.getByRole('heading', { level: 1, name: 'Piccadilly' });
 
-    // From the stop list.
-    await page.goto('/transit/metrolink');
+    // From the A to Z.
+    await page.goto('/transit/metrolink/stops');
     await stopList(page).getByRole('link', { name: 'Piccadilly' }).click();
     await expect(page).toHaveURL(/\/transit\/metrolink\/stops\/9400ZZMAPIC$/);
     await expect(stopHeading).toBeVisible();
 
     // And by keyboard: Enter on the focused link.
-    await page.goto('/transit/metrolink');
+    await page.goto('/transit/metrolink/stops');
     await stopList(page).getByRole('link', { name: 'Piccadilly' }).focus();
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/transit\/metrolink\/stops\/9400ZZMAPIC$/);
