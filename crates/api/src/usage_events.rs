@@ -253,6 +253,7 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/transit/[network]",
     "/transit/[network]/lines/[line]",
     "/transit/[network]/lines/[line]/timetable",
+    "/transit/[network]/stops",
     "/transit/[network]/stops/[stop]",
 ];
 
@@ -354,6 +355,9 @@ pub const FEATURE_STEPS: &[(&str, &[&str])] = &[
     ("leg_stops", &["earlier_expanded", "later_expanded"]),
     // `/plan`'s way in to a new journey, each time one is shown.
     ("journey_start", &["plan", "known", "untracked"]),
+    // A transit network page's "Find a stop": a stop opened from it, or its
+    // "See all matches" row.
+    ("stop_finder", &["stop_opened", "all_matches_opened"]),
 ];
 
 /// Empty or no-result states the web app reports (`empty_state`'s `kind`).
@@ -390,6 +394,7 @@ const FEATURES: &[&str] = &[
     "shared_journeys",
     "leg_stops",
     "journey_start",
+    "stop_finder",
 ];
 
 /// The event names and their properties.

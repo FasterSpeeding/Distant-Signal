@@ -549,7 +549,8 @@ used, rather than as a literal in a component.
   known). Escape closes an open option list first, then the panel, and
   focus returns to the button. Variants:
   - *Sticky* (the default), for a page's main list: /lines, /incidents,
-    /trains (after the first search), /operators, a tram network's stops.
+    /trains (after the first search), /operators, a transit network's A to Z
+    of stops (`/transit/[network]/stops`).
     Transparent until it sticks, then the body colour and a bottom rule.
     It bleeds over the page's `lg` side padding, so its container must
     have that padding. A table's headers stick under it (`stickyHeader`,
@@ -590,6 +591,24 @@ used, rather than as a literal in a component.
   the form holds the code. The dropdown rows stay code first ("EUS · London
   Euston"). A clear button names the field ("Clear From"), and a polite
   live region says what was picked.
+- **Stop finder** (`TransitStopFinder`): a transit network page's "Find a
+  stop" is a type-ahead, never the full list of stops (TfL has 356). The
+  page renders no stops; the list loads on first focus or keystroke. Up to
+  8 rows, each the stop's name with its lines dimmed under it, best match
+  first; past that the last row is "See all *n* matches". Arrows move
+  through the rows (`aria-activedescendant`), Enter opens the highlighted
+  stop, or with none highlighted the only match or an exact name, and
+  otherwise submits the field's GET form to the A to Z filtered (which is
+  also how it works without JavaScript). A hidden polite status says how
+  many match. A line's page lists its stops in order; "All stops, A to Z"
+  links the full list.
+- **Transit line rows** (`TransitLineList`): a network's lines, the page's
+  main element, as compact cards in a 1/2/3-column grid (phone, `sm`,
+  `lg`), one per line: the colour swatch, the name (the card's link) and
+  the status badge on one row, the name the part that clamps, then one
+  line of why when the line isn't running well (the slot the per-line
+  disruption summary fills). Links that lead off the network ("Also run by
+  TfL") are a dimmed sentence of links under the lines, not cards.
 - **Footer credits** (`OpenDataAttribution.tsx`): credit wording is licence
   text; copy it exactly, including "NationalRail" as one word.
 - **Pride mode** (`PrideMode.tsx`): decorative, off by default. Each
