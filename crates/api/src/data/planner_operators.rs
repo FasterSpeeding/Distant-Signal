@@ -14,14 +14,117 @@
 //!   also has a `TUBE` link (spec §3.2: those are Tube-speed transfer
 //!   allowances); `METRO` links follow `reference-data/fixed-link-operators.csv`.
 //!   Anything else stays [`OperatorId::UNKNOWN`] and passes every filter.
+//! - **Stand-in walks** ([`add_tube_stand_in_walks`]): between two stations
+//!   linked by the Tube, an estimated walk of at most
+//!   [`STAND_IN_WALK_MAX_MINUTES`], used only when an operator filter rules
+//!   the Tube out (spec §5.1, approved 2026-10-31): the timetable has no
+//!   walk rows between London's termini.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use anyhow::Result;
 use chrono::NaiveDate;
-use schedule_query::{Connection, DsOperator, InterchangeData, OperatorId};
+use schedule_query::{Connection, DsOperator, FixedLink, InterchangeData, OperatorId};
 use sqlx::PgPool;
+
+/// The longest estimated walk offered instead of the Tube (spec §5.1).
+pub const STAND_IN_WALK_MAX_MINUTES: i32 = 30;
+
+/// Every station pair a London Underground link joins (either direction),
+/// after [`attribute_fixed_links`].
+fn tube_pairs(data: &InterchangeData) -> HashSet<(String, String)> {
+    data.fixed_links_from_crs
+        .iter()
+        .flat_map(|(from, links)| {
+            links
+                .iter()
+                .filter(|link| {
+                    link.operator == OperatorId::LONDON_UNDERGROUND && !link.is_stand_in()
+                })
+                .map(move |link| unordered(from, &link.to_crs))
+        })
+        .collect()
+}
+
+fn unordered(a: &str, b: &str) -> (String, String) {
+    if a <= b {
+        (a.to_owned(), b.to_owned())
+    } else {
+        (b.to_owned(), a.to_owned())
+    }
+}
+
+/// The positions (`stations.latitude`, `longitude`) of the stations a
+/// London Underground link touches: what [`add_tube_stand_in_walks`]
+/// measures. A station with no position gets no stand-in walk.
+pub async fn fetch_tube_station_positions(
+    pool: &PgPool,
+    data: &InterchangeData,
+) -> Result<HashMap<String, (f64, f64)>> {
+    let codes: Vec<String> = tube_pairs(data)
+        .into_iter()
+        .flat_map(|(a, b)| [a, b])
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let rows: Vec<(String, f64, f64)> = sqlx::query_as(
+        "SELECT crs::text, latitude, longitude FROM stations \
+         WHERE crs = ANY($1) AND latitude IS NOT NULL AND longitude IS NOT NULL",
+    )
+    .bind(&codes)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(crs, lat, lon)| (crs.trim().to_ascii_uppercase(), (lat, lon)))
+        .collect())
+}
+
+/// Adds the stand-in walks (see the module doc), both ways, all day, and
+/// re-sorts the links. Returns how many station pairs got one.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "the caller passes fetch_tube_station_positions' own map"
+)]
+pub fn add_tube_stand_in_walks(
+    data: &mut InterchangeData,
+    positions: &HashMap<String, (f64, f64)>,
+) -> usize {
+    let mut added = 0;
+    let mut pairs: Vec<(String, String)> = tube_pairs(data).into_iter().collect();
+    pairs.sort();
+    for (a, b) in pairs {
+        let (Some(&pa), Some(&pb)) = (positions.get(&a), positions.get(&b)) else {
+            continue;
+        };
+        let minutes = crate::data::tfl_access::walk_minutes(
+            crate::data::transit_planning::metres_between(pa, pb),
+        )
+        .max(1);
+        if minutes > STAND_IN_WALK_MAX_MINUTES {
+            continue;
+        }
+        for (from, to) in [(&a, &b), (&b, &a)] {
+            data.fixed_links_from_crs
+                .entry(from.clone())
+                .or_default()
+                .push(FixedLink {
+                    mode: "WALK".to_owned(),
+                    to_crs: to.clone(),
+                    minutes,
+                    valid_from: "0000".to_owned(),
+                    valid_to: "2359".to_owned(),
+                    days_mask: "1111111".to_owned(),
+                    operator: OperatorId::UNKNOWN,
+                    only_without: OperatorId::LONDON_UNDERGROUND,
+                });
+        }
+        added += 1;
+    }
+    data.sort_fixed_links();
+    added
+}
 
 /// `reference-data/fixed-link-operators.csv`, compiled in.
 const FIXED_LINK_OPERATORS_CSV: &str =
@@ -122,13 +225,6 @@ pub fn transit_operator(uid: &str) -> OperatorId {
 /// Sets every fixed link's `operator` (see the module doc), and returns
 /// how many non-walk links stay unattributed, by mode (spec §6.7).
 pub fn attribute_fixed_links(data: &mut InterchangeData) -> HashMap<String, usize> {
-    let pair = |a: &str, b: &str| {
-        if a <= b {
-            (a.to_owned(), b.to_owned())
-        } else {
-            (b.to_owned(), a.to_owned())
-        }
-    };
     let tube_pairs: HashSet<(String, String)> = data
         .fixed_links_from_crs
         .iter()
@@ -136,7 +232,7 @@ pub fn attribute_fixed_links(data: &mut InterchangeData) -> HashMap<String, usiz
             links
                 .iter()
                 .filter(|link| link.mode == "TUBE")
-                .map(move |link| pair(from, &link.to_crs))
+                .map(move |link| unordered(from, &link.to_crs))
         })
         .collect();
     let metro = &*METRO_STATIONS;
@@ -145,7 +241,7 @@ pub fn attribute_fixed_links(data: &mut InterchangeData) -> HashMap<String, usiz
         for link in links.iter_mut() {
             link.operator = match link.mode.as_str() {
                 "TUBE" => OperatorId::LONDON_UNDERGROUND,
-                "TRANSFER" if tube_pairs.contains(&pair(from, &link.to_crs)) => {
+                "TRANSFER" if tube_pairs.contains(&unordered(from, &link.to_crs)) => {
                     OperatorId::LONDON_UNDERGROUND
                 }
                 "METRO" => metro_operator(metro, from, &link.to_crs),
@@ -157,6 +253,41 @@ pub fn attribute_fixed_links(data: &mut InterchangeData) -> HashMap<String, usiz
         }
     }
     unattributed
+}
+
+/// The fixed link a planned transfer took from `from_crs` to `to_crs`: one
+/// of that `mode` and `minutes`, an ordinary link before a stand-in (they
+/// can't be told apart by the journey alone, and an ordinary one is the
+/// likelier). For the transfer leg's `operator` and `estimatedWalk`.
+#[must_use]
+pub fn transfer_link<'a>(
+    data: &'a InterchangeData,
+    from_crs: &str,
+    to_crs: &'a str,
+    mode: &str,
+    minutes: i32,
+) -> Option<&'a FixedLink> {
+    schedule_query::fixed_links_between(data, from_crs, to_crs)
+        .filter(|link| link.mode == mode && link.minutes == minutes)
+        .min_by_key(|link| link.is_stand_in())
+}
+
+/// Every operator with a connection or a (non-stand-in) link in a graph.
+#[must_use]
+pub fn running_operators(
+    connections: &[Connection],
+    data: &InterchangeData,
+) -> schedule_query::OperatorMask {
+    let mut running = schedule_query::OperatorMask::default();
+    for connection in connections {
+        running.insert(connection.operator);
+    }
+    for link in data.fixed_links_from_crs.values().flatten() {
+        if !link.is_stand_in() {
+            running.insert(link.operator);
+        }
+    }
+    running
 }
 
 /// The graph build's attribution gauges (spec §6.7):
@@ -212,6 +343,7 @@ mod tests {
 
     fn link(mode: &str, to: &str) -> FixedLink {
         FixedLink {
+            only_without: OperatorId::UNKNOWN,
             mode: mode.to_owned(),
             to_crs: to.to_owned(),
             minutes: 10,
@@ -315,6 +447,76 @@ mod tests {
         );
         assert!(operator(&data, "LTN", "METRO", "LUA").is_unknown());
         assert!(operator(&data, "CWX", "METRO", "ALT").is_unknown());
+    }
+
+    #[test]
+    fn stand_in_walks_join_walkable_tube_pairs_only() {
+        // London Bridge - Liverpool Street is about 24 minutes on foot,
+        // Euston - Victoria about an hour (spec §3.2).
+        let mut data = interchange(&[
+            ("LBG", link("TUBE", "LST")),
+            ("EUS", link("TUBE", "VIC")),
+            ("EUS", link("TRANSFER", "VIC")),
+            ("KGX", link("WALK", "STP")),
+            ("PAD", link("TUBE", "ZZZ")),
+        ]);
+        attribute_fixed_links(&mut data);
+        let positions: HashMap<String, (f64, f64)> = [
+            ("LBG", (51.5049, -0.0864)),
+            ("LST", (51.5178, -0.0817)),
+            ("EUS", (51.5282, -0.1337)),
+            ("VIC", (51.4952, -0.1441)),
+            ("PAD", (51.5154, -0.1755)),
+        ]
+        .into_iter()
+        .map(|(crs, at)| (crs.to_owned(), at))
+        .collect();
+        assert_eq!(add_tube_stand_in_walks(&mut data, &positions), 1);
+        let walk = |from: &str, to: &str| {
+            data.fixed_links_from_crs
+                .get(from)
+                .into_iter()
+                .flatten()
+                .find(|l| l.to_crs == to && l.is_stand_in())
+                .cloned()
+        };
+        let lbg_lst = walk("LBG", "LST").expect("LBG-LST is walkable");
+        assert_eq!(lbg_lst.mode, "WALK");
+        assert_eq!(lbg_lst.only_without, OperatorId::LONDON_UNDERGROUND);
+        assert!(lbg_lst.operator.is_unknown());
+        assert!((10..=STAND_IN_WALK_MAX_MINUTES).contains(&lbg_lst.minutes));
+        assert!(walk("LST", "LBG").is_some(), "both ways");
+        assert!(walk("EUS", "VIC").is_none(), "an hour on foot");
+        assert!(walk("PAD", "ZZZ").is_none(), "no position for ZZZ");
+        // A stand-in isn't a Tube link itself, and running_operators skips it.
+        assert_eq!(tube_pairs(&data).len(), 3);
+        // The transfer leg picks the ordinary link over a stand-in.
+        let found = transfer_link(&data, "LBG", "LST", "WALK", lbg_lst.minutes).unwrap();
+        assert!(found.is_stand_in());
+        let tube = transfer_link(&data, "EUS", "VIC", "TUBE", 10).unwrap();
+        assert_eq!(tube.operator, OperatorId::LONDON_UNDERGROUND);
+    }
+
+    #[test]
+    fn running_operators_list_connections_and_links() {
+        let mut data = interchange(&[("EUS", link("TUBE", "VIC"))]);
+        attribute_fixed_links(&mut data);
+        let connections = vec![Connection {
+            uid: "C1".to_owned(),
+            from_tiploc: "A".to_owned(),
+            to_tiploc: "B".to_owned(),
+            departure_min: 0,
+            arrival_min: 1,
+            working_departure_min: 0,
+            working_arrival_min: 1,
+            can_board: true,
+            can_alight: true,
+            operator: OperatorId::from_atoc("VT").unwrap(),
+        }];
+        let running = running_operators(&connections, &data);
+        assert!(running.contains(OperatorId::from_atoc("VT").unwrap()));
+        assert!(running.contains(OperatorId::LONDON_UNDERGROUND));
+        assert!(!running.contains(OperatorId::from_atoc("GR").unwrap()));
     }
 
     #[test]

@@ -55,6 +55,72 @@ them is answered exactly as before.
 - Paging is unchanged: a page holds up to `limit` trains that pass the
   filters.
 
+## 2026-10-31: operator filters on `/Trips/plan` (`operator`, `avoidOperator`)
+
+Additive. A request without these parameters is answered as before,
+apart from the two additive fields on transfer legs below (planner
+operator filtering spec,
+docs/superpowers/specs/2026-10-31-planner-operator-filtering-design.md,
+phase P1).
+
+- **`operator=VT,group:GTR,ds:DLR`**: ride only these operators.
+  **`avoidOperator=LT`**: never these. Use at most one of the two.
+  - Each is a comma-separated list of up to 8 entries.
+  - An entry is a 2-character ATOC code, a DS operator (`ds:DLR`,
+    `ds:LONDON_TRAMS`, `ds:METROLINK`, `ds:NET`, for operators that run no
+    National Rail trains) or a named group (`group:GTR`).
+  - Entries are case-insensitive.
+- **An operator covers every way of riding it**: its trains, buses and
+  ferries (one ATOC code), its fixed links and its `TfL` access rides.
+  - `LT` (London Underground) covers its CIF trains, every `TUBE` link,
+    every `TRANSFER` link between a pair of stations that also has a
+    `TUBE` link, and Tube access rides.
+  - `ds:DLR` and `ds:LONDON_TRAMS` cover their `METRO` links and rides.
+  - `ds:METROLINK` and `ds:NET` cover their trams.
+  - So `operator=VT,SN` leaves out the Tube: add `LT` to cross London by
+    Tube.
+  - Walks always pass, and so does anything DS can't attribute to an
+    operator: some `BUS`, `FERRY`, `TRAM` and `TRANSFER` links.
+- **Estimated walks.** When a filter leaves out `LT`, a pair of stations
+  joined by the Tube gets an estimated walk of at most 30 minutes, where
+  both stations have a position. Such a walk is a transfer leg with
+  `"estimatedWalk": true`. A request that doesn't leave out `LT` never
+  uses one.
+- **400** (plain text) for:
+  - both parameters at once;
+  - a malformed entry;
+  - an unknown `group:` or `ds:` name;
+  - more than 8 entries;
+  - an ATOC code named directly that neither `tocs` nor the timetable of
+    the searched dates knows.
+
+  A known code that runs nothing that day is not a 400; see
+  `operatorsNotRunning`.
+- **Echo** (always present): `operator` and `avoidOperator` (the list as
+  applied, groups expanded, `[]` when unused), `operatorGroups` (each
+  named group and its members, `{}` when none) and `operatorsNotRunning`
+  (the listed operators with nothing in `date`'s graph).
+- **`noResultReason`** gains `constraint` values `operator` and
+  `avoidOperator`.
+  - Either is reported when an itinerary exists without the filter but
+    none with it, or (`operator` only) when none of the chosen operators
+    runs that day.
+  - `values` holds the filter's codes, in code order.
+  - A new optional `linkOperators` names the operators whose links or
+    rides, not trains, the route needs, e.g. `["LT"]`: "the route needs
+    LT, which this filter leaves out".
+  - A filter that fails only together with the avoid lists is
+    `avoidCombined`, whose `values` then include the operator codes.
+- **Transfer legs** gain `operator` (`"LT"`, `"ds:DLR"`, ...; absent for
+  a walk or an unknown operator) and `estimatedWalk` (present and `true`
+  only for an estimated walk).
+- **`GET /Trips/operator-groups`** (new, unauthenticated,
+  `Cache-Control: public, max-age=3600`) returns:
+  - `groups`: `[{code, name, members}]`, e.g. GTR, SWR, TFL;
+  - `dsOperators`: `[{code, name}]`;
+  - `names`: display names for timetable codes `tocs` doesn't name, e.g.
+    `{"TW": "Tyne and Wear Metro"}`.
+
 ## 2026-10-31: `/Trips/plan` bus and ferry legs carry their `operator`
 
 A value change, no new fields. A train leg's `operator` (the schedule's

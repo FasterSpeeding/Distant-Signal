@@ -770,6 +770,7 @@ fn bench_link_rows(rng: &mut Rng) -> Vec<(String, schedule_query::FixedLink)> {
         (
             format!("C{from:04}"),
             FixedLink {
+                only_without: schedule_query::OperatorId::UNKNOWN,
                 operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "TUBE".to_string(),
                 to_crs: format!("C{to:04}"),
@@ -1701,4 +1702,137 @@ fn bench_operator_filter_cpu() {
         assert!(ratio(2, kind) <= only_five * noise, "only 5 of 10, {name}");
     }
     assert!(ratio(3, 0) <= 3.0 * noise, "only 1 of 10, csa");
+}
+
+/// Operator filters on links (spec 2026-10-31 §7.3): the synthetic day
+/// with [`bench_link_rows`]' links indexed both ways, every link run by the
+/// London Underground and each line's trains by one of ten operators. CSA
+/// depart-after and RAPTOR (6 rounds) over 20 pairs, interleaved, CPU
+/// time: no rule; avoiding one train operator (every link is checked and
+/// passes); avoiding `LT` (every link is refused). Asserted: the check
+/// alone costs at most +2% (with 10% for CPU-time noise).
+#[test]
+#[ignore = "benchmark; see the module doc"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "bench code: one table of cases, measured and checked top to bottom"
+)]
+fn bench_operator_filter_links_cpu() {
+    use schedule_query::{OperatorId, OperatorMask};
+    use trip_planner::OperatorRule;
+
+    if !bench_requested() {
+        return;
+    }
+    let reps: usize = std::env::var("DS_BENCH_REPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(9);
+    let codes = ["VT", "GR", "GW", "SW", "SN", "SE", "NT", "SR", "XC", "LM"];
+    let (mut connections, _, mut interchange) = link_indexes();
+    for connection in &mut connections {
+        let line: usize = connection.uid[1..connection.uid.find('D').unwrap()]
+            .parse()
+            .unwrap();
+        connection.operator = OperatorId::from_atoc(codes[line % codes.len()]).unwrap();
+    }
+    for link in interchange.fixed_links_from_crs.values_mut().flatten() {
+        link.operator = OperatorId::LONDON_UNDERGROUND;
+    }
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    let mut rng = Rng(0x11_4c5);
+    let pairs: Vec<(Vec<String>, Vec<String>)> = (0..20)
+        .map(|_| {
+            (
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+            )
+        })
+        .collect();
+    let rule = |r: OperatorRule| Some(Restrictions::default().with_operator_rule(r));
+    let cases: [(&str, Option<Restrictions>); 3] = [
+        ("no rule", None),
+        (
+            "avoid 1 of 10",
+            rule(OperatorRule::avoid(OperatorMask::of([
+                OperatorId::from_atoc(codes[0]).unwrap(),
+            ]))),
+        ),
+        (
+            "avoid LT",
+            rule(OperatorRule::avoid(OperatorMask::of([
+                OperatorId::LONDON_UNDERGROUND,
+            ]))),
+        ),
+    ];
+    let search = |kind: usize, restrictions: Option<&Restrictions>| -> usize {
+        pairs
+            .iter()
+            .map(|(from, to)| {
+                if kind == 0 {
+                    usize::from(
+                        scan_connections_restricted(
+                            ScanOptions {
+                                connections: &connections,
+                                interchange: &interchange,
+                                from_tiplocs: from,
+                                to_tiplocs: to,
+                                departure_min: 480,
+                                date,
+                            },
+                            None,
+                            restrictions,
+                        )
+                        .is_some(),
+                    )
+                } else {
+                    raptor_search_restricted(
+                        RaptorOptions {
+                            connections: &connections,
+                            interchange: &interchange,
+                            from_tiplocs: from,
+                            to_tiplocs: to,
+                            departure_min: 480,
+                            date,
+                            max_rounds: 6,
+                        },
+                        None,
+                        restrictions,
+                    )
+                    .len()
+                }
+            })
+            .sum()
+    };
+    let mut samples: Vec<[Vec<Duration>; 2]> = cases.iter().map(|_| Default::default()).collect();
+    let mut found = vec![[0usize; 2]; cases.len()];
+    for _ in 0..reps {
+        for (case, (_, restrictions)) in cases.iter().enumerate() {
+            for kind in 0..2 {
+                let started = thread_cpu();
+                found[case][kind] = search(kind, restrictions.as_ref());
+                samples[case][kind].push(thread_cpu().saturating_sub(started));
+            }
+        }
+    }
+    let medians: Vec<[Duration; 2]> = samples
+        .into_iter()
+        .map(|kinds| {
+            kinds.map(|mut times| {
+                times.sort();
+                times[times.len() / 2]
+            })
+        })
+        .collect();
+    for ((label, _), (row, found)) in cases.iter().zip(medians.iter().zip(&found)) {
+        println!(
+            "{label:14} csa {:>9.2?} ({}) raptor {:>9.2?} ({})",
+            row[0], found[0], row[1], found[1]
+        );
+    }
+    for (kind, name) in ["csa", "raptor"].iter().enumerate() {
+        let ratio = medians[1][kind].as_secs_f64() / medians[0][kind].as_secs_f64();
+        println!("{name:6} avoid 1 of 10 with links {ratio:.3}x");
+        assert!(ratio <= 1.02 * 1.10, "avoid 1 of 10 with links, {name}");
+    }
 }

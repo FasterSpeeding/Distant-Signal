@@ -608,6 +608,7 @@ mod tests {
         data.fixed_links_from_crs = schedule_query::index_fixed_links_both_ways([(
             "KGX".to_string(),
             FixedLink {
+                only_without: schedule_query::OperatorId::UNKNOWN,
                 operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "WALK".to_string(),
                 to_crs: "STP".to_string(),

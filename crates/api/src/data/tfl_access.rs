@@ -173,6 +173,21 @@ pub fn is_tfl_stop_id(code: &str) -> bool {
             .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
 }
 
+/// Who runs a ride on `line`, for operator filters (planner operator
+/// filtering spec §5.1): the DLR and London Trams are DS operators, every
+/// other line the London Underground (`LT`), as [`line_mode`] reads them.
+pub fn line_operator(line: &TflStopLine) -> schedule_query::OperatorId {
+    use schedule_query::{DsOperator, OperatorId};
+    let id = line.id.to_ascii_lowercase();
+    if id == "dlr" {
+        OperatorId::ds(DsOperator::Dlr)
+    } else if id.contains("tram") {
+        OperatorId::ds(DsOperator::LondonTrams)
+    } else {
+        OperatorId::LONDON_UNDERGROUND
+    }
+}
+
 /// The fixed-link mode and speed (km/h) of a ride on `line`.
 pub fn line_mode(line: &TflStopLine) -> (&'static str, f64) {
     let id = line.id.to_ascii_lowercase();
@@ -247,6 +262,10 @@ pub struct AccessCandidate {
     /// another stop area of its station; `minutes` include the walk from it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alight_stop: Option<TflStopSummary>,
+    /// Who runs the ride ([`line_operator`]); unknown for a walk. Not
+    /// served: the `line` says it.
+    #[serde(skip)]
+    pub operator: schedule_query::OperatorId,
 }
 
 impl AccessCandidate {
@@ -255,6 +274,7 @@ impl AccessCandidate {
             crs: self.crs.clone(),
             mode: self.mode.clone(),
             minutes: self.minutes,
+            operator: self.operator,
             windows: if self.mode == "WALK" {
                 Vec::new()
             } else {
@@ -334,7 +354,7 @@ fn metres(value: f64) -> u32 {
     value.round() as u32
 }
 
-fn walk_minutes(straight_metres: f64) -> i32 {
+pub(crate) fn walk_minutes(straight_metres: f64) -> i32 {
     whole(straight_metres * WALK_DETOUR / WALK_METRES_PER_MINUTE)
 }
 
@@ -868,6 +888,7 @@ fn hub_candidates(stop: &StopRecord) -> Vec<AccessCandidate> {
     stop.rail_crs
         .iter()
         .map(|crs| AccessCandidate {
+            operator: schedule_query::OperatorId::UNKNOWN,
             crs: crs.clone(),
             mode: "WALK".to_owned(),
             minutes: HUB_WALK_MINUTES,
@@ -955,6 +976,7 @@ impl EndRide<'_> {
             minutes,
             basis: AccessBasis::Line,
             line: Some(self.line.name.clone()),
+            operator: line_operator(self.line),
             station_stop: station_stop.map(|index| stops[index].summary.clone()),
             distance_metres: metres(self.ride.metres),
             stop_count: stop_count(&self.ride),
@@ -1080,6 +1102,7 @@ fn walk_candidates(
     near.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)));
     near.into_iter()
         .map(|(d, crs)| AccessCandidate {
+            operator: schedule_query::OperatorId::UNKNOWN,
             crs: crs.clone(),
             mode: "WALK".to_owned(),
             minutes: walk_minutes(d),
