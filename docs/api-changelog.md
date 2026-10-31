@@ -3,6 +3,58 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-31: `transfer`, a twelfth untracked-leg `transitMode`
+
+Additive: an untracked leg's `transitMode` may now be `transfer`
+(everywhere one is accepted or served: `POST /Journeys/itinerary`, the
+leg add and edit routes, the replan suggestions; DS-216). It is a
+timetable `TRANSFER` link between two different stations, such as Euston
+to Victoria in 19 minutes: often a Tube hop, but the link does not say
+which way it goes. The planner's save and the mid-journey alternatives
+used to drop every `TRANSFER` transfer leg as a change within one
+station, so a saved journey lost the hop. They now send a `TRANSFER`
+between different station codes as a `transfer` leg on its planned times;
+one with the same code at both ends is still left out. A client that
+does not know the mode should show it as it shows `other`. The `400`
+message for an unknown mode lists the new one.
+
+## 2026-10-31: Between stations filters on a journey's window legs
+
+Additive: a window leg can carry the `/trains` Between stations filters,
+saved with it, and its candidates list only the trains they allow
+(DS-215; `crates/api/src/routes/trains/leg_filters.rs`). A request without
+them is answered exactly as before.
+
+- `POST /Journeys/{journeyId}/legs` with `mode: "window"` takes an
+  optional `filters` object: `operator`, `startsAt`, `terminatesAt`,
+  `previouslyCallsAt`, `previouslyStopsAt`, `callsAt`, `via`, `avoid`,
+  `avoidStop`. Each value is the text `GET /public/trains/search` takes
+  for `operator`, `origin`, `terminates_at`, `previously_calls_at`,
+  `previously_stops_at`, `calls_at`, `via`, `avoid` and `avoid_stop`
+  (comma-separated lists, the same caps and syntax), and means what it
+  does there with `station` the leg's origin and `stops_at` its
+  destination. Starts at is `startsAt` because a leg's `origin` is where
+  the traveller boards. Blank values are dropped. `400` for whatever the
+  search refuses between those two stations (its messages name the
+  search's parameter), including an operator code the timetable does not
+  know on the leg's date; an unknown key is a `422`. `POST /Journeys`'s
+  window leg does not take `filters`.
+- `GET /Journeys/{id}` (and the shared view): each leg gains
+  `searchFilters`, the saved filters with codes upper case and unset ones
+  absent (`{"operator": "SW", "startsAt": "WAT"}`), or `null`.
+- `GET /Journeys/{journeyId}/legs/{legId}/candidates` applies the leg's
+  saved filters. `operator`, as before any text and never a `400`,
+  replaces the saved operator. An edited search (`origin`, `destination`,
+  `serviceDate`, ...) has only the filters given with it: `operator` and
+  the new `startsAt`, `terminatesAt`, `previouslyCallsAt`,
+  `previouslyStopsAt`, `callsAt`, `via`, `avoid` and `avoidStop`
+  parameters, which are a `400` without one.
+- `POST /Journeys/{journeyId}/legs/{legId}/train`'s `search` takes the
+  same optional `filters`, checked the same way and saved with it;
+  absent clears the leg's.
+- Paging is unchanged: a page holds up to `limit` trains that pass the
+  filters.
+
 ## 2026-10-31: `preferOperator` on `/Trips/plan` (Compare options)
 
 Additive (planner operator filtering spec, phase P3).
