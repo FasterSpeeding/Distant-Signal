@@ -117,6 +117,17 @@ test.describe('transit pages', () => {
     await expect(page.getByRole('link', { name: 'Status details' })).toHaveAttribute('href', '/lines/tfl-victoria');
   });
 
+  test('the DLR is a line of the TfL network, with its own frequency', async ({ page }) => {
+    await page.goto('/transit/tfl');
+    await page.getByRole('link', { name: 'DLR', exact: true }).click();
+    await expect(page).toHaveURL(/\/transit\/tfl\/lines\/dlr$/);
+    await page.goto('/transit/tfl/lines/dlr?date=2026-09-17');
+    await expect(page.getByRole('heading', { level: 1, name: 'DLR' })).toBeVisible();
+    await expect(page.getByText('From Bank: first 07:05, last 07:15')).toBeVisible();
+    await expect(page.getByText('Every 10 minutes')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Status details' })).toHaveAttribute('href', '/lines/tfl-dlr');
+  });
+
   test("a TfL network stop is TfL's own stop page", async ({ page }) => {
     await page.goto('/transit/tfl/stops/9400ZZLUKSX');
     await expect(page).toHaveURL(/\/tfl\/stops\/940GZZLUKSX$/);
