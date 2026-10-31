@@ -16,16 +16,31 @@
 //! `csa.rs`'s FIX-3 relaxation does) is duplicated from `csa.rs`, not
 //! shared with it -- see this plan's Judgment Call 3 for why that
 //! duplication is deliberate, not an oversight.
+//!
+//! **State (DS-225).** Each round used to start as a clone of the previous
+//! round's `HashMap<String, _>`s, and every connection hashed its UID and
+//! TIPLOCs. Now stops get a per-search index, a connection's stops and
+//! train are looked up by their interned codes, and each stop keeps a short
+//! history of its improvements tagged with their round (`Search::arrival`),
+//! so a round costs what it improves. From round 2 a round's sweep starts
+//! at the earliest arrival the round before improved: a boarding before it
+//! could only repeat that round's arrivals. Results are unchanged; the
+//! sweep is still over connections in departure order, not grouped into
+//! route patterns, so restrictions that end a ride mid-train, the live
+//! overlay's replacement trains and every tie-break behave exactly as
+//! before.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::rc::Rc;
 
 use chrono::NaiveDate;
 use schedule_query::{
-    ChangeTime, Connection, InterchangeData, fixed_links_from_where, minimum_change_time,
+    ChangeTime, Connection, InterchangeData, LinkWindow, StopCode, TripCode, minimum_change_time,
     normalize_tiploc, sibling_tiplocs,
 };
 
 use crate::csa::{JourneyLeg, TrainLeg, TransferLeg};
+use crate::dense::{DenseMap, ModalBuffer, StopLink};
 use crate::restrictions::{self, Restrictions};
 
 #[expect(
@@ -88,295 +103,406 @@ pub struct RaptorOptions<'a> {
 }
 
 /// How a stop's arrival in a given round was produced.
-#[derive(Debug, Clone)]
-enum ArrivalSource {
-    /// The connection that arrived, the round it was ridden in and the ride
-    /// (an index into that round's `boardings`). Recorded here rather than
-    /// looked up by UID afterwards: an arrival can be carried into later
-    /// rounds, and with restrictions a train can be left and boarded again
-    /// within a round -- see `csa::ArrivalSource::Train`.
-    Train(Connection, usize, usize),
+#[derive(Debug, Clone, Copy)]
+enum ArrivalSource<'a> {
+    /// The connection that arrived and the ride it was part of (an index
+    /// into `Search::rides`, which records the round it was ridden in).
+    /// Recorded here rather than looked up by UID afterwards: an arrival
+    /// can be carried into later rounds, and with restrictions a train can
+    /// be left and boarded again within a round -- see
+    /// `csa::ArrivalSource::Train`.
+    Train(&'a Connection, usize),
     Link {
-        from_tiploc: String,
-        mode: String,
+        /// The stop walked from.
+        from: usize,
+        mode: &'a str,
         minutes: i32,
     },
 }
 
+/// A stop's arrival as of some round: one entry of its history (at most
+/// one per round), newest first through `previous`.
+#[derive(Debug, Clone, Copy)]
+struct Arrival<'a> {
+    round: usize,
+    time: u32,
+    via: ArrivalSource<'a>,
+    /// The stop's arrival before this one (an index into
+    /// `Search::arrivals`), from an earlier round or earlier in this one.
+    previous: Option<usize>,
+}
+
+/// One ride: the connection boarded, the stop whose (previous-round)
+/// readiness allowed it, and the round it was ridden in.
+struct Ride<'a> {
+    boarded: &'a Connection,
+    from: usize,
+    round: usize,
+}
+
+/// What a search knows about one stop. Stops are indexed per search, by
+/// normalized TIPLOC, as in `csa::Scan`.
+struct Stop<'a> {
+    /// Normalized.
+    tiploc: &'a str,
+    origin: bool,
+    /// Not avoided: may be alighted at, walked into and boarded at fresh.
+    allows_interchange: bool,
+    /// `minimum_change_time`, `None` for a `NoInterchange` sentinel.
+    change_time: Option<u32>,
+    /// Same-CRS siblings, in `sibling_tiplocs`' order (as the interchange
+    /// data spells them, as `csa::Stop::siblings`). Looked up among the
+    /// search's stops when boarding: one with no stop yet has no arrival.
+    siblings: Vec<&'a str>,
+    /// The newest entry of its arrival history (an index into
+    /// `Search::arrivals`).
+    latest: Option<usize>,
+    /// Its CRS's fixed links in lookup order, each with the stops it leads
+    /// to: read from the interchange data once per search (see
+    /// [`Search::links_of`]).
+    links: Option<Rc<[StopLink<'a>]>>,
+}
+
+/// A possible fresh boarding: when, and from which stop.
 struct ReadySource {
     time: u32,
-    from: String,
+    from: usize,
 }
 
-/// One round's working state. `arrival`/`arrived_via` start as a clone of
-/// the previous round's (a stop reachable with fewer trips stays
-/// reachable); `leg_boarded_at`/`boarded_from` start empty each round --
-/// which connection first made a `uid` reachable, and which TIPLOC's
-/// readiness enabled that boarding, are questions scoped to THIS round's
-/// boardings alone.
-#[derive(Clone)]
-struct RoundState {
-    arrival: HashMap<String, u32>,
-    arrived_via: HashMap<String, ArrivalSource>,
-    /// This round's rides: the connection boarded, and the TIPLOC whose
-    /// (previous-round) readiness allowed it.
-    boardings: Vec<(Connection, String)>,
-}
-
-impl RoundState {
-    fn empty() -> Self {
-        Self {
-            arrival: HashMap::new(),
-            arrived_via: HashMap::new(),
-            boardings: Vec::new(),
-        }
-    }
-
-    fn clone_for_next_round(&self) -> Self {
-        Self {
-            arrival: self.arrival.clone(),
-            arrived_via: self.arrived_via.clone(),
-            boardings: Vec::new(),
-        }
-    }
-}
-
-/// See `csa::Scan::ready_source_at`, including its bus and ferry buffer:
-/// `boarding_uid`'s side, and the arriving service's side read off
-/// `arrived_via` (the previous round's).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
-)]
-fn ready_source_at(
-    source: &HashMap<String, u32>,
-    arrived_via: &HashMap<String, ArrivalSource>,
-    boarding_uid: &str,
-    origin: &HashSet<String>,
+/// One RAPTOR search's state (DS-225). Round *k*'s arrivals are not a
+/// copy of round *k - 1*'s: each stop keeps a short history of its
+/// improvements, each tagged with its round, and "the arrival as of round
+/// *k*" is the newest entry no later than *k*. So a round costs only what
+/// it improves, and nothing is hashed per connection: a connection's stops
+/// and train are looked up by code.
+struct Search<'a> {
+    interchange: &'a InterchangeData,
+    restrictions: Option<&'a Restrictions>,
+    date: NaiveDate,
     departure_min: u32,
-    interchange: &InterchangeData,
-    restrictions: Option<&Restrictions>,
-    tiploc: &str,
-) -> Option<ReadySource> {
-    let tiploc = normalize_tiploc(tiploc);
-    if origin.contains(tiploc) {
-        return Some(ReadySource {
-            time: departure_min,
-            from: tiploc.to_string(),
-        });
-    }
-    if !restrictions::allows_interchange(restrictions, tiploc) {
-        return None;
-    }
-    let ChangeTime::Finite(change_time) = minimum_change_time(interchange, tiploc) else {
-        return None;
-    };
-    let change_time = change_time + interchange.modal_change.extra_for(boarding_uid);
-    let alighting_extra = |at: &str| match arrived_via.get(at) {
-        Some(ArrivalSource::Train(connection, _, _)) => {
-            interchange.modal_change.extra_for(&connection.uid)
-        }
-        _ => 0,
-    };
+    modal: ModalBuffer,
+    stop_ids: HashMap<&'a str, usize>,
+    stop_by_code: DenseMap,
+    stops: Vec<Stop<'a>>,
+    arrivals: Vec<Arrival<'a>>,
+    rides: Vec<Ride<'a>>,
+    /// Per `TripCode`, the ride the traveller is on in the current round;
+    /// `aboard` lists the trains set, to clear them at the round's end.
+    reachable_trip: DenseMap,
+    aboard: Vec<TripCode>,
+}
 
-    let mut best: Option<ReadySource> = None;
-    if let Some(&arrival) = source.get(tiploc) {
-        best = Some(ReadySource {
-            time: arrival + change_time + alighting_extra(tiploc),
-            from: tiploc.to_string(),
-        });
+impl<'a> Search<'a> {
+    fn new(
+        interchange: &'a InterchangeData,
+        restrictions: Option<&'a Restrictions>,
+        date: NaiveDate,
+        departure_min: u32,
+    ) -> Self {
+        Self {
+            interchange,
+            restrictions,
+            date,
+            departure_min,
+            modal: ModalBuffer::new(&interchange.modal_change),
+            stop_ids: HashMap::new(),
+            stop_by_code: DenseMap::with_len(StopCode::count()),
+            stops: Vec::new(),
+            arrivals: Vec::new(),
+            rides: Vec::new(),
+            reachable_trip: DenseMap::with_len(TripCode::count()),
+            aboard: Vec::new(),
+        }
     }
-    for sibling in sibling_tiplocs(interchange, tiploc) {
-        let Some(&sibling_arrival) = source.get(sibling) else {
-            continue;
+
+    /// `tiploc`'s (normalized) index, added on first sight.
+    fn stop_id(&mut self, tiploc: &'a str) -> usize {
+        if let Some(&id) = self.stop_ids.get(tiploc) {
+            return id;
+        }
+        let allows_interchange = restrictions::allows_interchange(self.restrictions, tiploc);
+        let change_time = match minimum_change_time(self.interchange, tiploc) {
+            ChangeTime::Finite(minutes) => Some(minutes),
+            ChangeTime::NoInterchange => None,
         };
-        let candidate = sibling_arrival + change_time + alighting_extra(sibling);
-        if best.as_ref().is_none_or(|b| candidate < b.time) {
-            best = Some(ReadySource {
-                time: candidate,
-                from: sibling.to_string(),
+        let id = self.stops.len();
+        let interchange: &'a InterchangeData = self.interchange;
+        self.stops.push(Stop {
+            tiploc,
+            origin: false,
+            allows_interchange,
+            change_time,
+            siblings: sibling_tiplocs(interchange, tiploc),
+            latest: None,
+            links: None,
+        });
+        self.stop_ids.insert(tiploc, id);
+        id
+    }
+
+    /// `code`'s stop, by its code (see `csa::Scan::stop_for`).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a search touches far fewer than u32::MAX stops"
+    )]
+    fn stop_for(&mut self, code: StopCode) -> usize {
+        if let Some(id) = self.stop_by_code.get(code.index()) {
+            return id as usize;
+        }
+        let id = self.stop_id(code.normalized().as_str());
+        self.stop_by_code.set(code.index(), id as u32);
+        id
+    }
+
+    /// `stop`'s arrival as of `round`: its newest entry no later.
+    fn arrival(&self, stop: usize, round: usize) -> Option<&Arrival<'a>> {
+        let mut at = self.stops[stop].latest;
+        while let Some(index) = at {
+            let arrival = &self.arrivals[index];
+            if arrival.round <= round {
+                return Some(arrival);
+            }
+            at = arrival.previous;
+        }
+        None
+    }
+
+    /// The bus or ferry buffer owed for getting off whatever `arrival` came
+    /// by (see `csa::Label::ready`).
+    fn alighting_extra(&self, arrival: &Arrival<'_>) -> u32 {
+        match arrival.via {
+            ArrivalSource::Train(connection, _) => self.modal.extra_for(connection.uid),
+            ArrivalSource::Link { .. } => 0,
+        }
+    }
+
+    /// See `csa::Scan::ready_source_at`, including its bus and ferry
+    /// buffer: `connection`'s side, and the arriving service's side read
+    /// off the previous round's arrival. Of the stop and its siblings, the
+    /// earliest ready, the stop itself on a tie.
+    fn ready_source_at(
+        &self,
+        from: usize,
+        connection: &Connection,
+        previous: usize,
+    ) -> Option<ReadySource> {
+        let stop = &self.stops[from];
+        if stop.origin {
+            return Some(ReadySource {
+                time: self.departure_min,
+                from,
             });
         }
-    }
-    best
-}
-
-/// Improves `tiploc`'s arrival IN `round` to `arrival_min`, records how it
-/// was reached, marks it touched (so the round loop can tell whether this
-/// round achieved anything at all), and relaxes every fixed link reachable
-/// from this stop at this new, better time -- confined entirely to
-/// `round`'s own maps, which is what makes "at most k trips" an honest
-/// count. A no-op when `arrival_min` does not improve on what's already
-/// known in `round`, which is what keeps the mutual recursion with
-/// `relax_fixed_links_in_round` safe (every link has strictly positive
-/// `minutes`, and there are finitely many CRS codes, so this always
-/// terminates -- same reasoning as `csa::Scan::relax`'s own doc comment).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
-)]
-fn relax_in_round(
-    round: &mut RoundState,
-    touched: &mut HashSet<String>,
-    interchange: &InterchangeData,
-    restrictions: Option<&Restrictions>,
-    date: NaiveDate,
-    tiploc: &str,
-    arrival_min: u32,
-    via: ArrivalSource,
-) {
-    let tiploc = normalize_tiploc(tiploc);
-    if !restrictions::allows_interchange(restrictions, tiploc) {
-        return;
-    }
-    let current_best = round.arrival.get(tiploc).copied().unwrap_or(u32::MAX);
-    if arrival_min >= current_best {
-        return;
-    }
-    // A walk on from a bus or ferry is a change off it: the alighting
-    // buffer comes first (see `csa::alighting_buffer`).
-    let walk_from = arrival_min
-        + match &via {
-            ArrivalSource::Train(connection, _, _) => {
-                interchange.modal_change.extra_for(&connection.uid)
-            }
-            ArrivalSource::Link { .. } => 0,
-        };
-    round.arrival.insert(tiploc.to_string(), arrival_min);
-    round.arrived_via.insert(tiploc.to_string(), via);
-    touched.insert(tiploc.to_string());
-    relax_fixed_links_in_round(
-        round,
-        touched,
-        interchange,
-        restrictions,
-        date,
-        tiploc,
-        walk_from,
-    );
-}
-
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
-)]
-fn relax_fixed_links_in_round(
-    round: &mut RoundState,
-    touched: &mut HashSet<String>,
-    interchange: &InterchangeData,
-    restrictions: Option<&Restrictions>,
-    date: NaiveDate,
-    from_tiploc: &str,
-    at_min: u32,
-) {
-    let from_tiploc = normalize_tiploc(from_tiploc);
-    let Some(crs) = interchange.tiploc_to_crs.get(from_tiploc) else {
-        return;
-    };
-    for link in fixed_links_from_where(interchange, crs, date, at_min, |link| {
-        restrictions::allows_link(restrictions, link)
-    }) {
-        let candidate = at_min + link.minutes as u32;
-        let Some(destination_tiplocs) = interchange.crs_to_tiplocs.get(&link.to_crs) else {
-            continue;
-        };
-        for to_tiploc in destination_tiplocs {
-            relax_in_round(
-                round,
-                touched,
-                interchange,
-                restrictions,
-                date,
-                to_tiploc,
-                candidate,
-                ArrivalSource::Link {
-                    from_tiploc: from_tiploc.to_string(),
-                    mode: link.mode.clone(),
-                    minutes: link.minutes,
-                },
-            );
+        if !stop.allows_interchange {
+            return None;
         }
-    }
-}
-
-/// Runs exactly one round: boards every connection reachable from
-/// `previous`'s frozen arrivals, relaxes each boarding's arrival (and its
-/// fixed links) into a fresh `RoundState`, and reports whether anything
-/// was actually touched. Extracted from `raptor_search`'s own loop body so
-/// a unit test can call a single round directly and observe "no
-/// improvement" without needing to control wall-clock timing or reach into
-/// the returned Pareto set -- see the `_reports_no_improvement` test below,
-/// which is what `raptor_search`'s early-termination `break` actually
-/// relies on being true.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
-)]
-fn run_one_round<'c>(
-    previous: &RoundState,
-    connections: impl IntoIterator<Item = &'c Connection>,
-    origin: &HashSet<String>,
-    departure_min: u32,
-    interchange: &InterchangeData,
-    restrictions: Option<&Restrictions>,
-    date: NaiveDate,
-    round: usize,
-) -> (RoundState, bool /* improved */) {
-    let mut current = previous.clone_for_next_round();
-    let mut touched = HashSet::new();
-    let mut reachable_trip: HashMap<String, usize> = HashMap::new();
-
-    for connection in connections {
-        // Unusable, and ends any ride on its train -- see
-        // `crate::restrictions`'s module doc.
-        if restrictions::blocks(restrictions, connection) {
-            reachable_trip.remove(connection.uid.as_str());
-            continue;
-        }
-        let ride = if let Some(&ride) = reachable_trip.get(connection.uid.as_str()) {
-            ride
-        } else {
-            // No fresh boarding at a set-down-only stop.
-            if !connection.can_board {
-                continue;
-            }
-            let Some(source) = ready_source_at(
-                &previous.arrival,
-                &previous.arrived_via,
-                &connection.uid,
-                origin,
-                departure_min,
-                interchange,
-                restrictions,
-                &connection.from_tiploc,
-            ) else {
+        let change_time = stop.change_time? + self.modal.extra_for(connection.uid);
+        let mut best: Option<ReadySource> = None;
+        let siblings = stop
+            .siblings
+            .iter()
+            .filter_map(|sibling| self.stop_ids.get(sibling).copied());
+        for at in std::iter::once(from).chain(siblings) {
+            let Some(arrival) = self.arrival(at, previous) else {
                 continue;
             };
-            if source.time > connection.departure_min {
+            let candidate = arrival.time + change_time + self.alighting_extra(arrival);
+            if best.as_ref().is_none_or(|b| candidate < b.time) {
+                best = Some(ReadySource {
+                    time: candidate,
+                    from: at,
+                });
+            }
+        }
+        best
+    }
+
+    /// Improves `stop`'s arrival in `round` to `time`, recording how it
+    /// was reached, and relaxes every fixed link from it. A no-op when
+    /// `time` does not improve on its arrival as of `round`, which keeps the
+    /// recursion with [`Self::relax_fixed_links`] finite (every link takes
+    /// strictly positive minutes). Returns whether it improved.
+    fn relax(&mut self, round: usize, stop: usize, time: u32, via: ArrivalSource<'a>) -> bool {
+        if !self.stops[stop].allows_interchange {
+            return false;
+        }
+        if self
+            .arrival(stop, round)
+            .is_some_and(|known| time >= known.time)
+        {
+            return false;
+        }
+        // One entry per stop and round: a later improvement in the same
+        // round replaces it (as the round's own map did), so a stop's
+        // history stays at most a round long however often the walks
+        // between dense links improve it.
+        let latest = self.stops[stop].latest;
+        let entry = match latest {
+            Some(index) if self.arrivals[index].round == round => {
+                let entry = &mut self.arrivals[index];
+                entry.time = time;
+                entry.via = via;
+                *entry
+            }
+            _ => {
+                let entry = Arrival {
+                    round,
+                    time,
+                    via,
+                    previous: latest,
+                };
+                self.stops[stop].latest = Some(self.arrivals.len());
+                self.arrivals.push(entry);
+                entry
+            }
+        };
+        // A walk on from a bus or ferry is a change off it: the alighting
+        // buffer comes first.
+        let walk_from = time + self.alighting_extra(&entry);
+        self.relax_fixed_links(round, stop, walk_from);
+        true
+    }
+
+    /// `from`'s fixed links (see [`Stop::links`]), read on first use.
+    fn links_of(&mut self, from: usize) -> Rc<[StopLink<'a>]> {
+        if let Some(links) = &self.stops[from].links {
+            return Rc::clone(links);
+        }
+        let interchange: &'a InterchangeData = self.interchange;
+        let links: Rc<[StopLink<'a>]> = interchange
+            .tiploc_to_crs
+            .get(self.stops[from].tiploc)
+            .map_or_else(Vec::new, |crs| StopLink::of(interchange, crs))
+            .into();
+        self.stops[from].links = Some(Rc::clone(&links));
+        links
+    }
+
+    /// Relaxes every stop one fixed link from `from`, walked at `at_min`:
+    /// `schedule_query::fixed_links_from_where`'s choice (the first link
+    /// valid then to each CRS, in lookup order), over the stop's links read
+    /// once per search.
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "fixed-link minutes are small and strictly positive (see relax)"
+    )]
+    fn relax_fixed_links(&mut self, round: usize, from: usize, at_min: u32) {
+        let links = self.links_of(from);
+        let window = LinkWindow::new(self.date, at_min);
+        let mut last_to: Option<&str> = None;
+        for StopLink { link, to } in links.iter() {
+            if !restrictions::allows_link(self.restrictions, link)
+                || !window.applies(link)
+                || last_to == Some(link.to_crs.as_str())
+            {
                 continue;
             }
-            current.boardings.push((connection.clone(), source.from));
-            let ride = current.boardings.len() - 1;
-            reachable_trip.insert(connection.uid.to_string(), ride);
-            ride
-        };
-        // No arrival at a pick-up-only stop; the ride carries on.
-        if connection.can_alight {
-            relax_in_round(
-                &mut current,
-                &mut touched,
-                interchange,
-                restrictions,
-                date,
-                &connection.to_tiploc,
-                connection.arrival_min,
-                ArrivalSource::Train(connection.clone(), round, ride),
-            );
+            last_to = Some(link.to_crs.as_str());
+            let candidate = at_min + link.minutes as u32;
+            for tiploc in *to {
+                let stop = self.stop_id(normalize_tiploc(tiploc));
+                self.relax(
+                    round,
+                    stop,
+                    candidate,
+                    ArrivalSource::Link {
+                        from,
+                        mode: &link.mode,
+                        minutes: link.minutes,
+                    },
+                );
+            }
         }
     }
 
-    let improved = !touched.is_empty();
-    (current, improved)
+    /// Runs round `round`: boards every connection reachable from the
+    /// previous round's arrivals and relaxes each boarding's arrivals (and
+    /// their fixed links). Returns whether anything improved, which is what
+    /// lets the round loop stop early.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a search boards far fewer than u32::MAX rides"
+    )]
+    fn run_round(
+        &mut self,
+        round: usize,
+        connections: impl IntoIterator<Item = &'a Connection>,
+    ) -> bool {
+        let previous = round - 1;
+        let mut improved = false;
+        for connection in connections {
+            // Unusable, and ends any ride on its train -- see
+            // `crate::restrictions`'s module doc.
+            if restrictions::blocks(self.restrictions, connection) {
+                self.reachable_trip.clear(connection.uid.index());
+                continue;
+            }
+            let ride = if let Some(ride) = self.reachable_trip.get(connection.uid.index()) {
+                ride as usize
+            } else {
+                // No fresh boarding at a set-down-only stop.
+                if !connection.can_board {
+                    continue;
+                }
+                let from = self.stop_for(connection.from_tiploc);
+                let Some(source) = self.ready_source_at(from, connection, previous) else {
+                    continue;
+                };
+                if source.time > connection.departure_min {
+                    continue;
+                }
+                self.rides.push(Ride {
+                    boarded: connection,
+                    from: source.from,
+                    round,
+                });
+                let ride = self.rides.len() - 1;
+                self.reachable_trip.set(connection.uid.index(), ride as u32);
+                self.aboard.push(connection.uid);
+                ride
+            };
+            // No arrival at a pick-up-only stop; the ride carries on.
+            if connection.can_alight {
+                let to = self.stop_for(connection.to_tiploc);
+                improved |= self.relax(
+                    round,
+                    to,
+                    connection.arrival_min,
+                    ArrivalSource::Train(connection, ride),
+                );
+            }
+        }
+        for uid in self.aboard.drain(..) {
+            self.reachable_trip.clear(uid.index());
+        }
+        improved
+    }
+
+    /// The earliest of `stops`' arrivals as of `round`, the first listed on
+    /// a tie.
+    fn best_of(&self, stops: &[usize], round: usize) -> Option<(usize, u32)> {
+        let mut best: Option<(usize, u32)> = None;
+        for &stop in stops {
+            if let Some(arrival) = self.arrival(stop, round)
+                && best.is_none_or(|(_, time)| arrival.time < time)
+            {
+                best = Some((stop, arrival.time));
+            }
+        }
+        best
+    }
+
+    /// The earliest arrival any stop improved to in `round`: no fresh
+    /// boarding in the next round can leave before it (see
+    /// [`raptor_search_restricted`]'s round loop).
+    fn earliest_improvement(&self, round: usize) -> Option<u32> {
+        self.arrivals
+            .iter()
+            .rev()
+            .take_while(|arrival| arrival.round == round)
+            .map(|arrival| arrival.time)
+            .min()
+    }
 }
 
 pub fn raptor_search(options: RaptorOptions<'_>) -> Vec<RaptorJourney> {
@@ -395,81 +521,81 @@ pub fn raptor_search_with_overlay(
 /// [`raptor_search_with_overlay`] honouring `restrictions` -- see
 /// [`crate::restrictions`].
 #[expect(
-    clippy::expect_used,
     clippy::needless_pass_by_value,
-    clippy::similar_names,
-    reason = "the invariant is established just above; the expect message names it; public planner API takes its options and overlay by value; the similar names are distinct domain terms"
+    reason = "public planner API takes its options and overlay by value"
 )]
 pub fn raptor_search_restricted(
     options: RaptorOptions<'_>,
     overlay: Option<&crate::overlay::ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
 ) -> Vec<RaptorJourney> {
-    let origin: HashSet<String> = options
-        .from_tiplocs
+    let mut search = Search::new(
+        options.interchange,
+        restrictions,
+        options.date,
+        options.departure_min,
+    );
+    let mut origin: Vec<usize> = Vec::new();
+    for tiploc in options.from_tiplocs {
+        let stop = search.stop_id(normalize_tiploc(tiploc));
+        search.stops[stop].origin = true;
+        if !origin.contains(&stop) {
+            origin.push(stop);
+        }
+    }
+    let to: Vec<usize> = options
+        .to_tiplocs
         .iter()
-        .map(|tiploc| normalize_tiploc(tiploc).to_string())
+        .map(|tiploc| search.stop_id(normalize_tiploc(tiploc)))
         .collect();
 
-    let mut round0 = RoundState::empty();
-    let mut round0_touched = HashSet::new();
-    for tiploc in &origin {
-        relax_fixed_links_in_round(
-            &mut round0,
-            &mut round0_touched,
-            options.interchange,
-            restrictions,
-            options.date,
-            tiploc,
-            options.departure_min,
-        );
+    // Round 0: whatever a walk from the origin reaches by itself.
+    for &stop in &origin {
+        search.relax_fixed_links(0, stop, options.departure_min);
     }
-
-    let mut rounds: Vec<RoundState> = vec![round0];
 
     // Bounded by max_rounds, but also stops the moment a round improves
     // nothing at all -- without this, a large caller-supplied max_rounds
     // (see RaptorOptions::max_rounds's own doc comment) would force a full
     // sweep of `connections` for every remaining round even after the
-    // network has been fully explored. See `run_one_round`'s own doc
-    // comment and its dedicated test for what this actually relies on.
+    // network has been fully explored.
     //
     // Target pruning (DS-196): a later round only contributes to the Pareto
     // set by reaching the destination strictly before every earlier round
     // did, and nothing departing at or after that arrival can, so each
     // round's sweep stops there. On a day's timetable most of the sweep is
     // after the first arrival, so this is most of the rounds' cost.
-    let to: Vec<&str> = options
-        .to_tiplocs
-        .iter()
-        .map(|tiploc| normalize_tiploc(tiploc))
-        .collect();
-    for _ in 1..=options.max_rounds {
-        let previous = rounds.last().expect("round0 was just pushed");
-        let cutoff = to
-            .iter()
-            .filter_map(|tiploc| previous.arrival.get(*tiploc))
-            .min()
-            .copied()
-            .unwrap_or(u32::MAX);
-        let (current, improved) = run_one_round(
-            previous,
-            crate::overlay::connections_from(options.connections, overlay, options.departure_min)
+    //
+    // And a late start (DS-225): from round 2 on, a round's sweep starts at
+    // the earliest arrival the round before improved. A boarding before it
+    // can only be made from an arrival older than the previous round, which
+    // the previous round already boarded from, so it could only repeat that
+    // round's arrivals, never improve on them.
+    let mut rounds = 0;
+    for round in 1..=options.max_rounds as usize {
+        let cutoff = search
+            .best_of(&to, round - 1)
+            .map_or(u32::MAX, |(_, time)| time);
+        let start = if round == 1 {
+            options.departure_min
+        } else {
+            match search.earliest_improvement(round - 1) {
+                Some(time) => time.max(options.departure_min),
+                None => break,
+            }
+        };
+        let improved = search.run_round(
+            round,
+            crate::overlay::connections_from(options.connections, overlay, start)
                 .take_while(|connection| connection.departure_min < cutoff),
-            &origin,
-            options.departure_min,
-            options.interchange,
-            restrictions,
-            options.date,
-            rounds.len(),
         );
-        rounds.push(current);
+        rounds = round;
         if !improved {
             break;
         }
     }
 
-    build_pareto_set(&rounds, &origin, options.to_tiplocs)
+    build_pareto_set(&search, rounds, &origin, &to)
 }
 
 /// Walks each round's best destination arrival in order (round 1 upward)
@@ -477,33 +603,23 @@ pub fn raptor_search_restricted(
 /// round that ties or loses to an earlier round is dominated by it (same
 /// or slower arrival, no fewer changes), and contributes nothing.
 fn build_pareto_set(
-    rounds: &[RoundState],
-    origin: &HashSet<String>,
-    to_tiplocs: &[String],
+    search: &Search<'_>,
+    rounds: usize,
+    origin: &[usize],
+    to: &[usize],
 ) -> Vec<RaptorJourney> {
     let mut results = Vec::new();
     let mut running_best = u32::MAX;
 
-    for (k, round) in rounds.iter().enumerate().skip(1) {
-        let mut best_tiploc: Option<&str> = None;
-        let mut best_arrival = u32::MAX;
-        for destination in to_tiplocs {
-            let normalized = normalize_tiploc(destination);
-            if let Some(&arrival) = round.arrival.get(normalized)
-                && arrival < best_arrival
-            {
-                best_arrival = arrival;
-                best_tiploc = Some(normalized);
-            }
-        }
-        let Some(best_tiploc) = best_tiploc else {
+    for k in 1..=rounds {
+        let Some((best_stop, best_arrival)) = search.best_of(to, k) else {
             continue;
         };
         if best_arrival >= running_best {
             continue;
         }
 
-        let legs = reconstruct_legs(best_tiploc, k, rounds, origin);
+        let legs = reconstruct_legs(search, best_stop, k, origin);
         let Some(first_leg) = legs.first() else {
             continue;
         };
@@ -528,52 +644,50 @@ fn build_pareto_set(
 }
 
 /// Walks backward from the stop that reached the destination in round `k`
-/// to the origin -- a `'train'` step also steps back one round (that
-/// boarding's readiness was computed from round `k-1`'s frozen arrivals); a
-/// `'link'` step stays within the same round (a walk is never a change).
+/// to the origin -- a train step also steps back one round (that
+/// boarding's readiness was computed from the round before it was ridden
+/// in); a link step stays within the same round (a walk is never a
+/// change).
 #[expect(
     clippy::cast_sign_loss,
-    reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
+    reason = "fixed-link minutes are small and strictly positive (see relax)"
 )]
 fn reconstruct_legs(
-    end_tiploc: &str,
+    search: &Search<'_>,
+    end: usize,
     start_round: usize,
-    rounds: &[RoundState],
-    origin: &HashSet<String>,
+    origin: &[usize],
 ) -> Vec<JourneyLeg> {
     let mut legs = Vec::new();
-    let mut stop = normalize_tiploc(end_tiploc).to_string();
-    let mut round_index = start_round;
+    let mut stop = end;
+    let mut round = start_round;
 
     while !origin.contains(&stop) {
-        let round = &rounds[round_index];
-        let via = round
-            .arrived_via
-            .get(&stop)
-            .unwrap_or_else(|| panic!("internal error: stop {stop} reached in round {round_index} but has no recorded arrival source"));
-
-        match via {
+        let arrival = search.arrival(stop, round).unwrap_or_else(|| {
+            panic!(
+                "internal error: stop {} reached in round {round} but has no recorded arrival",
+                search.stops[stop].tiploc
+            )
+        });
+        match arrival.via {
             ArrivalSource::Link {
-                from_tiploc,
+                from,
                 mode,
                 minutes,
             } => {
-                let arrival_min = *round
-                    .arrival
-                    .get(&stop)
-                    .unwrap_or_else(|| panic!("internal error: stop {stop} reached by a fixed link in round {round_index} has no recorded arrival time"));
                 legs.push(JourneyLeg::Transfer(TransferLeg {
-                    mode: mode.clone(),
-                    from_tiploc: from_tiploc.clone(),
-                    to_tiploc: stop.clone(),
-                    departure_min: arrival_min - *minutes as u32,
-                    arrival_min,
-                    minutes: *minutes,
+                    mode: mode.to_string(),
+                    from_tiploc: search.stops[from].tiploc.to_string(),
+                    to_tiploc: search.stops[stop].tiploc.to_string(),
+                    departure_min: arrival.time - minutes as u32,
+                    arrival_min: arrival.time,
+                    minutes,
                 }));
-                stop = from_tiploc.clone();
+                stop = from;
             }
-            ArrivalSource::Train(connection, ridden_round, ride) => {
-                let (boarded, source) = &rounds[*ridden_round].boardings[*ride];
+            ArrivalSource::Train(connection, ride) => {
+                let ride = &search.rides[ride];
+                let boarded = ride.boarded;
                 legs.push(JourneyLeg::Train(TrainLeg {
                     uid: boarded.uid.to_string(),
                     from_tiploc: boarded.from_tiploc.to_string(),
@@ -583,10 +697,10 @@ fn reconstruct_legs(
                     working_departure_min: boarded.working_departure_min,
                     working_arrival_min: connection.working_arrival_min,
                 }));
-                stop.clone_from(source);
-                // The boarding read the labels of the round before the one
-                // it was made in.
-                round_index = ridden_round - 1;
+                stop = ride.from;
+                // The boarding read the arrivals of the round before the
+                // one it was made in.
+                round = ride.round - 1;
             }
         }
     }
@@ -810,7 +924,7 @@ mod tests {
 
     #[test]
     fn a_round_past_reachability_depth_reports_no_improvement() {
-        // Directly exercises `run_one_round` -- the piece
+        // Directly exercises `Search::run_round` -- the piece
         // `raptor_search`'s early-termination `break` actually relies on.
         // Asserting only on `raptor_search`'s overall RESULT shape can't
         // discriminate this: `build_pareto_set`'s own strict-improvement
@@ -823,36 +937,20 @@ mod tests {
         // doc comment).
         let connections = vec![conn("U1", "EUSTON", "MKC", 480, 530)];
         let interchange = empty_interchange();
-        let origin: HashSet<String> = ["EUSTON".to_string()].into_iter().collect();
+        let mut search = Search::new(&interchange, None, date(), 480);
+        let origin = search.stop_id("EUSTON");
+        search.stops[origin].origin = true;
 
-        let round0 = RoundState::empty();
-        let (round1, improved1) = run_one_round(
-            &round0,
-            &connections,
-            &origin,
-            480,
-            &interchange,
-            None,
-            date(),
-            1,
-        );
+        let improved1 = search.run_round(1, &connections);
         assert!(improved1, "round 1 should board U1 and reach MKC");
-        assert_eq!(round1.arrival.get("MKC"), Some(&530));
+        let mkc = search.stop_id("MKC");
+        assert_eq!(search.arrival(mkc, 1).map(|a| a.time), Some(530));
 
         // Round 2 has nothing left to board or improve: MKC was already
         // reached in round 1, so re-scanning the same connections array
         // against round 1's frozen arrivals cannot produce a strictly
         // better arrival anywhere.
-        let (_round2, improved2) = run_one_round(
-            &round1,
-            &connections,
-            &origin,
-            480,
-            &interchange,
-            None,
-            date(),
-            2,
-        );
+        let improved2 = search.run_round(2, &connections);
         assert!(
             !improved2,
             "a round that cannot improve on the previous round's arrivals must report no \

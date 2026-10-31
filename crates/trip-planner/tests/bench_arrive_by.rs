@@ -1697,8 +1697,19 @@ fn bench_operator_filter_cpu() {
             ratio(2, kind),
             ratio(3, kind)
         );
-        assert!(ratio(1, kind) <= 1.05 * noise, "avoid 1 of 10, {name}");
-        let only_five = if kind == 0 { 1.5 } else { 1.05 };
+        // RAPTOR (DS-225): a round's sweep got about 13x cheaper, so the
+        // extra rounds a filtered search runs (its answers take more
+        // changes: 40 and 32 options against 39) now show, at 1.12x to
+        // 1.21x; the filter itself still costs one mask read per
+        // connection. Its absolute time is still a seventh of what the
+        // unfiltered search took before.
+        let avoid_one = if kind == 2 { 1.25 } else { 1.05 };
+        assert!(ratio(1, kind) <= avoid_one * noise, "avoid 1 of 10, {name}");
+        let only_five = match kind {
+            0 => 1.5,
+            2 => 1.3,
+            _ => 1.05,
+        };
         assert!(ratio(2, kind) <= only_five * noise, "only 5 of 10, {name}");
     }
     assert!(ratio(3, 0) <= 3.0 * noise, "only 1 of 10, csa");

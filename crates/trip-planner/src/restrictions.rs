@@ -44,7 +44,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use schedule_query::{Connection, FixedLink, OperatorId, OperatorMask, normalize_tiploc};
+use schedule_query::{
+    Connection, FixedLink, OperatorId, OperatorMask, StopCode, TripCode, normalize_tiploc,
+};
 
 /// Which operators a search may ride (spec §5.1-5.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +157,54 @@ pub struct Restrictions {
     /// every connection, which cost about a quarter of a restricted
     /// Connection Scan (operator filtering spec §7.2).
     has_station_rules: bool,
+    /// `no_call` and `pass_legs` by code (DS-225), what [`Self::blocks`]
+    /// reads: a flag per normalized [`StopCode`], and each train's legs as
+    /// normalized codes.
+    coded: Coded,
+}
+
+/// See [`Restrictions::coded`].
+#[derive(Debug, Clone, Default)]
+struct Coded {
+    no_call: Vec<bool>,
+    pass_legs: HashMap<TripCode, Vec<(StopCode, StopCode, bool)>>,
+}
+
+impl Coded {
+    fn new(no_call: &HashSet<String>, pass_legs: &HashMap<String, Vec<PassLeg>>) -> Self {
+        let mut flags = vec![false; StopCode::count()];
+        for tiploc in no_call {
+            let code = StopCode::new(tiploc);
+            if code.index() >= flags.len() {
+                flags.resize(code.index() + 1, false);
+            }
+            flags[code.index()] = true;
+        }
+        let pass_legs = pass_legs
+            .iter()
+            .map(|(uid, legs)| {
+                let legs = legs
+                    .iter()
+                    .map(|leg| {
+                        (
+                            StopCode::new(&leg.from_tiploc),
+                            StopCode::new(&leg.to_tiploc),
+                            leg.blocked,
+                        )
+                    })
+                    .collect();
+                (TripCode::new(uid), legs)
+            })
+            .collect();
+        Self {
+            no_call: flags,
+            pass_legs,
+        }
+    }
+
+    fn no_call(&self, code: StopCode) -> bool {
+        self.no_call.get(code.index()).copied().unwrap_or(false)
+    }
 }
 
 impl Restrictions {
@@ -190,12 +240,14 @@ impl Restrictions {
             })
             .collect();
         let has_station_rules = !no_call.is_empty() || !pass_legs.is_empty();
+        let coded = Coded::new(&no_call, &pass_legs);
         Self {
             no_interchange,
             no_call,
             pass_legs,
             operator_rule: None,
             has_station_rules,
+            coded,
         }
     }
 
@@ -247,6 +299,7 @@ impl Restrictions {
             copy.no_call.insert(tiploc);
         }
         copy.has_station_rules = !copy.no_call.is_empty() || !copy.pass_legs.is_empty();
+        copy.coded = Coded::new(&copy.no_call, &copy.pass_legs);
         copy.no_interchange.extend(
             no_interchange
                 .into_iter()
@@ -287,22 +340,22 @@ impl Restrictions {
         if !self.has_station_rules {
             return false;
         }
-        let from = normalize_tiploc(&connection.from_tiploc);
-        let to = normalize_tiploc(&connection.to_tiploc);
-        if self.no_call.contains(from) || self.no_call.contains(to) {
+        let from = connection.from_tiploc.normalized();
+        let to = connection.to_tiploc.normalized();
+        if self.coded.no_call(from) || self.coded.no_call(to) {
             return true;
         }
-        let Some(legs) = self.pass_legs.get(connection.uid.as_str()) else {
+        let Some(legs) = self.coded.pass_legs.get(&connection.uid) else {
             return false;
         };
-        let Some(start) = legs.iter().position(|leg| leg.from_tiploc == from) else {
+        let Some(start) = legs.iter().position(|&(leg_from, _, _)| leg_from == from) else {
             return true;
         };
-        for leg in &legs[start..] {
-            if leg.blocked {
+        for &(_, leg_to, blocked) in &legs[start..] {
+            if blocked {
                 return true;
             }
-            if leg.to_tiploc == to {
+            if leg_to == to {
                 return false;
             }
         }
@@ -619,7 +672,7 @@ mod tests {
             timed("S", "A", "C", 100, 120),
             timed("S", "C", "D", 121, 160),
         ];
-        connections.sort_by_key(|c| (c.departure_min, c.uid.clone(), c.from_tiploc.clone()));
+        connections.sort_by_key(|c| (c.departure_min, c.uid, c.from_tiploc));
         connections
     }
 
@@ -675,7 +728,7 @@ mod tests {
             timed("S", "A", "Y", 100, 110),
             timed("R", "X", "E", 115, 200),
         ];
-        connections.sort_by_key(|c| (c.departure_min, c.uid.clone(), c.from_tiploc.clone()));
+        connections.sort_by_key(|c| (c.departure_min, c.uid, c.from_tiploc));
         let r = Restrictions::new(
             ["P".to_string()],
             [],

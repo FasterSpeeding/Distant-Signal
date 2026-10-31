@@ -34,7 +34,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use schedule_query::{Connection, normalize_tiploc};
+use schedule_query::{Connection, StopCode, TripCode, normalize_tiploc};
+
+use crate::dense::{FxMap, FxSet};
 
 /// One base connection of a train relevant to a via, in the train's order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,8 +83,11 @@ pub struct ViaLeg {
 pub struct Vias {
     /// `targets[v]`: via `v`'s TIPLOCs, normalized.
     targets: Vec<HashSet<String>>,
-    /// Per train UID, its base connections in order (see [`PassSpan`]).
-    spans: HashMap<String, Vec<PassSpan>>,
+    /// The same by normalized code (DS-225): what a connection's calls are
+    /// matched against, with no string hashing.
+    target_codes: Vec<FxSet<StopCode>>,
+    /// Per train, its base connections in order (see [`PassSpan`]).
+    spans: FxMap<TripCode, Vec<PassSpan>>,
 }
 
 impl Vias {
@@ -94,6 +99,15 @@ impl Vias {
             targets: targets
                 .iter()
                 .map(|tiplocs| tiplocs.iter().map(norm).collect())
+                .collect(),
+            target_codes: targets
+                .iter()
+                .map(|tiplocs| {
+                    tiplocs
+                        .iter()
+                        .map(|t| StopCode::new(normalize_tiploc(t)))
+                        .collect()
+                })
                 .collect(),
             spans: spans
                 .into_iter()
@@ -107,7 +121,7 @@ impl Vias {
                             passed: span.passed.iter().map(norm).collect(),
                         })
                         .collect();
-                    (uid, spans)
+                    (TripCode::new(&uid), spans)
                 })
                 .collect(),
         }
@@ -133,6 +147,7 @@ impl Vias {
         let mut copy = self.clone();
         if index < copy.targets.len() {
             copy.targets.remove(index);
+            copy.target_codes.remove(index);
         }
         copy
     }
@@ -173,31 +188,39 @@ impl Vias {
         if v >= n {
             return v;
         }
-        let mut at = |v: &mut usize, tiploc: &str, how: ViaHow| {
-            while *v < n && self.targets[*v].contains(tiploc) {
-                hit(*v, how, tiploc);
+        // A call, by code; a run-through (rarer: only a train with spans),
+        // by text.
+        let call = |v: &mut usize, stop: StopCode, hit: &mut dyn FnMut(usize, ViaHow, &str)| {
+            while *v < n && self.target_codes[*v].contains(&stop) {
+                hit(*v, ViaHow::Call, stop.as_str());
                 *v += 1;
             }
         };
-        let from = normalize_tiploc(&connection.from_tiploc);
-        let to = normalize_tiploc(&connection.to_tiploc);
-        at(&mut v, from, ViaHow::Call);
+        let pass = |v: &mut usize, tiploc: &str, hit: &mut dyn FnMut(usize, ViaHow, &str)| {
+            while *v < n && self.targets[*v].contains(tiploc) {
+                hit(*v, ViaHow::Pass, tiploc);
+                *v += 1;
+            }
+        };
+        let from = connection.from_tiploc.normalized();
+        let to = connection.to_tiploc.normalized();
+        call(&mut v, from, &mut hit);
         if v < n
-            && let Some(spans) = self.spans.get(connection.uid.as_str())
-            && let Some(covered) = covered_spans(spans, connection, from, to)
+            && let Some(spans) = self.spans.get(&connection.uid)
+            && let Some(covered) = covered_spans(spans, connection, from.as_str(), to.as_str())
         {
             for (index, span) in covered.iter().enumerate() {
                 for passed in &span.passed {
-                    at(&mut v, passed, ViaHow::Pass);
+                    pass(&mut v, passed, &mut hit);
                 }
                 // A call the connection skips (a live replacement over a
                 // cancelled call) is run through.
                 if index + 1 < covered.len() {
-                    at(&mut v, &span.to_tiploc, ViaHow::Pass);
+                    pass(&mut v, &span.to_tiploc, &mut hit);
                 }
             }
         }
-        at(&mut v, to, ViaHow::Call);
+        call(&mut v, to, &mut hit);
         v
     }
 }
