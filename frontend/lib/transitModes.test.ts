@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { directionHeading, frequencyText, groupLinesByMode, transitNetworkSummary } from './transitModes';
+import {
+  branchesHeading,
+  directionHeading,
+  frequencyText,
+  groupLinesByMode,
+  isHighFrequencyMode,
+  transitNetworkSummary,
+} from './transitModes';
 
 describe('transitNetworkSummary', () => {
   it('names the modes of the TfL network only', () => {
@@ -47,5 +54,27 @@ describe('directionHeading', () => {
     expect(directionHeading({ direction: 'outbound', headsign: 'Aldgate', stations })).toBe('Towards Aldgate');
     expect(directionHeading({ direction: 'outbound', headsign: null, stations })).toBe('Towards Walthamstow Central');
     expect(directionHeading({ direction: 'inbound', headsign: null, stations: [] })).toBe('The other way');
+  });
+});
+
+describe('branchesHeading', () => {
+  const to = (...names: string[]) => ({ stations: names.map((name) => ({ id: name, name })) });
+  it('names each end once, at most three', () => {
+    expect(branchesHeading([to('Morden', 'Edgware')])).toBe('Towards Edgware');
+    expect(branchesHeading([to('A', 'Edgware'), to('B', 'High Barnet'), to('C', 'Edgware')])).toBe(
+      'Towards Edgware or High Barnet',
+    );
+    expect(branchesHeading([to('Q', 'A'), to('Q', 'B'), to('Q', 'C'), to('Q', 'D')])).toBe('Towards A, B, C and more');
+    expect(branchesHeading([to('Q', 'A'), to('Q', 'B'), to('Q', 'C')])).toBe('Towards A, B or C');
+    expect(branchesHeading([])).toBe('Branches');
+  });
+});
+
+describe('isHighFrequencyMode', () => {
+  it('is the Underground and the DLR', () => {
+    expect(isHighFrequencyMode('tube')).toBe(true);
+    expect(isHighFrequencyMode('dlr')).toBe(true);
+    expect(isHighFrequencyMode('tram')).toBe(false);
+    expect(isHighFrequencyMode(undefined)).toBe(false);
   });
 });

@@ -32,6 +32,16 @@ test.describe('TfL stop page', () => {
     await expect(page.getByRole('contentinfo').getByText(/Powered by TfL Open Data/)).toBeVisible();
   });
 
+  test("shows the stop's timetable from the TfL network (the frontend-e2e job serves tfl)", async ({ page }) => {
+    await page.goto('/tfl/stops/940GZZLUKSX?date=2026-09-17');
+    await expect(page.getByRole('heading', { level: 2, name: 'Timetable' })).toBeVisible();
+    await expect(page.getByText('Victoria towards Walthamstow Central')).toBeVisible();
+    await expect(page.getByText('First 07:15, last 07:25')).toBeVisible();
+    const board = page.getByRole('list', { name: 'Scheduled departures' });
+    await expect(board.getByRole('listitem').first()).toContainText('07:15');
+    await expect(board.getByRole('listitem').first()).toContainText('Walthamstow Central');
+  });
+
   test('keeps the page when TfL is unavailable', async ({ page }) => {
     await page.goto('/tfl/stops/940GZZLURSQ');
     await expect(page.getByRole('heading', { level: 1, name: 'Russell Square' })).toBeVisible();

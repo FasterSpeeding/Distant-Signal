@@ -117,6 +117,18 @@ test.describe('transit pages', () => {
     await expect(page.getByRole('link', { name: 'Status details' })).toHaveAttribute('href', '/lines/tfl-victoria');
   });
 
+  test("a TfL network stop is TfL's own stop page", async ({ page }) => {
+    await page.goto('/transit/tfl/stops/9400ZZLUKSX');
+    await expect(page).toHaveURL(/\/tfl\/stops\/940GZZLUKSX$/);
+    await expect(page.getByRole('heading', { level: 1, name: "King's Cross St. Pancras" })).toBeVisible();
+    // And the line page links it there directly.
+    await page.goto('/transit/tfl/lines/victoria');
+    await expect(page.getByRole('link', { name: "King's Cross St. Pancras" })).toHaveAttribute(
+      'href',
+      '/tfl/stops/940GZZLUKSX',
+    );
+  });
+
   test('an unknown network is not found', async ({ page }) => {
     const response = await page.goto('/transit/nowhere');
     expect(response?.status()).toBe(404);

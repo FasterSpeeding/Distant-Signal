@@ -3520,6 +3520,19 @@ export interface TransitLineDetail extends TransitLine {
   situations?: TransitSituations;
   statusSource?: TransitStatusSource;
   frequency?: TransitLineFrequency | null;
+  /** The runs of stations the line's trips make, each way. */
+  branches?: TransitLineBranch[];
+}
+
+/** A branch of a line (`Edgware to Morden via Bank`): a run of stations a
+ * share of one direction's trips make. */
+export interface TransitLineBranch {
+  /** `outbound-1`: the timetable's `branch`. */
+  id: string;
+  direction: TransitDirection;
+  name: string;
+  stations: TransitStationRef[];
+  sharePercent: number;
 }
 
 export interface TransitRailLink {
@@ -3557,6 +3570,18 @@ export interface TransitStopDetail extends TransitStop {
   platforms: { id: string; indicator: string | null }[];
   /** Current disruptions naming this stop (a lift out of service). */
   notices?: TransitSituation[];
+  /** The stop's first and last departures of the day, per line and way. */
+  firstLast?: TransitStopFirstLast[];
+}
+
+/** A stop's first and last departures on one line, one way. */
+export interface TransitStopFirstLast {
+  line: TransitLine;
+  direction: TransitDirection;
+  towards: string | null;
+  /** `HH:MM`. */
+  first: string;
+  last: string;
 }
 
 /** One scheduled departure. */
@@ -3585,6 +3610,9 @@ export interface TransitBoard {
 export interface TransitLineTimetable {
   date: string;
   direction: TransitDirection;
+  /** The branch shown (`TransitLineBranch.id`), or null for the whole
+   * direction. */
+  branch?: string | null;
   stations: TransitStationRef[];
   trips: { tripId: string; headsign: string | null; times: (string | null)[] }[];
   outsideHorizon: boolean;

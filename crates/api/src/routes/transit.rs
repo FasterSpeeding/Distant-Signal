@@ -324,6 +324,8 @@ struct TimetableQuery {
     /// `HH:MM`.
     from: Option<String>,
     to: Option<String>,
+    /// A branch of the line (`branches[].id`, the `TfL` design §8.3).
+    branch: Option<String>,
 }
 
 /// `HH:MM` (to 47:59, a timetable's day) as seconds after midnight.
@@ -372,10 +374,13 @@ async fn get_line_timetable(
         &app.database,
         &network,
         &line,
-        date,
-        &direction,
-        from_s,
-        to_s,
+        read::TimetableWindow {
+            date,
+            direction: &direction,
+            from_s,
+            to_s,
+            branch: query.branch.as_deref(),
+        },
     )
     .await
     .map_err(internal_error)?
@@ -396,11 +401,36 @@ async fn list_stops(State(app): State<App>, Path(network): Path<String>) -> Repl
     reply(LONG_CACHE, json!({ "stops": to_json(&stops)? }))
 }
 
-async fn get_stop(State(app): State<App>, Path((network, stop)): Path<(String, String)>) -> Reply {
+/// A stop id as the network's tables spell it. The `tfl` network's
+/// stations are `TfL`'s stops, whose pages and ids are the stop areas
+/// (`940GZZLUKSX`); the tables hold the access nodes (`9400ZZLUKSX`). Both
+/// spellings are taken (the `TfL` design §8.4).
+fn table_stop_id(network: &str, stop: &str) -> String {
+    match stop.strip_prefix("940G") {
+        Some(rest) if common::transit::status_from_tfl(network) => format!("9400{rest}"),
+        _ => stop.to_owned(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct StopQuery {
+    /// The `firstLast` date (default: today in London).
+    date: Option<NaiveDate>,
+}
+
+/// A station, its platforms, lines and rail links, its `notices`, and
+/// `firstLast`: its first and last departures on `?date=` per line and
+/// direction.
+async fn get_stop(
+    State(app): State<App>,
+    Path((network, stop)): Path<(String, String)>,
+    Query(query): Query<StopQuery>,
+) -> Reply {
     check_network(&app, &network)?;
     if !is_stop_id(&stop) {
         return Err(not_found("stop"));
     }
+    let stop = table_stop_id(&network, &stop);
     let Some(detail) = read::get_stop(&app.database, &network, &stop)
         .await
         .map_err(internal_error)?
@@ -416,8 +446,16 @@ async fn get_stop(State(app): State<App>, Path((network, stop)): Path<(String, S
     let view = disruptions::situations_view(&network, &situations, state, as_of, Utc::now(), |s| {
         s.stop_ids.iter().any(|id| id == &stop)
     });
+    let date = query
+        .date
+        .unwrap_or_else(|| super::london_now().date_naive());
+    let first_last = read::stop_first_last(&app.database, &network, &stop, date)
+        .await
+        .map_err(internal_error)?
+        .unwrap_or_default();
     let mut body = to_json(&detail)?;
     body["notices"] = to_json(&view.current)?;
+    body["firstLast"] = to_json(&first_last)?;
     reply(SHORT_CACHE, body)
 }
 
@@ -439,6 +477,7 @@ async fn get_departures(
     if !is_stop_id(&stop) {
         return Err(not_found("stop"));
     }
+    let stop = table_stop_id(&network, &stop);
     let now = super::london_now();
     let today = now.date_naive();
     let date = query.date.unwrap_or(today);
@@ -705,8 +744,34 @@ mod db_tests {
             "{national_rail:?}"
         );
 
+        // TfL's stop-area spelling reaches the station (the TfL design §8.4),
+        // with its first and last departures of the day.
+        let (status, _, body) = get(
+            &lit,
+            &format!("/transit/tfl/stops/940GZZTTAAA?date={today}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["id"], A);
+        let first_last = &body["firstLast"][0];
+        assert_eq!(first_last["line"]["id"], "tfl:blue");
+        assert_eq!(first_last["direction"], "outbound");
+        assert_eq!(first_last["towards"], "Bbb");
+        assert_eq!(
+            (first_last["first"].as_str(), first_last["last"].as_str()),
+            (Some("06:00"), Some("00:10"))
+        );
+        let (status, _, body) = get(
+            &lit,
+            &format!("/transit/tfl/stops/940GZZTTAAA/departures?date={today}&after=06:00"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["departures"][0]["tripId"], "T0600");
+        // Another network keeps its own spelling only.
         let (_, _, body) = get(&lit, "/transit/tfl/lines/blue").await;
         assert_eq!(body["statusSource"], "tfl");
+        assert_eq!(body["branches"][0]["id"], "outbound-1");
         assert_eq!(body["status"]["statuses"][0]["reason"], "Signal failure");
         assert!(body["situations"]["current"].as_array().unwrap().is_empty());
 

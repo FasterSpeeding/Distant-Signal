@@ -7,13 +7,14 @@ import { TextLink } from '@/components/TextLink';
 import { PinToggle } from '@/components/PinToggle';
 import { TransitAttributionNote } from '@/components/TransitAttributionNote';
 import { TransitDisruptions } from '@/components/TransitDisruptions';
+import { TransitBranches } from '@/components/TransitBranches';
 import { TransitFrequency } from '@/components/TransitFrequency';
 import { TransitStatusBadge } from '@/components/TransitStatusBadge';
 import { getPreferences, getTransitLine, getTransitNetwork } from '@/lib/api';
 import { formatDate } from '@/lib/dateFormat';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { lineColour, orNotFound, TRANSIT_ID, transitStopHref } from '@/lib/transit';
-import { directionHeading } from '@/lib/transitModes';
+import { branchesHeading, directionHeading } from '@/lib/transitModes';
 import type { Preferences } from '@/lib/types';
 
 interface Params {
@@ -62,6 +63,14 @@ export default async function TransitLinePage({ params, searchParams }: Params &
     getPreferences().catch(() => NO_PREFERENCES),
   ]);
   const fromTfl = lineDetail.statusSource === 'tfl';
+  // A direction with several branches lists them, each with its stations
+  // (the TfL transit design §8.3); one with a single branch keeps its list.
+  const branchesOf = (direction: string) =>
+    (lineDetail.branches ?? []).filter((branch) => branch.direction === direction);
+  const headingOf = (direction: (typeof lineDetail.directions)[number]) => {
+    const branches = branchesOf(direction.direction);
+    return branches.length > 1 ? branchesHeading(branches) : directionHeading(direction);
+  };
   const pinId = lineDetail.statusLineId ?? lineDetail.id;
   const stopNames = Object.fromEntries(
     lineDetail.directions.flatMap((direction) => direction.stations.map((station) => [station.id, station.name])),
@@ -108,7 +117,7 @@ export default async function TransitLinePage({ params, searchParams }: Params &
           frequency={lineDetail.frequency}
           title={date ? `How often it runs on ${formatDate(date)}` : undefined}
           headings={Object.fromEntries(
-            lineDetail.directions.map((direction) => [direction.direction, directionHeading(direction)]),
+            lineDetail.directions.map((direction) => [direction.direction, headingOf(direction)]),
           )}
         />
       )}
@@ -116,14 +125,18 @@ export default async function TransitLinePage({ params, searchParams }: Params &
       <SimpleGrid cols={{ base: 1, sm: lineDetail.directions.length > 1 ? 2 : 1 }} spacing="lg">
         {lineDetail.directions.map((direction) => (
           <Stack key={direction.direction} gap="sm">
-            <SectionTitle>{directionHeading(direction)}</SectionTitle>
-            <Stack component="ol" gap={4} className="ds-plain-list">
-              {direction.stations.map((station) => (
-                <li key={station.id}>
-                  <TextLink href={transitStopHref(network, station.id)}>{station.name}</TextLink>
-                </li>
-              ))}
-            </Stack>
+            <SectionTitle>{headingOf(direction)}</SectionTitle>
+            {branchesOf(direction.direction).length > 1 ? (
+              <TransitBranches network={network} line={line} branches={branchesOf(direction.direction)} />
+            ) : (
+              <Stack component="ol" gap={4} className="ds-plain-list">
+                {direction.stations.map((station) => (
+                  <li key={station.id}>
+                    <TextLink href={transitStopHref(network, station.id)}>{station.name}</TextLink>
+                  </li>
+                ))}
+              </Stack>
+            )}
           </Stack>
         ))}
       </SimpleGrid>

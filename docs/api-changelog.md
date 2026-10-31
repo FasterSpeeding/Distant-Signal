@@ -46,6 +46,32 @@ answered exactly as before. They are not on `/Trips/plan`.
   page now offers it as "Starts at" in Advanced options, beside
   "Terminates at".
 
+## 2026-10-31: line branches, a stop's first and last departures, TfL stop ids
+
+Additive (DS-212, the TfL transit design's P2;
+`crates/api/src/routes/transit.rs`, `ds_store::transit::read`).
+
+- **`/public/transit/{network}/lines/{line}`** gains `branches`:
+  `[{id, direction, name, stations: [{id, name}], sharePercent}]`, the runs
+  of stations the line's trips make each way, busiest first. A trip that
+  makes part of a longer run counts for it; a run under 5% of its
+  direction's trips is left out. `name` is `<first> to <last>`, with
+  `via <station>` when two share their ends (`Edgware to Morden via
+  Bank`). `id` (`outbound-1`) is stable for a timetable version.
+- **`.../lines/{line}/timetable?branch=<id>`** shows that branch: its
+  stations are the rows and only the trips that stay on it are listed;
+  the body says `branch` (`null` without one, or for an unknown id or
+  another direction's, which show the whole direction as before).
+- **`/public/transit/{network}/stops/{stop}?date=`** gains `firstLast`:
+  `[{line, direction, towards, first, last}]`, the station's first and
+  last departures that day per line and way (`HH:MM`; trips ending there
+  and replacement buses left out), in line order.
+- **The `tfl` network takes TfL's stop-area spelling** for a stop
+  (`/public/transit/tfl/stops/940GZZLUKSX` and its `/departures` are
+  `9400ZZLUKSX`'s), so a client holding TfL's stop id can ask for its
+  timetable directly.
+
+
 ## 2026-10-31: the `tfl` transit network, line modes and frequencies
 
 Additive, and dark until `API_TRANSIT_NETWORKS` lists `tfl` (DS-212;
