@@ -236,6 +236,30 @@ test.describe('transit pages', () => {
     await expect(page.getByRole('link', { name: 'Status details' })).toHaveAttribute('href', '/lines/tfl-victoria');
   });
 
+  test('a line page draws its stops once, each way a timetable choice', async ({ page }) => {
+    await page.goto('/transit/metrolink/lines/blue');
+    const stops = page.getByRole('list', { name: 'Blue Line stops, Piccadilly to Eccles' });
+    await expect(stops.getByRole('link')).toHaveText(['Piccadilly', 'Deansgate-Castlefield', 'Eccles']);
+    // Once: no second list for the other direction.
+    await expect(page.getByRole('link', { name: 'Eccles', exact: true })).toHaveCount(1);
+    await page.getByRole('link', { name: 'Timetable: towards Piccadilly' }).click();
+    await expect(page).toHaveURL(/\/transit\/metrolink\/lines\/blue\/timetable\?direction=inbound$/);
+  });
+
+  test('a branch hangs off the stop it joins, and keeps its own timetable', async ({ page }) => {
+    // The seed's DLR: Bank to Canary Wharf, and a branch from Tower Gateway.
+    await page.goto('/transit/tfl/lines/dlr');
+    const stops = page.getByRole('list', { name: 'DLR stops, Bank to Canary Wharf' });
+    const branch = stops.getByRole('group', { name: 'Branch from Tower Gateway, joining at Canary Wharf' });
+    await expect(branch.getByRole('link', { name: 'Tower Gateway' })).toHaveAttribute('href', '/tfl/stops/940GZZDLTWG');
+    await expect(page.getByRole('link', { name: 'Canary Wharf', exact: true })).toHaveCount(1);
+    await page.getByRole('button', { name: /Timetables by branch/ }).click();
+    await expect(page.getByRole('link', { name: 'Tower Gateway to Canary Wharf' })).toHaveAttribute(
+      'href',
+      '/transit/tfl/lines/dlr/timetable?direction=outbound&branch=outbound-2',
+    );
+  });
+
   test('the DLR is a line of the TfL network, with its own frequency', async ({ page }) => {
     await page.goto('/transit/tfl');
     await page.getByRole('link', { name: 'DLR', exact: true }).click();

@@ -609,6 +609,19 @@ used, rather than as a literal in a component.
   line of why when the line isn't running well (the slot the per-line
   disruption summary fills). Links that lead off the network ("Also run by
   TfL") are a dimmed sentence of links under the lines, not cards.
+- **Line route strip** (`TransitLineDiagram`, `lib/transitLineDiagram.ts`):
+  a transit line's stops drawn once, never once per direction or branch.
+  The busiest branch is the main run, top to bottom, in the line's colour,
+  a ring at each stop and a filled dot at each end (end names bold). Every
+  other run of stations hangs off the stop where it splits or joins, as an
+  indented strip under an italic label: "Branch to Mill Hill East",
+  "Branch from Battersea Power Station, joining at Kennington", "Via
+  Waterloo, rejoining at Euston". A loop passes a stop twice. Markup is an
+  ordered list of stop links, each branch a `group` named by its label
+  holding its own list; the strip is CSS decoration. Direction is a choice
+  of timetable ("Timetable: towards Upminster"), and each branch's
+  timetable sits in a closed "Timetables by branch" panel. Stations too few
+  trips call at to be a branch are named in a sentence after the strip.
 - **Footer credits** (`OpenDataAttribution.tsx`): credit wording is licence
   text; copy it exactly, including "NationalRail" as one word.
 - **Pride mode** (`PrideMode.tsx`): decorative, off by default. Each

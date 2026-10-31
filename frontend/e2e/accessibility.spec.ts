@@ -213,6 +213,7 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   ['/transit/metrolink/stops', '/transit/metrolink/stops'],
   ['/transit/tfl', '/transit/tfl'],
   ['/transit/metrolink/lines/blue', '/transit/metrolink/lines/blue'],
+  ['/transit/tfl/lines/dlr (a branch)', '/transit/tfl/lines/dlr'],
   [
     '/transit/metrolink/lines/blue/timetable',
     '/transit/metrolink/lines/blue/timetable?date=2026-09-17&direction=outbound&from=07:00',

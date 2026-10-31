@@ -113,6 +113,9 @@ const PAGES: [name: string, path: string][] = [
   // server's clock (a run crossing midnight saw no trains "today").
   ['transit-tfl', '/transit/tfl'],
   ['transit-tfl-line', '/transit/tfl/lines/victoria?date=2026-09-17'],
+  // A line with a branch (the seed's DLR, from Tower Gateway): the route
+  // strip with the branch hung off the stop it joins.
+  ['transit-tfl-branch', '/transit/tfl/lines/dlr?date=2026-09-17'],
   // A TfL stop's live arrivals (DS-136): the seed's King's Cross St. Pancras,
   // whose board scripts/tfl-arrivals-stub.py answers relative to the
   // server's clock, so each train's expected time is masked; its "2 min"
