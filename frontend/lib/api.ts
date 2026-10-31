@@ -65,6 +65,7 @@ import type {
   TransitLineDetail,
   TransitStop,
   TransitSituations,
+  TransitSituationDetail,
   TransitStationLink,
   TransitStopDetail,
   TransitBoard,
@@ -1373,6 +1374,35 @@ export async function getTransitStop(network: string, stop: string, date?: strin
 /** The network's current and upcoming disruptions. */
 export async function getTransitSituations(network: string): Promise<TransitSituations> {
   return fetchJson<TransitSituations>(transitUrl(network, ['situations']), { next: { revalidate: 60 } });
+}
+
+/** One disruption, listed or ended (kept a week after it ends). */
+export async function getTransitSituation(network: string, situationId: string): Promise<TransitSituationDetail> {
+  return fetchJson<TransitSituationDetail>(transitUrl(network, ['situations', situationId]), {
+    next: { revalidate: 60 },
+  });
+}
+
+/** `GET /public/transit/{network}/situations/{id}`, as a preview read
+ * (`getPreviewIncident`'s section): the disruption card. */
+export async function getPreviewTransitSituation(
+  network: string,
+  situationId: string,
+): Promise<TransitSituationDetail> {
+  return previewJson(transitUrl(network, ['situations', situationId]), LIVE_PREVIEW_REVALIDATE_SECONDS);
+}
+
+/** `GET /public/transit/{network}`, as a preview read: the network's name
+ * for the disruption card. */
+export async function getPreviewTransitNetwork(network: string): Promise<TransitNetworkDetail> {
+  return previewJson(transitUrl(network, []), LIVE_PREVIEW_REVALIDATE_SECONDS);
+}
+
+/** `GET /public/transit/{network}/stops`, as an hour-long preview read:
+ * the stop names on the disruption card. */
+export async function getPreviewTransitStops(network: string): Promise<TransitStop[]> {
+  const body = await previewJson<{ stops: TransitStop[] }>(transitUrl(network, ['stops']), 3600);
+  return body.stops;
 }
 
 /** A scheduled board page; `query` holds `date`, `after`, `cursor`, `limit`. */

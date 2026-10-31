@@ -5,8 +5,7 @@ import { test, expect, type Page } from '@playwright/test';
 // frontend-e2e job). A smoke test: each page renders its data, and the
 // board says it is scheduled, not live.
 
-/** The network page's A to Z of stops (the lift notice in its
- * disruptions links Piccadilly too). */
+/** The network page's A to Z of stops. */
 function stopList(page: Page) {
   return page.getByRole('list', { name: 'Stops' });
 }
@@ -36,17 +35,55 @@ test.describe('transit pages', () => {
       page.locator('[data-clickable-card]').filter({ has: page.getByRole('link', { name, exact: true }) });
     await expect(card('Blue Line')).toContainText('Minor delays');
     await expect(card('Green Line')).toContainText('No reported disruption');
-    const now = page.getByRole('list', { name: 'Disruptions now' });
-    await expect(now).toContainText('Delays between Piccadilly and Eccles');
+    // A summary: each disrupted line's headline, the other notices and
+    // what is coming up, each linking its own page.
+    const byLine = page.getByRole('list', { name: 'Disruptions by line' });
+    await expect(byLine.getByRole('link', { name: 'Delays between Piccadilly and Eccles' })).toHaveAttribute(
+      'href',
+      '/transit/metrolink/incidents/E2E-S1',
+    );
+    await expect(page.getByRole('list', { name: 'Other notices' })).toContainText('Lift out of service at Piccadilly');
     await expect(page.getByRole('list', { name: 'Disruptions coming up' })).toContainText(
       'No trams to Deansgate-Castlefield',
     );
+    // The detail is on those pages, not here.
+    await expect(page.getByText('A points fault at Cornbrook is causing delays.')).toHaveCount(0);
+  });
+
+  test('a disruption has its own page, with a preview card', async ({ page, request }) => {
+    await page.goto('/transit/metrolink');
+    await page
+      .getByRole('list', { name: 'Disruptions by line' })
+      .getByRole('link', { name: 'Delays between Piccadilly and Eccles' })
+      .click();
+    await expect(page).toHaveURL(/\/transit\/metrolink\/incidents\/E2E-S1$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Delays between Piccadilly and Eccles' })).toBeVisible();
+    await expect(page.getByText('A points fault at Cornbrook is causing delays.')).toBeVisible();
+    await expect(page.getByText('Allow extra time.')).toBeVisible();
+    await expect(
+      page.getByRole('list', { name: 'Lines affected' }).getByRole('link', { name: 'Blue Line' }),
+    ).toHaveAttribute('href', '/transit/metrolink/lines/blue');
+    const image = await page.locator('meta[property="og:image"]').getAttribute('content');
+    expect(image).toMatch(/\/transit\/metrolink\/incidents\/E2E-S1\/card\.png\?v=/);
+    const card = await request.get('/transit/metrolink/incidents/E2E-S1/card.png');
+    expect(card.status()).toBe(200);
+    expect(card.headers()['content-type']).toBe('image/png');
+
+    // The lift notice's page links its stop.
+    await page.goto('/transit/metrolink/incidents/E2E-S2');
+    await page.getByRole('link', { name: 'Piccadilly', exact: true }).click();
+    await expect(page).toHaveURL(/\/transit\/metrolink\/stops\/9400ZZMAPIC$/);
+
+    const missing = await page.goto('/transit/metrolink/incidents/NOPE');
+    expect(missing?.status()).toBe(404);
   });
 
   test('a stop shows its notices, and a line its status', async ({ page }) => {
     await page.goto('/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17');
     await expect(page.getByRole('link', { name: 'MAN', exact: true })).toHaveAttribute('href', '/stations/MAN');
-    await expect(page.getByRole('list', { name: 'Notices' })).toContainText('Lift out of service at Piccadilly');
+    await expect(
+      page.getByRole('list', { name: 'Notices' }).getByRole('link', { name: 'Lift out of service at Piccadilly' }),
+    ).toHaveAttribute('href', '/transit/metrolink/incidents/E2E-S2');
     await page.goto('/transit/metrolink/lines/blue');
     await expect(page.getByText('Minor delays')).toBeVisible();
     await expect(page.getByRole('list', { name: 'Disruptions now' })).toContainText('Allow extra time.');
@@ -67,16 +104,9 @@ test.describe('transit pages', () => {
     await expect(page).toHaveURL(/\/transit\/metrolink\/stops\/9400ZZMAPIC$/);
     await expect(stopHeading).toBeVisible();
 
-    // From the lift notice in the disruptions, which names the stop.
-    await page.goto('/transit/metrolink');
-    const now = page.getByRole('list', { name: 'Disruptions now' });
-    await now.getByRole('link', { name: 'Piccadilly' }).click();
-    await expect(page).toHaveURL(/\/transit\/metrolink\/stops\/9400ZZMAPIC$/);
-    await expect(stopHeading).toBeVisible();
-
     // And by keyboard: Enter on the focused link.
     await page.goto('/transit/metrolink');
-    await now.getByRole('link', { name: 'Piccadilly' }).focus();
+    await stopList(page).getByRole('link', { name: 'Piccadilly' }).focus();
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/transit\/metrolink\/stops\/9400ZZMAPIC$/);
     await expect(stopHeading).toBeVisible();
@@ -84,7 +114,7 @@ test.describe('transit pages', () => {
 
   test('a line page and its timetable link their stops', async ({ page }) => {
     await page.goto('/transit/metrolink/lines/blue');
-    await page.getByRole('link', { name: 'Eccles' }).first().click();
+    await page.getByRole('link', { name: 'Eccles', exact: true }).first().click();
     await expect(page).toHaveURL(/\/transit\/metrolink\/stops\/9400ZZMAECC$/);
     await expect(page.getByRole('heading', { level: 1, name: 'Eccles' })).toBeVisible();
 

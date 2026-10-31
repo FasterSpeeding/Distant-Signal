@@ -4,7 +4,7 @@ import { SectionTitle } from '@/components/SectionTitle';
 import { TextLink } from '@/components/TextLink';
 import { formatDateTime, formatTime } from '@/lib/dateFormat';
 import { describeFailure } from '@/lib/failure';
-import { transitStopHref } from '@/lib/transitStops';
+import { transitIncidentHref, transitStopHref } from '@/lib/transitStops';
 import type { TransitSituation, TransitSituations } from '@/lib/types';
 
 /** When a current situation runs: until its end, or since its start. */
@@ -18,7 +18,7 @@ function currentPeriod(situation: TransitSituation): string | null {
 }
 
 /** When an upcoming situation starts, and ends if it says. */
-function upcomingPeriod(situation: TransitSituation): string | null {
+export function upcomingPeriod(situation: TransitSituation): string | null {
   if (!situation.starts) return null;
   const period = situation.validity.find((p) => p.start === situation.starts);
   const from = `From ${formatDateTime(situation.starts)}`;
@@ -67,7 +67,16 @@ function Situation({
   const stops = stopNames ? situation.stops.flatMap((id) => (stopNames[id] ? [{ id, name: stopNames[id] }] : [])) : [];
   return (
     <Stack component="li" gap={2}>
-      <Text fw={600}>{situation.summary}</Text>
+      {/* Its own page has the whole of it (validity, lines, sharing). */}
+      <Text fw={600}>
+        {network ? (
+          <TextLink href={transitIncidentHref(network, situation.id)} inline underline="always">
+            {situation.summary}
+          </TextLink>
+        ) : (
+          situation.summary
+        )}
+      </Text>
       {lines.length > 0 && (
         <Text size="sm" c="dimmed">
           {lines.join(', ')}
@@ -99,8 +108,9 @@ function Situation({
 /** A network's or a line's published disruptions: those happening now,
  * then those coming up within a week. Nothing while the network has no
  * disruptions feed; "Status unavailable" once they are over 30 minutes
- * old, since stale disruption news reads as current. With `network` and
- * `stopNames`, each one links the stops it names (a lift out of service at
+ * old, since stale disruption news reads as current. With `network`, each
+ * one's summary links its own page (`/transit/<network>/incidents/<id>`),
+ * and with `stopNames` too, the stops it names (a lift out of service at
  * Piccadilly links Piccadilly's page). */
 export function TransitDisruptions({
   situations,
@@ -181,15 +191,23 @@ export function TransitDisruptions({
 }
 
 /** A stop's notices (a lift out of service, the stop closed): its current
- * disruptions. Nothing when there are none. */
-export function TransitStopNotices({ notices }: { notices: TransitSituation[] | undefined }) {
+ * disruptions, each linking its own page when `network` is given. Nothing
+ * when there are none. */
+export function TransitStopNotices({
+  notices,
+  network,
+}: {
+  notices: TransitSituation[] | undefined;
+  /** Links each notice to its own page. */
+  network?: string | undefined;
+}) {
   if (!notices || notices.length === 0) return null;
   return (
     <Stack gap="sm">
       <SectionTitle>Notices</SectionTitle>
       <Stack component="ul" gap="md" className="ds-plain-list" aria-label="Notices">
         {notices.map((s) => (
-          <Situation key={s.id} situation={s} when={currentPeriod(s)} />
+          <Situation key={s.id} situation={s} when={currentPeriod(s)} network={network} />
         ))}
       </Stack>
     </Stack>

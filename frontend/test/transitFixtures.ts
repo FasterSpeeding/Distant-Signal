@@ -5,6 +5,7 @@ import type {
   TransitLineStatus,
   TransitNetworkDetail,
   TransitSituation,
+  TransitSituationDetail,
   TransitSituations,
   TransitStop,
   TransitStopDetail,
@@ -168,6 +169,21 @@ export const SITUATIONS: TransitSituations = {
   asOf: '2026-10-14T09:00:00Z',
   current: [DELAY, LIFT],
   upcoming: [WORKS],
+};
+
+/** `DELAY`'s own page (`/situations/S1`): active, minor delays on the
+ * Blue Line. */
+export const DELAY_DETAIL: TransitSituationDetail = {
+  ...DELAY,
+  state: 'active',
+  endedAt: null,
+  validityEndedAt: null,
+  severity: 9,
+  severityDescription: 'Minor Delays',
+  affects: [{ id: 'metrolink:blue', name: 'Blue Line', severity: 9, description: 'Minor Delays' }],
+  firstSeenAt: '2026-10-14T06:05:00Z',
+  updatedAt: '2026-10-14T09:00:00Z',
+  status: { state: 'current', asOf: '2026-10-14T09:00:00Z' },
 };
 
 export const MINOR_DELAYS: TransitLineStatus = {

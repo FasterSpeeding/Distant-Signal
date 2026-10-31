@@ -5,7 +5,7 @@ import type { TransitLine, TransitLineStatus } from './types';
 // In their own module so a Client Component (`lib/stationSearch.ts`) can
 // check ids without pulling in this module's server-only `./api`.
 export { TRANSIT_ID, TRANSIT_STOP_ID } from './transitIds';
-export { lineColour, SCHEDULED_CAPTION, transitStopHref } from './transitStops';
+export { lineColour, SCHEDULED_CAPTION, transitIncidentHref, transitStopHref } from './transitStops';
 
 /** `value`, or `notFound()` when the api answered 404 (an unknown network,
  * line or stop, or a network the api does not serve). */

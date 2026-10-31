@@ -63,6 +63,11 @@ export function transitStopHref(network: string, stop: string): string {
   return `/transit/${encodeURIComponent(network)}/stops/${encodeURIComponent(stop)}`;
 }
 
+/** A network's disruption page (`/transit/metrolink/incidents/<id>`). */
+export function transitIncidentHref(network: string, situationId: string): string {
+  return `/transit/${encodeURIComponent(network)}/incidents/${encodeURIComponent(situationId)}`;
+}
+
 /** The TfL stop (`940GZZLUKSX`) the TfL network's station `stop` is
  * (`9400ZZLUKSX`, or already `940G…`), or null for another network. */
 export function tflStopIdOf(network: string, stop: string): string | null {

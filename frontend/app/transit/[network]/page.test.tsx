@@ -92,13 +92,26 @@ describe('/transit/[network]', () => {
     expect(cardOf(screen.getByRole('link', { name: 'Blue Line' })).textContent).toContain('Minor delays');
     expect(cardOf(screen.getByRole('link', { name: 'Green Line' })).textContent).toContain('No reported disruption');
     expect(screen.getByRole('heading', { name: 'Disruptions' })).toBeTruthy();
-    expect(screen.getByText(SITUATIONS.current[0]!.summary)).toBeTruthy();
-    expect(screen.getByText(SITUATIONS.upcoming[0]!.summary)).toBeTruthy();
-    // The lift notice at Piccadilly links the stop, as the stop list does.
-    const now = screen.getByRole('list', { name: 'Disruptions now' });
-    expect(within(now).getByRole('link', { name: 'Piccadilly' }).getAttribute('href')).toBe(
-      '/transit/metrolink/stops/9400ZZMAPIC',
+    // A summary, not the detail: a count, then each line's headline and
+    // the other notices, each linking its own page.
+    expect(screen.getByText('2 disruptions now, 1 coming up.')).toBeTruthy();
+    const byLine = screen.getByRole('list', { name: 'Disruptions by line' });
+    expect(within(byLine).getByText('Blue Line:')).toBeTruthy();
+    expect(within(byLine).getByText('Minor delays')).toBeTruthy();
+    expect(within(byLine).getByRole('link', { name: SITUATIONS.current[0]!.summary }).getAttribute('href')).toBe(
+      '/transit/metrolink/incidents/S1',
     );
+    expect(within(byLine).queryByText(/Green Line/)).toBeNull();
+    const notices = screen.getByRole('list', { name: 'Other notices' });
+    expect(within(notices).getByRole('link', { name: SITUATIONS.current[1]!.summary }).getAttribute('href')).toBe(
+      `/transit/metrolink/incidents/${SITUATIONS.current[1]!.id}`,
+    );
+    const upcoming = screen.getByRole('list', { name: 'Disruptions coming up' });
+    expect(within(upcoming).getByRole('link', { name: SITUATIONS.upcoming[0]!.summary })).toBeTruthy();
+    // The detail (descriptions, advice) is on those pages now.
+    if (SITUATIONS.current[0]!.description) {
+      expect(screen.queryByText(SITUATIONS.current[0]!.description)).toBeNull();
+    }
   });
 
   it('says when the disruptions could not be loaded, and when they are stale', async () => {

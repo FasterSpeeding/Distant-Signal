@@ -6,7 +6,7 @@ import { SectionTitle } from '@/components/SectionTitle';
 import { SearchableList } from '@/components/SearchableList';
 import { TextLink } from '@/components/TextLink';
 import { TransitAttributionNote } from '@/components/TransitAttributionNote';
-import { TransitDisruptions } from '@/components/TransitDisruptions';
+import { TransitDisruptionSummary } from '@/components/TransitDisruptionSummary';
 import { TransitLineList } from '@/components/TransitLineList';
 import { getTransitNetwork, getTransitSituations, getTransitStops } from '@/lib/api';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
@@ -31,7 +31,9 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 
 /** `/transit/[network]`: a network's lines (with their status, when the
  * network has a disruptions feed or, for TfL, TfL's own status), grouped
- * by mode when it has several, its disruptions, and its stops. The TfL
+ * by mode when it has several, a short summary of its disruptions (each
+ * linking its own page, `/transit/[network]/incidents/[id]`), and its
+ * stops. The TfL
  * network has no disruptions list (its status is TfL's, detailed on each
  * line's `/lines/tfl-<line>` page) and links the TfL lines that are
  * National Rail lines here (the TfL transit design §8.2). */
@@ -46,8 +48,6 @@ export default async function TransitNetworkPage({ params, searchParams }: Param
   ]);
   const fromTfl = detail.statusSource === 'tfl';
   const groups = groupLinesByMode(detail.lines);
-  const lineNames = Object.fromEntries(detail.lines.map((line) => [line.id, line.name]));
-  const stopNames = Object.fromEntries(stops.map((stop) => [stop.id, stop.name]));
   const hasFeed = (detail.status?.state ?? 'none') !== 'none';
   return (
     <Stack p="lg" gap="lg">
@@ -84,13 +84,11 @@ export default async function TransitNetworkPage({ params, searchParams }: Param
       )}
 
       {!fromTfl && (
-        <TransitDisruptions
+        <TransitDisruptionSummary
+          network={network}
+          lines={detail.lines}
           situations={situations}
           failed={hasFeed && situations === null}
-          empty="No disruptions reported."
-          lineNames={lineNames}
-          network={network}
-          stopNames={stopNames}
         />
       )}
 

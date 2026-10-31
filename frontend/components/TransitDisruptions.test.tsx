@@ -91,7 +91,8 @@ describe('TransitDisruptions', () => {
     expect(within(lift).getByRole('link', { name: 'Piccadilly' }).getAttribute('href')).toBe(
       '/transit/metrolink/stops/9400ZZMAPIC',
     );
-    // A line disruption names no stops, so links none (bar "More details").
+    // A line disruption names no stops, so links only its own page and
+    // "More details".
     const delay = within(screen.getByRole('list', { name: 'Disruptions now' }))
       .getAllByRole('listitem')
       .find((item) => item.textContent.includes(DELAY.summary))!;
@@ -99,7 +100,10 @@ describe('TransitDisruptions', () => {
       within(delay)
         .getAllByRole('link')
         .map((a) => a.textContent),
-    ).toEqual(['More details']);
+    ).toEqual([DELAY.summary, 'More details']);
+    expect(within(delay).getByRole('link', { name: DELAY.summary }).getAttribute('href')).toBe(
+      '/transit/metrolink/incidents/S1',
+    );
   });
 
   it('lists several stops, and leaves out a stop it has no name for', () => {
