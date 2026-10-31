@@ -602,13 +602,23 @@ used, rather than as a literal in a component.
   also how it works without JavaScript). A hidden polite status says how
   many match. A line's page lists its stops in order; "All stops, A to Z"
   links the full list.
-- **Transit line rows** (`TransitLineList`): a network's lines, the page's
-  main element, as compact cards in a 1/2/3-column grid (phone, `sm`,
-  `lg`), one per line: the colour swatch, the name (the card's link) and
-  the status badge on one row, the name the part that clamps, then one
-  line of why when the line isn't running well (the slot the per-line
-  disruption summary fills). Links that lead off the network ("Also run by
-  TfL") are a dimmed sentence of links under the lines, not cards.
+- **Line status rows** (`LineStatusRow`, `LineStatusRowList`): the compact
+  line-status card for a list of lines to scan: a transit network's lines
+  (`TransitLineList`, the page's main element) and a station's lines. One
+  card per line: the colour swatch (when the line has one), the name (the
+  card's link, clamped to a line) and the status badge on one row, then a
+  line or two of dimmed detail (why it isn't running well, the slot the
+  per-line disruption summary fills; a station's sample summary). A 1/2/3
+  column grid (phone, `sm`, `lg`; `columns={2}` stops at two). A status
+  dashboard (/status, the home page's "Your lines", a TfL stop's lines)
+  keeps the fuller `LineStatusCard`; a pinned tram line there is a
+  `StatusCard` too (`PinnedTramLineCard`), so the grid reads as one.
+- **Link sentences** (`LinkSentence`): links that lead off the page's
+  subject (the TfL lines run on National Rail, a station's tram stops, a
+  stop's National Rail stations, a TfL stop's other lines) are one dimmed
+  sentence under the main content, never cards: a lead, the links joined
+  with commas and "and", notes in brackets, a full stop ("Change for trams
+  at Piccadilly (Manchester Metrolink).").
 - **Line route strip** (`TransitLineDiagram`, `lib/transitLineDiagram.ts`):
   a transit line's stops drawn once, never once per direction or branch.
   The busiest branch is the main run, top to bottom, in the line's colour,

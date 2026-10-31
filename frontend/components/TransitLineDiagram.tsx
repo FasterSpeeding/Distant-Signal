@@ -1,5 +1,5 @@
-import { Fragment } from 'react';
 import { Stack, Text } from '@mantine/core';
+import { LinkSentence } from '@/components/LinkSentence';
 import { TextLink } from '@/components/TextLink';
 import { type DiagramSpur, type DiagramStop, type LineDiagram, spurLabel } from '@/lib/transitLineDiagram';
 import { transitStopHref } from '@/lib/transitStops';
@@ -37,19 +37,10 @@ export function TransitLineDiagram({
       {diagram.separate.map((spur, index) => (
         <Spur key={index} network={network} spur={spur} idPath={`${idPrefix}-s${index}`} />
       ))}
-      {diagram.others.length > 0 && (
-        <Text size="sm" c="dimmed">
-          Some trips also call at{' '}
-          {diagram.others.map((station, index, all) => (
-            <Fragment key={station.id}>
-              <TextLink href={transitStopHref(network, station.id)} inline underline="always">
-                {station.name}
-              </TextLink>
-              {index < all.length - 2 ? ', ' : index === all.length - 2 ? ' and ' : '.'}
-            </Fragment>
-          ))}
-        </Text>
-      )}
+      <LinkSentence
+        lead="Some trips also call at "
+        links={diagram.others.map((station) => ({ href: transitStopHref(network, station.id), label: station.name }))}
+      />
     </Stack>
   );
 }

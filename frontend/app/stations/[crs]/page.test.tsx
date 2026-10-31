@@ -112,7 +112,7 @@ describe('StationDisruptionPage -- outage behaviour', () => {
     ]);
     await renderPage();
     expect(screen.getByText(/Change for trams/).textContent).toBe(
-      'Change for trams: Piccadilly (Manchester Metrolink)',
+      'Change for trams at Piccadilly (Manchester Metrolink).',
     );
     expect(screen.getByRole('link', { name: 'Piccadilly' })).toHaveAttribute(
       'href',

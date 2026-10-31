@@ -15,6 +15,7 @@ import {
   ApiNotFoundError,
 } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
+import { LineStatusRow, LineStatusRowItem, LineStatusRowList } from '@/components/LineStatusRow';
 import { StatusBadge } from '@/components/StatusBadge';
 import { IssueList } from '@/components/IssueList';
 import { PinToggle } from '@/components/PinToggle';
@@ -327,22 +328,21 @@ export default async function StationDisruptionPage({ params }: { params: Promis
                 the same filter block, tab bar and issue list. The headings
                 are links now, which the review asked for and the previous
                 plain `Text` headings weren't. */}
-            <Stack gap="xs">
-              {orderedReports.map((report) => {
-                const representative = representativeStatus(report.lineStatuses);
-                return (
-                  <Group key={report.id} justify="space-between" wrap="nowrap" gap="sm">
-                    <Stack gap={0} miw={0}>
-                      <TextLink href={`/lines/${report.id}`}>{report.name}</TextLink>
-                      <Text size="xs" c="dimmed">
-                        {formatSampleSummary(representative)}
-                      </Text>
-                    </Stack>
-                    <StatusBadge severity={worstStatus(report).statusSeverity} />
-                  </Group>
-                );
-              })}
-            </Stack>
+            <LineStatusRowList label="Lines at this station" columns={2}>
+              {orderedReports.map((report) => (
+                <LineStatusRowItem key={report.id}>
+                  <LineStatusRow
+                    href={`/lines/${report.id}`}
+                    name={report.name}
+                    badge={<StatusBadge severity={worstStatus(report).statusSeverity} />}
+                  >
+                    <Text size="xs" c="dimmed">
+                      {formatSampleSummary(representativeStatus(report.lineStatuses))}
+                    </Text>
+                  </LineStatusRow>
+                </LineStatusRowItem>
+              ))}
+            </LineStatusRowList>
             <Divider />
             <IssueList items={items} now={now} subject="station" urlPrefix="issue" />
           </>
