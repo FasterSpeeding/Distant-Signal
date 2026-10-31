@@ -678,9 +678,17 @@ TfL's override files with their base files. Measured again on 2026-10-30
   holds its three codes as `compact_str::CompactString` (inline up to 24
   bytes), 96 bytes a connection with no allocation, against 192. Now: the
   rail day 64 MB (from 104), TfL +28 MB a date, 56 MB for two (within
-  budget). The struct's padding still fits the planner operator filtering
-  spec's 2-byte `OperatorId`; `TransitGraph::trip_mode` gives a transit
-  trip's line mode for its operator.
+  budget). The operator filtering P0 (#98) put its 2-byte `OperatorId`
+  in the struct's padding: still 96 bytes, and the same figures after
+  merging it.
+- **Operators** (operator filtering spec §6.2): a `tfl` trip's
+  connections take its line's mode's operator once the transit graph is
+  built (`TransitGraph::trip_mode`, `planner_operators::transit_operator`):
+  `tube` is London Underground (`LT`), `dlr` `ds:DLR`, `tram`
+  `ds:LONDON_TRAMS`. A trip with no line (a replacement bus; the export
+  has none) stays unknown and passes every filter. Hub walks are walks:
+  unknown too.
 - **Latency** (same bench): searches with Metrolink and `TfL` against
-  Metrolink alone, `fastest` +8%, `options` -1%.
+  Metrolink alone, `fastest` +8%, `options` -1%; re-run after merging
+  #98, `fastest` +6%, `options` +15% (budget 1.60).
 

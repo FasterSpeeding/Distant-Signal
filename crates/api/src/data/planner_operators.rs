@@ -7,8 +7,8 @@
 //!   covers every UID the graph holds, buses and ferries included; the old
 //!   source, `schedule_destination_departures`, missed about 850 buses and
 //!   ferries a day (spec §2.1).
-//! - **Transit trips** take their network's DS operator
-//!   ([`transit_operator`]).
+//! - **Transit trips** take their network's DS operator, or on the `tfl`
+//!   network their line's mode's: the Underground is `LT` ([`transit_operator`]).
 //! - **Fixed links** ([`attribute_fixed_links`]): `TUBE` links are London
 //!   Underground, and so is a `TRANSFER` between a pair of stations that
 //!   also has a `TUBE` link (spec §3.2: those are Tube-speed transfer
@@ -72,21 +72,28 @@ impl OperatorTable {
     }
 
     /// `uid`'s operator: a CIF schedule's from the table, a transit trip's
-    /// network ([`transit_operator`]), else [`OperatorId::UNKNOWN`].
+    /// by its network and line mode ([`transit_operator`]; `line_mode` is
+    /// the trip's line's, `TransitGraph::trip_mode`), else
+    /// [`OperatorId::UNKNOWN`].
     #[must_use]
-    pub fn operator_of(&self, uid: &str) -> OperatorId {
+    pub fn operator_of(&self, uid: &str, line_mode: Option<&str>) -> OperatorId {
         if crate::data::transit_planning::is_transit_uid(uid) {
-            return transit_operator(uid);
+            return transit_operator(uid, line_mode);
         }
         self.by_uid.get(uid).copied().unwrap_or(OperatorId::UNKNOWN)
     }
 
-    /// Sets every connection's `operator`, and returns how many CIF
-    /// connections have none (should be 0: spec §6.7).
-    pub fn attribute_connections(&self, connections: &mut [Connection]) -> usize {
+    /// Sets every connection's `operator` (`trip_mode` gives a transit
+    /// trip's line mode), and returns how many CIF connections have none
+    /// (should be 0: spec §6.7).
+    pub fn attribute_connections<'g>(
+        &self,
+        connections: &mut [Connection],
+        trip_mode: impl Fn(&str) -> Option<&'g str>,
+    ) -> usize {
         let mut unknown = 0;
         for connection in connections {
-            connection.operator = self.operator_of(&connection.uid);
+            connection.operator = self.operator_of(&connection.uid, trip_mode(&connection.uid));
             if connection.operator.is_unknown()
                 && !crate::data::transit_planning::is_transit_uid(&connection.uid)
             {
@@ -107,14 +114,22 @@ impl OperatorTable {
     }
 }
 
-/// A transit trip's operator, by its network (`metrolink:12`). The `tfl`
-/// network (`TfL` P4) has no rule yet: its trips will be attributed by line
-/// mode (Tube to `LT`) when they join the graph.
+/// A transit trip's operator, by its network (`metrolink:12`). On the
+/// `tfl` network it follows the trip's line's mode (`line_mode`, from
+/// `transit_lines.mode`; spec §6.2): `tube` is London Underground (`LT`),
+/// `dlr` `ds:DLR` and `tram` `ds:LONDON_TRAMS`. Any other `tfl` line (none
+/// is planned today) stays [`OperatorId::UNKNOWN`].
 #[must_use]
-pub fn transit_operator(uid: &str) -> OperatorId {
+pub fn transit_operator(uid: &str, line_mode: Option<&str>) -> OperatorId {
     match uid.split_once(':').map(|(network, _)| network) {
         Some("metrolink") => OperatorId::ds(DsOperator::Metrolink),
         Some("net") => OperatorId::ds(DsOperator::Net),
+        Some("tfl") => match line_mode {
+            Some("tube") => OperatorId::LONDON_UNDERGROUND,
+            Some("dlr") => OperatorId::ds(DsOperator::Dlr),
+            Some("tram") => OperatorId::ds(DsOperator::LondonTrams),
+            _ => OperatorId::UNKNOWN,
+        },
         _ => OperatorId::UNKNOWN,
     }
 }
@@ -324,9 +339,9 @@ mod tests {
             OperatorId::from_atoc("VT").unwrap(),
         )]));
         let conn = |uid: &str| Connection {
-            uid: uid.to_owned(),
-            from_tiploc: "A".to_owned(),
-            to_tiploc: "B".to_owned(),
+            uid: uid.into(),
+            from_tiploc: "A".into(),
+            to_tiploc: "B".into(),
             departure_min: 0,
             arrival_min: 1,
             working_departure_min: 0,
@@ -335,11 +350,25 @@ mod tests {
             can_alight: true,
             operator: OperatorId::UNKNOWN,
         };
-        let mut connections = vec![conn("C1"), conn("metrolink:4"), conn("C2"), conn("tfl:1")];
+        let mut connections = vec![
+            conn("C1"),
+            conn("metrolink:4"),
+            conn("C2"),
+            conn("tfl:1"),
+            conn("tfl:2"),
+            conn("tfl:3"),
+            conn("tfl:4"),
+        ];
+        let trip_mode = |uid: &str| match uid {
+            "tfl:1" => Some("tube"),
+            "tfl:2" => Some("dlr"),
+            "tfl:3" => Some("tram"),
+            _ => None,
+        };
         assert_eq!(
-            table.attribute_connections(&mut connections),
+            table.attribute_connections(&mut connections, trip_mode),
             1,
-            "C2 has no row"
+            "C2 has no row; a transit trip is never counted"
         );
         assert_eq!(
             connections[0].operator,
@@ -350,6 +379,16 @@ mod tests {
             OperatorId::ds(DsOperator::Metrolink)
         );
         assert!(connections[2].operator.is_unknown());
-        assert!(connections[3].operator.is_unknown());
+        assert_eq!(connections[3].operator, OperatorId::LONDON_UNDERGROUND);
+        assert_eq!(connections[3].operator.code().as_deref(), Some("LT"));
+        assert_eq!(connections[4].operator, OperatorId::ds(DsOperator::Dlr));
+        assert_eq!(
+            connections[5].operator,
+            OperatorId::ds(DsOperator::LondonTrams)
+        );
+        assert!(
+            connections[6].operator.is_unknown(),
+            "a tfl line with no mode"
+        );
     }
 }

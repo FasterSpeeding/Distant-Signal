@@ -1104,7 +1104,6 @@ async fn load_graph(
                 tokio::task::spawn_blocking(move || {
                     let (mut connections, passes) =
                         trip_planning::build_connections_with_passes(calling_points);
-                    let unknown_operators = operators.attribute_connections(&mut connections);
                     let transit = transit_days.map(|(days, skipped)| {
                         transit_planning::build_transit_graph(
                             &interchange,
@@ -1115,6 +1114,12 @@ async fn load_graph(
                             trip_planning::road_water_change_minutes(),
                         )
                     });
+                    // After the transit graph: a `tfl` trip's operator
+                    // follows its line's mode (spec §6.2).
+                    let unknown_operators = operators
+                        .attribute_connections(&mut connections, |uid| {
+                            transit.as_ref().and_then(|graph| graph.trip_mode(uid))
+                        });
                     (
                         connections,
                         passes,

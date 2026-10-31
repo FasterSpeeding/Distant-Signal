@@ -434,6 +434,33 @@ async fn a_tfl_stop_end_rides_the_tube_timetable_when_opted_in() {
     assert_eq!(notice["description"], "Minor Delays");
     assert_eq!(notice["reason"], "Signal failure");
 
+    // The Tube trips' connections are London Underground's (`LT`) for an
+    // operator filter (operator filtering spec §6.2); the seed's
+    // replacement bus has no line, so no mode, and stays unknown (it passes
+    // every filter).
+    let app = crate::test_support::inert_app(pool.clone());
+    let graph = super::load_graph(&app, today(), None)
+        .await
+        .unwrap()
+        .expect("a graph");
+    let transit = graph.transit.as_ref().expect("the transit graph");
+    let mut tube_connections = 0;
+    for connection in graph
+        .connections
+        .iter()
+        .filter(|connection| connection.uid.starts_with("tfl:"))
+    {
+        let (_, trip) = transit.trip(&connection.uid).expect("a tfl trip");
+        let expected = if trip.replacement_bus {
+            schedule_query::OperatorId::UNKNOWN
+        } else {
+            tube_connections += 1;
+            schedule_query::OperatorId::LONDON_UNDERGROUND
+        };
+        assert_eq!(connection.operator, expected, "{}", connection.uid);
+    }
+    assert!(tube_connections > 0);
+
     cleanup_tfl(&pool).await;
 }
 
