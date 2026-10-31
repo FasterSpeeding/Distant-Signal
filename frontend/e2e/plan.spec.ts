@@ -342,3 +342,77 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
   expect(legs[3]).toMatchObject({ kind: 'untracked', originStopId: '9400ZZMAECC' });
   expect(legs[4]).toMatchObject({ trainUid: 'E2ETR2', originCrs: 'ZTE', destinationCrs: 'ZTB' });
 });
+
+// A timetable TRANSFER link between two different stations (Euston to
+// Victoria is a 19-minute one) is a journey of its own: saving the plan
+// keeps it as an untracked `transfer` leg on its times, not a change within
+// one station to drop. The plan (made-up codes) and the save are answered
+// here, so this spends none of the file's `/Trips/plan` budget.
+test('saves a TRANSFER link between two stations as an untracked transfer leg', async ({ page }) => {
+  const train = (trainUid: string, originCrs: string, destinationCrs: string, dep: string, arr: string) => ({
+    kind: 'train',
+    trainUid,
+    serviceDate: '2026-09-17',
+    originCrs,
+    destinationCrs,
+    scheduledDeparture: dep,
+    scheduledArrival: arr,
+    publicDeparture: dep,
+    publicArrival: arr,
+    arrivalDayOffset: 0,
+  });
+  await page.route('**/api/Trips/plan?*', (route) =>
+    route.fulfill({
+      json: {
+        results: 'fastest',
+        segments: [
+          {
+            originCrs: 'ZEA',
+            destinationCrs: 'ZEC',
+            cappedByMaxChanges: false,
+            itineraries: [
+              {
+                legs: [
+                  train('E2EXF1', 'ZEA', 'ZXB', '08:00:00', '08:40:00'),
+                  { kind: 'transfer', mode: 'TRANSFER', originCrs: 'ZXB', destinationCrs: 'ZXC', minutes: 19 },
+                  train('E2EXF2', 'ZXC', 'ZEC', '09:10:00', '09:50:00'),
+                ],
+                changeCount: 1,
+                totalDurationMinutes: 110,
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  let saved: { legs: Record<string, unknown>[] } | null = null;
+  await page.route('**/api/Journeys/itinerary', async (route) => {
+    saved = route.request().postDataJSON() as { legs: Record<string, unknown>[] };
+    await route.fulfill({ json: { journeyId: 990002, legId: 1, trackingId: null, resolutionStatus: null } });
+  });
+  await page.route('**/api/Journeys/990002', (route) => route.fulfill({ status: 404, body: 'Not found' }));
+
+  await openPlan(page, 'origin=ZEA&destination=ZEC&date=2026-09-17&departAfter=07:30');
+  await findRoutes(page);
+  const card = page.locator('[data-plan-entry]').first();
+  await expect(card.getByText(/^Change ZXB to ZXC, 19 min$/)).toBeVisible();
+  await card.getByRole('radio').check({ force: true });
+  await page.getByRole('button', { name: 'Track this journey' }).click();
+  await expect(page.getByText('First leg tracked')).toBeVisible();
+
+  expect(saved).not.toBeNull();
+  expect(saved!.legs).toEqual([
+    { trainUid: 'E2EXF1', serviceDate: '2026-09-17', originCrs: 'ZEA', destinationCrs: 'ZXB' },
+    // From the first train's arrival (08:40 BST) for 19 minutes.
+    {
+      kind: 'untracked',
+      transitMode: 'transfer',
+      originName: 'ZXB',
+      destinationName: 'ZXC',
+      plannedDeparture: '2026-09-17T07:40:00.000Z',
+      plannedArrival: '2026-09-17T07:59:00.000Z',
+    },
+    { trainUid: 'E2EXF2', serviceDate: '2026-09-17', originCrs: 'ZXC', destinationCrs: 'ZEC' },
+  ]);
+});

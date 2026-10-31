@@ -288,14 +288,27 @@ fn instant(date: NaiveDate, minute: u32) -> Option<DateTime<Utc>> {
 }
 
 /// The planner's transfer mode as an untracked leg's (the web planner's
-/// `transferAsUntracked`), `None` for a change within one station.
-fn transfer_mode(mode: &str) -> Option<&'static str> {
+/// `transferAsUntracked`): a `TRANSFER` link between two different
+/// stations (Euston to Victoria, 19 minutes) is a `transfer` leg. `None`
+/// for a `TRANSFER` within one station (the same code at both ends).
+fn transfer_mode(
+    mode: &str,
+    origin_crs: Option<&str>,
+    destination_crs: Option<&str>,
+) -> Option<&'static str> {
     Some(match mode.to_ascii_uppercase().as_str() {
         "WALK" => "walk",
         "TUBE" => "tube",
         "METRO" => "metro",
         "BUS" => "bus",
         "FERRY" => "ferry",
+        "TRANSFER" => {
+            let code = |crs: Option<&str>| crs.map(|c| c.trim().to_ascii_uppercase());
+            if code(origin_crs) == code(destination_crs) {
+                return None;
+            }
+            "transfer"
+        }
         _ => return None,
     })
 }
@@ -436,7 +449,9 @@ fn suggestion_legs(
                 destination_stop,
                 ..
             } => {
-                let Some(transit_mode) = transfer_mode(mode) else {
+                let Some(transit_mode) =
+                    transfer_mode(mode, origin_crs.as_deref(), destination_crs.as_deref())
+                else {
                     continue;
                 };
                 let minutes = Duration::minutes(i64::from((*minutes).max(0)));
@@ -657,5 +672,28 @@ pub fn build_set(
         trigger: inputs.trigger.clone(),
         suggestions,
         stale: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::transfer_mode;
+
+    #[test]
+    fn a_transfer_link_between_stations_is_a_transfer_leg() {
+        assert_eq!(
+            transfer_mode("TRANSFER", Some("EUS"), Some("VIC")),
+            Some("transfer")
+        );
+        assert_eq!(
+            transfer_mode("TRANSFER", Some("tiploc:STRATFD"), Some("KGX")),
+            Some("transfer")
+        );
+        assert_eq!(transfer_mode("TRANSFER", Some("eus"), Some("EUS")), None);
+        assert_eq!(transfer_mode("TRANSFER", None, None), None);
+        assert_eq!(
+            transfer_mode("TUBE", Some("EUS"), Some("KGX")),
+            Some("tube")
+        );
     }
 }
