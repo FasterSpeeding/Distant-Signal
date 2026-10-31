@@ -46,6 +46,7 @@ describe('legSearch', () => {
       departBefore: null,
       arriveAfter: '10:00',
       arriveBefore: '11:30',
+      filters: null,
     });
     expect(legSearchFromDraft(draft, { ...stations, destination: null })).toBeNull();
     expect(legSearchFromDraft({ ...draft, serviceDate: '' }, stations)).toBeNull();
@@ -68,7 +69,22 @@ describe('legSearch', () => {
       destinationCrs: 'YRK',
       departWindow: { after: '08:00', before: null },
       arriveWindow: { after: '10:00', before: '11:30' },
+      filters: null,
     });
+  });
+});
+
+describe('legSearch with Between stations filters (DS-215)', () => {
+  it('sends the filters as the query and saves them with the pick', () => {
+    const filters = { operator: 'SW', startsAt: 'WOK', callsAt: 'CLJ,VXH' };
+    const search = legSearchFromDraft(legSearchDraftFromLeg(leg), { origin: 'KGX', destination: 'YRK' }, filters);
+    expect(search?.filters).toEqual(filters);
+    if (search === null) return;
+    expect(legSearchQuery(search).toString()).toBe(
+      'origin=KGX&destination=YRK&serviceDate=2026-10-23&departAfter=08%3A00&arriveAfter=10%3A00&arriveBefore=11%3A30' +
+        '&operator=SW&startsAt=WOK&callsAt=CLJ%2CVXH',
+    );
+    expect(legSearchPickBody(search).filters).toEqual(filters);
   });
 });
 
@@ -85,6 +101,7 @@ describe('legSearchPrefill: Change train on a leg never window-searched', () => 
       departBefore: null,
       arriveAfter: null,
       arriveBefore: null,
+      filters: null,
     });
   });
 
