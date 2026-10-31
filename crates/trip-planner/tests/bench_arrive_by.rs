@@ -76,6 +76,7 @@ fn network() -> (Vec<Connection>, InterchangeData) {
                 for (hop, pair) in ordered.windows(2).enumerate() {
                     let run = runs[if direction == 0 { hop } else { stops - 2 - hop }];
                     connections.push(Connection {
+                        operator: schedule_query::OperatorId::UNKNOWN,
                         uid: uid.clone(),
                         from_tiploc: tiploc(pair[0]),
                         to_tiploc: tiploc(pair[1]),
@@ -769,6 +770,7 @@ fn bench_link_rows(rng: &mut Rng) -> Vec<(String, schedule_query::FixedLink)> {
         (
             format!("C{from:04}"),
             FixedLink {
+                operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "TUBE".to_string(),
                 to_crs: format!("C{to:04}"),
                 minutes,
@@ -1520,4 +1522,183 @@ fn bench_options_cpu() {
             samples[0]
         );
     }
+}
+
+/// Operator filters (planner operator filtering spec 2026-10-31, §7.3): the
+/// synthetic day with each line's trains run by one of ten operators, and
+/// 20 random pairs searched with no rule, avoiding one operator, only five,
+/// and only one. Per search (CSA depart-after 08:00, CSA arrive-by 18:00,
+/// RAPTOR over 6 rounds), the CPU time of all 20 (median over
+/// `DS_BENCH_REPS`, default 9, the cases interleaved) against no rule. The
+/// budget, asserted with 10% for CPU-time noise:
+/// avoid at most +5% on every search, and only-five on arrive-by and
+/// RAPTOR (the rule is one array read, and blocking trains only removes
+/// work). A Connection Scan with no answer can't stop early and runs to the
+/// end of the day, so an "only" rule that leaves a pair with no route costs
+/// more there: only-five at most 1.5x (one of the 20 pairs loses its route;
+/// callgrind: +17%), only-one at most 3x (15 of 20; callgrind: 2.2x). For
+/// an instruction count, run it once under `valgrind --tool=callgrind` with
+/// `DS_BENCH_REPS=1`.
+#[test]
+#[ignore = "benchmark; see the module doc"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "bench code: one table of cases, measured and checked top to bottom"
+)]
+fn bench_operator_filter_cpu() {
+    use schedule_query::{OperatorId, OperatorMask};
+    use trip_planner::OperatorRule;
+
+    if !bench_requested() {
+        return;
+    }
+    let reps: usize = std::env::var("DS_BENCH_REPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(9);
+    let codes = ["VT", "GR", "GW", "SW", "SN", "SE", "NT", "SR", "XC", "LM"];
+    let operator = |index: usize| OperatorId::from_atoc(codes[index]).unwrap();
+    let (mut connections, interchange) = network();
+    for connection in &mut connections {
+        // `L{line}D{direction}T{n}`: the line picks the operator.
+        let line: usize = connection.uid[1..connection.uid.find('D').unwrap()]
+            .parse()
+            .unwrap();
+        connection.operator = operator(line % codes.len());
+    }
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    let mut rng = Rng(0x0b71_0950);
+    let pairs: Vec<(Vec<String>, Vec<String>)> = (0..20)
+        .map(|_| {
+            (
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+            )
+        })
+        .collect();
+    let rule = |r: OperatorRule| Some(Restrictions::default().with_operator_rule(r));
+    let cases: [(&str, Option<Restrictions>); 4] = [
+        ("no rule", None),
+        (
+            "avoid 1 of 10",
+            rule(OperatorRule::avoid(OperatorMask::of([operator(0)]))),
+        ),
+        (
+            "only 5 of 10",
+            rule(OperatorRule::only(OperatorMask::of((0..5).map(operator)))),
+        ),
+        (
+            "only 1 of 10",
+            rule(OperatorRule::only(OperatorMask::of([operator(0)]))),
+        ),
+    ];
+    let only = std::env::var("DS_BENCH_ONLY").ok();
+    let cases: Vec<(&str, Option<Restrictions>)> = cases
+        .into_iter()
+        .filter(|(label, _)| only.as_deref().is_none_or(|o| o == *label))
+        .collect();
+    // One search over all 20 pairs: 0 CSA, 1 CSA arrive-by, 2 RAPTOR. How
+    // many answers, as a checksum.
+    let search = |kind: usize, restrictions: Option<&Restrictions>| -> usize {
+        pairs
+            .iter()
+            .map(|(from, to)| match kind {
+                0 => usize::from(
+                    scan_connections_restricted(
+                        ScanOptions {
+                            connections: &connections,
+                            interchange: &interchange,
+                            from_tiplocs: from,
+                            to_tiplocs: to,
+                            departure_min: 480,
+                            date,
+                        },
+                        None,
+                        restrictions,
+                    )
+                    .is_some(),
+                ),
+                1 => usize::from(
+                    scan_connections_arrive_by(
+                        ArriveByOptions {
+                            connections: &connections,
+                            interchange: &interchange,
+                            from_tiplocs: from,
+                            waypoints: &[],
+                            to_tiplocs: to,
+                            vias: None,
+                            arrive_by_min: 1080,
+                            date,
+                        },
+                        None,
+                        restrictions,
+                    )
+                    .is_some(),
+                ),
+                _ => raptor_search_restricted(
+                    RaptorOptions {
+                        connections: &connections,
+                        interchange: &interchange,
+                        from_tiplocs: from,
+                        to_tiplocs: to,
+                        departure_min: 480,
+                        date,
+                        max_rounds: 6,
+                    },
+                    None,
+                    restrictions,
+                )
+                .len(),
+            })
+            .sum()
+    };
+    // Interleaved: each repetition runs every case in turn, so a busy
+    // machine slows them alike.
+    let mut samples: Vec<[Vec<Duration>; 3]> = cases.iter().map(|_| Default::default()).collect();
+    let mut found = vec![[0usize; 3]; cases.len()];
+    for _ in 0..reps {
+        for (case, (_, restrictions)) in cases.iter().enumerate() {
+            for kind in 0..3 {
+                let started = thread_cpu();
+                found[case][kind] = search(kind, restrictions.as_ref());
+                samples[case][kind].push(thread_cpu().saturating_sub(started));
+            }
+        }
+    }
+    let medians: Vec<[Duration; 3]> = samples
+        .into_iter()
+        .map(|kinds| {
+            kinds.map(|mut times| {
+                times.sort();
+                times[times.len() / 2]
+            })
+        })
+        .collect();
+    for ((label, _), (row, found)) in cases.iter().zip(medians.iter().zip(&found)) {
+        println!(
+            "{label:14} csa {:>9.2?} ({}) arriveBy {:>9.2?} ({}) raptor {:>9.2?} ({})",
+            row[0], found[0], row[1], found[1], row[2], found[2]
+        );
+    }
+    if only.is_some() {
+        return;
+    }
+    let ratio = |case: usize, kind: usize| {
+        medians[case][kind].as_secs_f64() / medians[0][kind].as_secs_f64()
+    };
+    // The budget plus 10% for CPU-time noise on a shared machine; callgrind
+    // gives the exact count (see the doc comment).
+    let noise = 1.10;
+    for (kind, name) in ["csa", "arriveBy", "raptor"].iter().enumerate() {
+        println!(
+            "{name:8} avoid 1 {:.3}x, only 5 {:.3}x, only 1 {:.3}x",
+            ratio(1, kind),
+            ratio(2, kind),
+            ratio(3, kind)
+        );
+        assert!(ratio(1, kind) <= 1.05 * noise, "avoid 1 of 10, {name}");
+        let only_five = if kind == 0 { 1.5 } else { 1.05 };
+        assert!(ratio(2, kind) <= only_five * noise, "only 5 of 10, {name}");
+    }
+    assert!(ratio(3, 0) <= 3.0 * noise, "only 1 of 10, csa");
 }

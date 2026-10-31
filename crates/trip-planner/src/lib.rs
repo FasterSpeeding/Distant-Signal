@@ -28,7 +28,7 @@ pub use raptor::{
     RaptorJourney, RaptorOptions, raptor_search, raptor_search_restricted,
     raptor_search_with_overlay,
 };
-pub use restrictions::{PassLeg, Restrictions};
+pub use restrictions::{OperatorMode, OperatorRule, OperatorScope, PassLeg, Restrictions};
 pub use reverse::{
     ArriveByOptions, latest_departure, latest_departures_by_trips, raptor_arrive_by,
     raptor_arrive_by_from_latest, scan_connections_arrive_by, staged_arrive_by,

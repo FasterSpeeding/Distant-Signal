@@ -55,6 +55,19 @@ them is answered exactly as before.
 - Paging is unchanged: a page holds up to `limit` trains that pass the
   filters.
 
+## 2026-10-31: `/Trips/plan` bus and ferry legs carry their `operator`
+
+A value change, no new fields. A train leg's `operator` (the schedule's
+ATOC code) is now read from `schedule_services`, which has a row for every
+schedule, instead of `schedule_destination_departures`, which lacks one
+for about 850 buses and ferries a day. Those legs used to be served with
+`"operator": null`; they now carry their operator's code, e.g. `"GW"` for a
+GWR rail-replacement bus. Every other leg is unchanged. The same source
+now drives a journey's "same operator" alternatives, which can now offer
+that operator's own buses and ferries (planner operator filtering spec,
+docs/superpowers/specs/2026-10-31-planner-operator-filtering-design.md,
+phase P0).
+
 ## 2026-10-30: `previously_calls_at`, `previously_stops_at` and `terminates_at` on the `/trains` boards
 
 Additive: three optional query parameters on `GET /public/trains/search`

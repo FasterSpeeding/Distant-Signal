@@ -600,6 +600,7 @@ mod tests {
 
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         Connection {
+            operator: schedule_query::OperatorId::UNKNOWN,
             uid: uid.to_string(),
             from_tiploc: from.to_string(),
             to_tiploc: to.to_string(),
@@ -659,6 +660,7 @@ mod tests {
         interchange.fixed_links_from_crs.insert(
             "EUS".to_string(),
             vec![schedule_query::FixedLink {
+                operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "TUBE".to_string(),
                 to_crs: "KGX".to_string(),
                 minutes: 5,
@@ -704,6 +706,7 @@ mod tests {
         interchange.fixed_links_from_crs.insert(
             "EUS".to_string(),
             vec![schedule_query::FixedLink {
+                operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "TUBE".to_string(),
                 to_crs: "KGX".to_string(),
                 minutes: 5,

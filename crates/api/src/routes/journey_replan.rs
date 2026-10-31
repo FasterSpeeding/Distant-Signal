@@ -25,7 +25,6 @@
 //! recovered) on read, so the in-app banner works without the sweep.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -436,7 +435,7 @@ pub(crate) async fn plan_suggestions(
             depart_after_min,
             results: "options",
             max_changes,
-            allowed_uids: None,
+            operator_rule: None,
         },
         slot,
     )
@@ -458,7 +457,7 @@ pub(crate) async fn plan_suggestions(
             depart_after_min,
             results: "fastest",
             max_changes,
-            allowed_uids: None,
+            operator_rule: None,
         },
         NEXT_DEPARTURES,
         excluded_uid.as_deref(),
@@ -491,7 +490,7 @@ pub(crate) async fn plan_suggestions(
                 depart_after_min,
                 results: "fastest",
                 max_changes,
-                allowed_uids: None,
+                operator_rule: None,
             },
             slot,
         )
@@ -513,40 +512,40 @@ pub(crate) async fn plan_suggestions(
                 }),
         );
     }
-    if !replaced_operators.is_empty() {
-        let uids: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT train_uid FROM schedule_destination_departures \
-             WHERE service_date = $1 AND operator_atoc = ANY($2)",
-        )
-        .bind(date)
-        .bind(&replaced_operators)
-        .fetch_all(&app.database)
-        .await
-        .map_err(|err| internal("read operator trains")(err.into()))?;
-        if !uids.is_empty() {
-            let same = next_departures(
-                app,
-                ReplanQuery {
-                    origin: origin.clone(),
-                    destination: destination.clone(),
-                    date,
-                    depart_after_min,
-                    results: "fastest",
-                    max_changes,
-                    allowed_uids: Some(Arc::new(uids.into_iter().collect())),
-                },
-                2,
-                excluded_uid.as_deref(),
-                slot,
-            )
-            .await?;
-            plans.extend(same.into_iter().map(|itinerary| Planned {
-                itinerary,
+    // The ticket's "same operator" search: those operators' CIF trains,
+    // buses and ferries (one code covers all three, from the graph's
+    // `schedule_services` operators), with the Tube and any transit free to
+    // use between them (operator filtering spec §5.6, §6.3).
+    let same_operators = schedule_query::OperatorMask::of(
+        replaced_operators
+            .iter()
+            .filter_map(|code| schedule_query::OperatorId::from_atoc(code)),
+    );
+    if !same_operators.is_empty() {
+        let same = next_departures(
+            app,
+            ReplanQuery {
+                origin: origin.clone(),
+                destination: destination.clone(),
                 date,
-                through_leg_id: last_leg_id,
-                rejoins_leg_id: None,
-            }));
-        }
+                depart_after_min,
+                results: "fastest",
+                max_changes,
+                operator_rule: Some(
+                    trip_planner::OperatorRule::only(same_operators).cif_trains_only(),
+                ),
+            },
+            2,
+            excluded_uid.as_deref(),
+            slot,
+        )
+        .await?;
+        plans.extend(same.into_iter().map(|itinerary| Planned {
+            itinerary,
+            date,
+            through_leg_id: last_leg_id,
+            rejoins_leg_id: None,
+        }));
     }
 
     // Booked arrival at the destination, from the compensation baseline.

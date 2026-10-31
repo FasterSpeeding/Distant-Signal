@@ -10,9 +10,10 @@
 //! is a few small, uid-scoped batch reads after the search instead of widening
 //! the whole-day read. Only CIF data is used -- never Darwin/live platform.
 //!
-//! The schedule's headcode (the CIF `BS` Train Identity -- NOT the TRUST
-//! 10-character `train_id`) is read the same way as the operator, from
-//! `schedule_destination_departures.headcode`.
+//! The operator is read from `schedule_services.operator_atoc`, which has
+//! a row for every schedule, buses and ferries included. The schedule's
+//! headcode (the CIF `BS` Train Identity -- NOT the TRUST 10-character
+//! `train_id`) is read from `schedule_destination_departures.headcode`.
 
 use std::collections::HashMap;
 
@@ -278,13 +279,14 @@ pub async fn attach_leg_details(
     .fetch_all(pool)
     .await?;
 
-    // One operator per schedule: `operator_atoc` is denormalized identically
-    // onto every row a schedule contributes (see its migration), so any
-    // non-null row answers it.
+    // One operator per schedule, from `schedule_services` (operator
+    // filtering spec §2.1, 2026-10-31): it has a row for every schedule the
+    // planner rides, buses and ferries included, which
+    // `schedule_destination_departures` (the source before) lacks for about
+    // 850 of them a day.
     let operators: Vec<(String, String)> = sqlx::query_as(
-        "SELECT DISTINCT ON (train_uid) train_uid, operator_atoc \
-         FROM schedule_destination_departures \
-         WHERE service_date = $1 AND train_uid = ANY($2) AND operator_atoc IS NOT NULL",
+        "SELECT uid, operator_atoc FROM schedule_services \
+         WHERE service_date = $1 AND uid = ANY($2) AND operator_atoc IS NOT NULL",
     )
     .bind(date)
     .bind(&uids)

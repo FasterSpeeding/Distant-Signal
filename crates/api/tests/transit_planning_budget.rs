@@ -141,6 +141,7 @@ fn rail_interchange() -> InterchangeData {
         (
             crs(from),
             FixedLink {
+                operator: schedule_query::OperatorId::UNKNOWN,
                 mode: ["WALK", "TUBE", "TRANSFER", "BUS"][rng.next(4) as usize].to_owned(),
                 to_crs: crs(to),
                 minutes: 3 + rng.next(30) as i32,
@@ -479,4 +480,50 @@ fn measure_latency() {
     let with_options = median(&mut options[2]).as_secs_f64() / base_options.as_secs_f64();
     assert!(with <= 1.10, "fastest {with:.3}x");
     assert!(with_options <= 1.10, "options {with_options:.3}x");
+}
+
+/// The operator table each cached graph holds (planner operator filtering
+/// spec 2026-10-31, §6.1): one `schedule_services` operator per schedule,
+/// about 26,000 a weekday. Budget: 4 MB per date, so 8 MB for the two
+/// cached dates. The per-connection and per-link operator ids fit in
+/// existing padding (the `size_of` checks), so the table is the whole cost.
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn operator_table_memory() {
+    if !bench_requested() {
+        return;
+    }
+    assert_eq!(
+        size_of::<Connection>(),
+        96,
+        "the operator id must fit Connection's padding"
+    );
+    assert_eq!(
+        size_of::<FixedLink>(),
+        128,
+        "the operator id must fit FixedLink's padding"
+    );
+    common::heap::pin_mmap_threshold();
+    let before = settled_rss();
+    let codes = ["VT", "GR", "GW", "SW", "SN", "SE", "NT", "SR", "XC", "LM"];
+    let table = api::data::planner_operators::OperatorTable::new(
+        (0..26_000_usize)
+            .map(|n| {
+                (
+                    format!("C{n:05}"),
+                    schedule_query::OperatorId::from_atoc(codes[n % codes.len()]).unwrap(),
+                )
+            })
+            .collect(),
+    );
+    let used = settled_rss().saturating_sub(before);
+    println!(
+        "operator table: {} schedules, {:.1} MB per date, {:.1} MB for 2 cached dates \
+         (budget 8 MB)",
+        table.len(),
+        mb(used),
+        mb(2 * used)
+    );
+    assert!(2 * used <= 8 * 1_048_576, "{:.1} MB", mb(2 * used));
+    drop(table);
 }
