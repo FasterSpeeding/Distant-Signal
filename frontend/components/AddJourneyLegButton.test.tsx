@@ -4,6 +4,9 @@ import { MantineProvider } from '@mantine/core';
 import { renderWithMantine } from '@/test/render';
 import { theme } from '@/lib/theme';
 import { AddJourneyLegButton } from './AddJourneyLegButton';
+import { trackFeature } from '@/lib/usageAnalytics';
+
+vi.mock('@/lib/usageAnalytics', () => ({ trackFeature: vi.fn() }));
 
 const refreshMock = vi.fn();
 vi.mock('next/navigation', () => ({
@@ -20,6 +23,14 @@ const STATIONS = [
   { code: 'WAT', name: 'London Waterloo' },
   { code: 'CLJ', name: 'Clapham Junction' },
   { code: 'WOK', name: 'Woking' },
+];
+
+/** `GET /public/trains/search/operators`: named, and one the timetable
+ * carries with no name. */
+const OPERATORS = [
+  { code: 'SW', name: 'South Western Railway' },
+  { code: 'GW', name: 'Great Western Railway' },
+  { code: 'QC', name: null },
 ];
 
 /** `GET /tfl/stops`'s rows, with invented ids. */
@@ -39,6 +50,9 @@ function mockFetch(legs: () => Response = legResponse) {
       const q = (new URLSearchParams(url.split('?')[1]).get('q') ?? '').toLowerCase();
       const matches = STATIONS.filter((s) => s.code.toLowerCase() === q || s.name.toLowerCase().includes(q));
       return Promise.resolve(new Response(JSON.stringify(matches), { status: 200 }));
+    }
+    if (url === '/api/trains/search/operators') {
+      return Promise.resolve(new Response(JSON.stringify({ operators: OPERATORS }), { status: 200 }));
     }
     if (url.startsWith('/api/tfl/stops/rail-crs?')) {
       const ids = new URLSearchParams(url.split('?')[1]).get('ids') ?? '';
@@ -820,6 +834,193 @@ describe('AddJourneyLegButton', () => {
           }),
         }),
       );
+    });
+  });
+
+  describe("the time-window search's Between stations filters (DS-215)", () => {
+    beforeEach(() => {
+      vi.mocked(trackFeature).mockClear();
+    });
+
+    /** Opens the dialog after a leg arriving at WAT at 10:07, and picks CLJ
+     * as the destination. */
+    async function openAfterAWaterlooArrival() {
+      renderWithMantine(
+        <AddJourneyLegButton
+          journeyId={1}
+          priorDestinationCrs="WAT"
+          priorArrival={{ date: '2026-09-22', time: '10:07' }}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+      await screen.findByRole('combobox', { name: 'From station' });
+      fireEvent.change(screen.getByRole('combobox', { name: 'To station' }), { target: { value: 'CLJ' } });
+    }
+
+    function addTyped(label: string, code: string) {
+      const input = screen.getByRole('combobox', { name: label });
+      fireEvent.change(input, { target: { value: code } });
+      fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    }
+
+    async function submittedBody(): Promise<Record<string, unknown>> {
+      fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+      await waitFor(() => expect(legPosts()).toHaveLength(1));
+      return JSON.parse(String(legPosts()[0]?.[1]?.body)) as Record<string, unknown>;
+    }
+
+    it("offers the /trains Operator field, by name, and sends the picked operators with the leg's pre-fills", async () => {
+      await openAfterAWaterlooArrival();
+
+      fireEvent.click(screen.getByRole('combobox', { name: 'Operator (optional)' }));
+      const options = await screen.findAllByRole('option');
+      expect(options.map((option) => option.textContent)).toEqual([
+        'GW · Great Western Railway',
+        'SW · South Western Railway',
+        'QC',
+      ]);
+      fireEvent.click(screen.getByRole('option', { name: 'SW · South Western Railway' }));
+      fireEvent.click(screen.getByRole('option', { name: 'QC' }));
+
+      expect(await submittedBody()).toEqual({
+        mode: 'window',
+        originCrs: 'WAT',
+        destinationCrs: 'CLJ',
+        serviceDate: '2026-09-22',
+        departWindow: { after: '10:07', before: null },
+        arriveWindow: { after: null, before: null },
+        filters: { operator: 'SW,QC' },
+      });
+    });
+
+    it('keeps Advanced options collapsed, scoped to the leg, with every Between stations option', async () => {
+      await openAfterAWaterlooArrival();
+      const toggle = screen.getByRole('button', { name: 'Advanced options' });
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByRole('combobox', { name: 'Starts at' })).not.toBeInTheDocument();
+
+      fireEvent.click(toggle);
+      expect(await screen.findByRole('combobox', { name: 'Starts at' })).toBeInTheDocument();
+      for (const label of [
+        'Previously calls at (in order)',
+        'Previously stops at (in order)',
+        'Terminates at',
+        'Call at (in order)',
+        'Pass through (in order)',
+        'Avoid completely',
+        "Don't stop at",
+      ]) {
+        expect(screen.getByRole('combobox', { name: label })).toBeInTheDocument();
+      }
+      expect(
+        screen.getByText('To find a particular train, these look at where it has been before WAT.'),
+      ).toBeInTheDocument();
+      expect(screen.getByText("These look at the train's route between WAT and CLJ.")).toBeInTheDocument();
+    });
+
+    it('sends each advanced option under its own name, and counts their kinds once the leg is added', async () => {
+      await openAfterAWaterlooArrival();
+      fireEvent.click(screen.getByRole('button', { name: 'Advanced options' }));
+      await screen.findByRole('combobox', { name: 'Starts at' });
+
+      fireEvent.change(screen.getByRole('combobox', { name: 'Starts at' }), { target: { value: 'wok' } });
+      addTyped('Previously calls at (in order)', 'wok');
+      addTyped('Previously stops at (in order)', 'sur');
+      fireEvent.change(screen.getByRole('combobox', { name: 'Terminates at' }), { target: { value: 'vic' } });
+      addTyped('Call at (in order)', 'vxh');
+      addTyped('Pass through (in order)', 'qrp');
+      addTyped('Avoid completely', 'eus');
+      addTyped("Don't stop at", 'ewr');
+      expect(screen.getByRole('button', { name: 'Advanced options (8 set)' })).toBeInTheDocument();
+
+      expect((await submittedBody()).filters).toEqual({
+        startsAt: 'WOK',
+        previouslyCallsAt: 'WOK',
+        previouslyStopsAt: 'SUR',
+        terminatesAt: 'VIC',
+        callsAt: 'VXH',
+        via: 'QRP',
+        avoid: 'EUS',
+        avoidStop: 'EWR',
+      });
+      await waitFor(() => expect(trackFeature).toHaveBeenCalledTimes(8));
+      expect(
+        vi
+          .mocked(trackFeature)
+          .mock.calls.map(([, step]) => step)
+          .sort(),
+      ).toEqual([
+        'avoid',
+        'avoid_stop',
+        'calls_at',
+        'origin',
+        'previously_calls_at',
+        'previously_stops_at',
+        'terminates_at',
+        'via',
+      ]);
+    });
+
+    it("refuses an option that contradicts the leg's stations, as /trains does, and won't add the leg", async () => {
+      await openAfterAWaterlooArrival();
+      fireEvent.click(screen.getByRole('button', { name: 'Advanced options' }));
+      await screen.findByRole('combobox', { name: 'Starts at' });
+
+      addTyped('Avoid completely', 'clj');
+      expect(await screen.findByText(/CLJ\)? is where you get off, so it can't be avoided\./)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
+
+      fireEvent.click(screen.getByRole('button', { name: /^Remove .*CLJ/ }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Add leg' })).toBeEnabled());
+      fireEvent.change(screen.getByRole('combobox', { name: 'Starts at' }), { target: { value: 'wo' } });
+      expect(screen.getByText('Must be a 3-letter station code')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
+    });
+
+    it('sends no filters when none is set, and starts empty on every open', async () => {
+      await openAfterAWaterlooArrival();
+      fireEvent.click(screen.getByRole('combobox', { name: 'Operator (optional)' }));
+      fireEvent.click(await screen.findByRole('option', { name: 'GW · Great Western Railway' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+      await waitFor(() => expect(screen.queryByRole('combobox', { name: 'From station' })).not.toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+      await screen.findByRole('combobox', { name: 'From station' });
+      fireEvent.change(screen.getByRole('combobox', { name: 'To station' }), { target: { value: 'CLJ' } });
+      const body = await submittedBody();
+      expect(body).not.toHaveProperty('filters');
+      expect(trackFeature).not.toHaveBeenCalled();
+    });
+
+    it('keeps the "Add a leg at the start" pre-fills with an operator filter', async () => {
+      renderWithMantine(
+        <AddJourneyLegButton
+          journeyId={1}
+          priorDestinationCrs={null}
+          beforeLegId={7}
+          nextLegStart={{ place: 'London Waterloo', crs: 'WAT', departure: { date: '2026-10-21', time: '09:30' } }}
+          label="Add a leg at the start"
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Add a leg at the start' }));
+      expect(await screen.findByRole('combobox', { name: 'To station' })).toHaveValue('London Waterloo (WAT)');
+      expect(screen.getByLabelText('Latest arrival (optional)')).toHaveValue('09:30');
+      fireEvent.change(screen.getByRole('combobox', { name: 'From station' }), { target: { value: 'WOK' } });
+      fireEvent.click(screen.getByRole('combobox', { name: 'Operator (optional)' }));
+      fireEvent.click(await screen.findByRole('option', { name: 'SW · South Western Railway' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+
+      await waitFor(() => expect(legPosts()).toHaveLength(1));
+      expect(legPosts()[0]?.[0]).toBe('/api/Journeys/1/legs?before=7');
+      expect(JSON.parse(String(legPosts()[0]?.[1]?.body))).toEqual({
+        mode: 'window',
+        originCrs: 'WOK',
+        destinationCrs: 'WAT',
+        serviceDate: '2026-10-21',
+        departWindow: { after: null, before: null },
+        arriveWindow: { after: null, before: '09:30' },
+        filters: { operator: 'SW' },
+      });
     });
   });
 });

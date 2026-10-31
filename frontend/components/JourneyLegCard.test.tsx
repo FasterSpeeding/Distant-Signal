@@ -632,8 +632,10 @@ describe('JourneyLegCard: Edit search', () => {
     vi.stubGlobal('fetch', fetchMock);
     return fetchMock;
   }
+  /** The calls to this leg's routes whose URL holds `part` (the Operator
+   * field's own `/api/trains/search/operators` left out). */
   const calls = (fetchMock: ReturnType<typeof mockApi>, part: string) =>
-    fetchMock.mock.calls.filter(([input]) => String(input).includes(part));
+    fetchMock.mock.calls.filter(([input]) => String(input).includes(part) && String(input).includes('/legs/'));
 
   beforeEach(() => {
     pushMock.mockClear();
@@ -673,6 +675,48 @@ describe('JourneyLegCard: Edit search', () => {
     expect(screen.getByRole('button', { name: 'Search' })).toBeEnabled();
   });
 
+  it("names the leg's saved filters over its candidates, and Edit search keeps them, sends them and saves them", async () => {
+    const fetchMock = mockApi();
+    renderWithMantine(
+      <JourneyLegCard
+        journeyId={7}
+        isOwner
+        isOnlyLeg={false}
+        leg={openLeg({
+          id: 3,
+          departAfter: '08:00:00',
+          windowSearched: true,
+          searchFilters: { operator: 'GR', callsAt: 'YRK' },
+        })}
+      />,
+    );
+    // The api applies the saved filters itself: the plain list sends none.
+    await waitFor(() =>
+      expect(calls(fetchMock, '/candidates').map(([input]) => String(input))).toContain(
+        '/api/Journeys/7/legs/3/candidates',
+      ),
+    );
+    expect(await screen.findByText(/^Search filters: Operator GR · Call at /)).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit search' }));
+    expect(screen.getByRole('button', { name: /^Advanced options \(1 set\)/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() =>
+      expect(calls(fetchMock, '/candidates').map(([input]) => String(input))).toContain(
+        '/api/Journeys/7/legs/3/candidates?origin=KGX&destination=EDB&serviceDate=2026-09-22&departAfter=08%3A00&operator=GR&callsAt=YRK',
+      ),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: /^Track this train: 10:32/ }));
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+    expect((JSON.parse(String(calls(fetchMock, '/train')[0]?.[1]?.body)) as { search: unknown }).search).toMatchObject({
+      filters: { operator: 'GR', callsAt: 'YRK' },
+    });
+  });
+
   it('re-searches this leg in place, and the pick saves the search to it, with no new journey', async () => {
     const fetchMock = mockApi();
     renderWithMantine(
@@ -710,6 +754,7 @@ describe('JourneyLegCard: Edit search', () => {
         destinationCrs: 'YRK',
         departWindow: { after: '08:00', before: '10:45' },
         arriveWindow: { after: null, before: null },
+        filters: null,
       },
     });
     // Never the track-a-new-train flow: no POST /Journeys, no navigation,
@@ -760,6 +805,7 @@ describe('JourneyLegCard: Edit search', () => {
       destinationCrs: 'YRK',
       departWindow: { after: null, before: null },
       arriveWindow: { after: null, before: '18:00' },
+      filters: null,
     });
   });
 
@@ -785,6 +831,7 @@ describe('JourneyLegCard: Edit search', () => {
       destinationCrs: 'YRK',
       departWindow: { after: '17:00', before: null },
       arriveWindow: { after: null, before: null },
+      filters: null,
     });
   });
 

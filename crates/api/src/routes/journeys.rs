@@ -343,6 +343,10 @@ enum AddJourneyLegRequest {
         #[serde(default)]
         destination_crs: Option<String>,
     },
+    /// An open time-window search, as `CreateJourneyLegRequest::Window`,
+    /// plus `filters` (DS-215): the Trains section's Between stations
+    /// filters, saved with the leg so its candidates list only the trains
+    /// they allow (`routes::trains::leg_filters`).
     Window {
         origin_crs: String,
         destination_crs: String,
@@ -351,6 +355,8 @@ enum AddJourneyLegRequest {
         depart_window: TimeWindow,
         #[serde(default)]
         arrive_window: TimeWindow,
+        #[serde(default)]
+        filters: Option<journeys::LegSearchFilters>,
     },
     /// A leg we have no data for: a Tube ride, a bus, a walk (spec
     /// 2026-10-20-untracked-legs-and-tracked-train-states-design.md §2.4).
@@ -1112,6 +1118,7 @@ async fn post_journey_leg(
             service_date,
             depart_window,
             arrive_window,
+            filters,
         } => {
             journeys::validate_window_leg(
                 &origin_crs,
@@ -1124,17 +1131,35 @@ async fn post_journey_leg(
             // subscription yet, but picking its train makes one.
             crate::routes::train::enforce_tracking_horizon(service_date)?;
             crate::routes::train::enforce_pin_cap(&app, &user.id).await?;
+            let origin_crs = origin_crs.trim().to_ascii_uppercase();
+            let destination_crs = destination_crs.trim().to_ascii_uppercase();
+            // The Between stations search's own checks, before the leg is
+            // saved: a filter its candidates would refuse is a 400 now.
+            let filters = match filters {
+                Some(filters) => {
+                    crate::routes::trains::leg_filters::check(
+                        &app,
+                        &filters,
+                        &origin_crs,
+                        &destination_crs,
+                        service_date,
+                    )
+                    .await?
+                }
+                None => None,
+            };
 
             let added = journeys::add_window_leg_to_journey_at(
                 &app.database,
                 journey_id,
                 &user.id,
-                &origin_crs.trim().to_ascii_uppercase(),
-                &destination_crs.trim().to_ascii_uppercase(),
+                &origin_crs,
+                &destination_crs,
                 service_date,
                 depart_window,
                 arrive_window,
                 before,
+                filters.as_ref(),
             )
             .await
             .map_err(internal_error("add leg to journey (window)"))?;
@@ -1455,6 +1480,11 @@ struct JourneyLegDetailResponse {
     /// text and on a train leg.
     origin_stop_id: Option<String>,
     destination_stop_id: Option<String>,
+    /// A window leg's search filters (DS-215, additive 2026-10-31): the
+    /// Between stations filters its candidates apply,
+    /// `journeys::LegSearchFilters`'s camelCase keys, unset ones absent;
+    /// `null` when it has none.
+    search_filters: Option<journeys::LegSearchFilters>,
     /// The change onto this leg from the one before, judged server-side on
     /// live times with the station's minimum change time (spec 2026-10-22
     /// §5.1, `data::journey_feasibility`). `null` on the first leg; absent
@@ -2059,6 +2089,7 @@ async fn build_journey_detail_response(
             untracked_status,
             origin_stop_id: leg.origin_stop_id,
             destination_stop_id: leg.destination_stop_id,
+            search_filters: leg.search_filters.map(|filters| filters.0),
             connection,
             replaces_leg_ids: Vec::new(),
         });
@@ -2217,9 +2248,45 @@ struct CandidatesParams {
     arrive_after: Option<String>,
     #[serde(rename = "arriveBefore")]
     arrive_before: Option<String>,
+    /// An edited search's filters (DS-215), the same values as
+    /// `journeys::LegSearchFilters` (and `operator` above): only with
+    /// `origin`, `destination` and `serviceDate`, whose search then has
+    /// exactly these filters. Without an edited search the leg's stored
+    /// filters apply, `operator` replacing its stored operator.
+    #[serde(rename = "startsAt")]
+    starts_at: Option<String>,
+    #[serde(rename = "terminatesAt")]
+    terminates_at: Option<String>,
+    #[serde(rename = "previouslyCallsAt")]
+    previously_calls_at: Option<String>,
+    #[serde(rename = "previouslyStopsAt")]
+    previously_stops_at: Option<String>,
+    #[serde(rename = "callsAt")]
+    calls_at: Option<String>,
+    via: Option<String>,
+    avoid: Option<String>,
+    #[serde(rename = "avoidStop")]
+    avoid_stop: Option<String>,
 }
 
 impl CandidatesParams {
+    /// The edited search's filters, `operator` left to
+    /// [`candidate_operators`].
+    fn filters(&self) -> journeys::LegSearchFilters {
+        journeys::LegSearchFilters {
+            operator: None,
+            starts_at: self.starts_at.clone(),
+            terminates_at: self.terminates_at.clone(),
+            previously_calls_at: self.previously_calls_at.clone(),
+            previously_stops_at: self.previously_stops_at.clone(),
+            calls_at: self.calls_at.clone(),
+            via: self.via.clone(),
+            avoid: self.avoid.clone(),
+            avoid_stop: self.avoid_stop.clone(),
+        }
+        .trimmed()
+    }
+
     /// The search the request asks for instead of the leg's stored one, or
     /// `None` when it names none. A 400 for an incomplete or invalid one.
     fn search_override(&self) -> Result<Option<journeys::LegSearch>, (StatusCode, String)> {
@@ -2235,10 +2302,16 @@ impl CandidatesParams {
             &self.arrive_after,
             &self.arrive_before,
         ];
+        let bad = |msg: &str| (StatusCode::BAD_REQUEST, msg.to_string());
         if fields.iter().all(|value| given(value.as_ref()).is_none()) {
+            if !self.filters().is_empty() {
+                return Err(bad(
+                    "Filters other than operator need an edited search: origin, destination \
+                     and serviceDate.",
+                ));
+            }
             return Ok(None);
         }
-        let bad = |msg: &str| (StatusCode::BAD_REQUEST, msg.to_string());
         let (Some(origin), Some(destination), Some(service_date)) = (
             given(self.origin.as_ref()),
             given(self.destination.as_ref()),
@@ -2271,6 +2344,7 @@ impl CandidatesParams {
                 after: time(&self.arrive_after, "arriveAfter")?,
                 before: time(&self.arrive_before, "arriveBefore")?,
             },
+            filters: Some(self.filters()),
         };
         validate_leg_search(&search)?;
         Ok(Some(search))
@@ -2291,6 +2365,7 @@ fn stored_search(leg: &journeys::JourneyLegRow) -> Option<journeys::LegSearch> {
             after: leg.arrive_after,
             before: leg.arrive_before,
         },
+        filters: leg.search_filters.as_ref().map(|filters| filters.0.clone()),
     })
 }
 
@@ -2347,33 +2422,41 @@ async fn get_leg_candidates(
         .filter(|s| !s.trim().is_empty())
         .map(crate::routes::trains::decode_cursor)
         .transpose()?;
-    // Same comma-split/trim/drop-empty/empty-list-becomes-None logic as
-    // `routes::incidents::search_incidents`'s own `operators` parsing --
-    // deliberately duplicated, not factored into a shared helper, per this
-    // repo's established per-route convention (see `line_status.rs`/
-    // `trips.rs` doing the same independently).
-    let operators: Option<Vec<String>> = params.operator.as_deref().and_then(|raw| {
-        let list: Vec<String> = raw
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect();
-        if list.is_empty() { None } else { Some(list) }
-    });
-
-    let Some(page) = crate::data::queries::search_journey_leg_candidates(
-        &app.database,
+    // The search's filters (DS-215): an edited search's own, else the
+    // leg's stored ones. `operator` is read as it always was (any text,
+    // matching no train when it names no operator) and replaces the
+    // filters' own.
+    let mut filters = search.filters.clone().unwrap_or_default();
+    let operator_param = candidate_operators(params.operator.as_deref());
+    if operator_param.is_some() {
+        filters.operator = None;
+    }
+    let resolved = crate::routes::trains::leg_filters::resolve(
+        &app,
+        &filters,
         &search.origin_crs,
         &search.destination_crs,
-        search.service_date,
-        search.depart_window.after,
-        search.depart_window.before,
-        search.arrive_window.after,
-        search.arrive_window.before,
-        operators,
-        after.as_ref(),
-        limit,
+    )
+    .await?;
+    let operators = operator_param.or(resolved.operators);
+
+    let Some(page) = crate::data::queries::search_journey_leg_candidates_filtered(
+        &app.database,
+        &crate::data::queries::LegCandidateSearch {
+            origin_crs: &search.origin_crs,
+            destination_crs: &search.destination_crs,
+            service_date: search.service_date,
+            depart_after: search.depart_window.after,
+            depart_before: search.depart_window.before,
+            arrive_after: search.arrive_window.after,
+            arrive_before: search.arrive_window.before,
+            operators: operators.as_deref(),
+            starts_at: resolved.starts_at.as_deref(),
+            terminates_at: resolved.terminates_at.as_deref(),
+            stop_filter: resolved.stop_filter.as_ref(),
+            after: after.as_ref(),
+            limit,
+        },
     )
     .await
     .map_err(internal_error("search journey leg candidates"))?
@@ -2422,6 +2505,23 @@ async fn get_leg_candidates(
         "results": results,
         "nextCursor": page.next_cursor.as_ref().map(crate::routes::trains::encode_cursor),
     })))
+}
+
+/// `GET .../candidates`'s `operator`: comma-split, trimmed, upper-cased,
+/// empty entries dropped, `None` when nothing is left -- the same
+/// comma-split/trim/drop-empty/empty-list-becomes-None logic as
+/// `routes::incidents::search_incidents`'s own `operators` parsing,
+/// deliberately duplicated per this repo's per-route convention (see
+/// `line_status.rs`/`trips.rs`). Never a `400`: the leg card's operator
+/// field sends what is typed as it is typed.
+fn candidate_operators(raw: Option<&str>) -> Option<Vec<String>> {
+    let list: Vec<String> = raw?
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_uppercase)
+        .collect();
+    (!list.is_empty()).then_some(list)
 }
 
 /// `render::calling_point_departure_json`'s output plus the three fields
@@ -2560,6 +2660,10 @@ struct MatchLegSearch {
     depart_window: TimeWindow,
     #[serde(default)]
     arrive_window: TimeWindow,
+    /// The search's filters (DS-215), saved with it; absent or empty
+    /// clears the leg's.
+    #[serde(default)]
+    filters: Option<journeys::LegSearchFilters>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2612,7 +2716,7 @@ async fn post_leg_train(
     // normalizes a hand-typed lowercase uid before it can mint an
     // unattributable `trains` row.
     let train_uid = body.train_uid.trim().to_ascii_uppercase();
-    let search = body
+    let mut search = body
         .search
         .map(|search| journeys::LegSearch {
             origin_crs: search.origin_crs.trim().to_ascii_uppercase(),
@@ -2620,9 +2724,24 @@ async fn post_leg_train(
             service_date: body.service_date,
             depart_window: search.depart_window,
             arrive_window: search.arrive_window,
+            filters: search.filters,
         })
         .map(|search| validate_leg_search(&search).map(|()| search))
         .transpose()?;
+    // The edited search's filters, checked and normalized as adding a
+    // window leg checks them.
+    if let Some(search) = search.as_mut()
+        && let Some(filters) = search.filters.take()
+    {
+        search.filters = crate::routes::trains::leg_filters::check(
+            &app,
+            &filters,
+            &search.origin_crs,
+            &search.destination_crs,
+            search.service_date,
+        )
+        .await?;
+    }
     // The pin's 28-day horizon and per-user cap on the train picked (a
     // re-pick of a train the user already tracks reuses its subscription).
     crate::routes::train::enforce_tracking_horizon(body.service_date)?;
@@ -4186,6 +4305,222 @@ mod db_tests {
         assert_eq!(results[0]["operator"], "SW");
 
         cleanup_user(&pool, "TEST-ROUTE-CANDIDATES-OPERATOR").await;
+    }
+
+    /// DS-215: "Add a leg"'s window search saves the Between stations
+    /// filters with the leg (`filters`, checked like `/trains`'s), the
+    /// journey shows them (`searchFilters`), and the leg's candidates
+    /// apply them: `operator` and `startsAt` here (the stop filters' own
+    /// matching is `routes::trains`'s
+    /// `leg_candidates_apply_the_stop_filters_as_the_between_search_does`).
+    /// The card's `?operator=` replaces the stored operator; an edited
+    /// search carries only its own filters; a filter the `/trains` search
+    /// refuses is a 400 before anything is saved.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                window_leg_filters -- --ignored --test-threads=1`"]
+    async fn window_leg_filters_are_saved_shown_and_applied_to_its_candidates() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let token = seed_session(&pool, "TEST-ROUTE-WINDOW-LEG-FILTERS").await;
+        let router = test_router(test_app(pool.clone()));
+        let service_date =
+            chrono::NaiveDate::from_ymd_opt(2099, 5, 22).expect("valid fixture date");
+        let _day = fixture_day_cleanup(&pool, service_date).await;
+        let _picked = crate::test_support::FixtureCleanup::new(
+            &pool,
+            [format!(
+                "DELETE FROM trains WHERE service_date = '{service_date}' \
+                 AND train_uid LIKE 'LGF%'"
+            )],
+        )
+        .await;
+        let _now = crate::routes::pin_london_now_for_tests(
+            (service_date - chrono::Duration::days(1))
+                .and_hms_opt(12, 0, 0)
+                .expect("valid time")
+                .and_utc(),
+        );
+
+        let hm = |h, m| chrono::NaiveTime::from_hms_opt(h, m, 0).expect("valid time");
+        // (uid, operator, true origin, departs WAT, arrives RDG)
+        let trains = [
+            ("LGFSW1", "SW", Some("WAT"), hm(9, 0), hm(9, 30)),
+            ("LGFVT1", "VT", Some("WAT"), hm(9, 10), hm(9, 40)),
+            ("LGFSW2", "SW", Some("CLJ"), hm(9, 20), hm(9, 50)),
+        ];
+        let mut rows = Vec::new();
+        for (uid, operator, true_origin, departs, arrives) in trains {
+            for (origin, scheduled) in [("WAT", departs), ("RDG", arrives)] {
+                rows.push(crate::data::queries::ScheduleDestinationDeparturesRow {
+                    service_date,
+                    destination_crs: "RDG".to_string(),
+                    scheduled,
+                    day_offset: 0,
+                    train_uid: uid.to_string(),
+                    origin_crs: origin.to_string(),
+                    true_origin_crs: true_origin.map(str::to_string),
+                    calling_point_arrival: None,
+                    destination_arrival: Some(arrives),
+                    destination_arrival_day_offset: 0,
+                    operator_atoc: Some(operator.to_string()),
+                    headcode: None,
+                    rsid: None,
+                    ..Default::default()
+                });
+            }
+        }
+        crate::data::queries::upsert_schedule_destination_departures(&pool, &rows)
+            .await
+            .expect("seed fixture schedule_destination_departures rows");
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": {
+                    "mode": "window",
+                    "originCrs": "CLJ",
+                    "destinationCrs": "WAT",
+                    "serviceDate": service_date.to_string(),
+                    "departWindow": { "after": "07:00:00" }
+                }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let window_leg = |filters: Value| {
+            serde_json::json!({
+                "mode": "window",
+                "originCrs": "WAT",
+                "destinationCrs": "RDG",
+                "serviceDate": service_date.to_string(),
+                "departWindow": { "after": "08:00:00", "before": "11:00:00" },
+                "filters": filters,
+            })
+        };
+
+        // Refused before anything is saved: an avoided origin, an operator
+        // the timetable doesn't know, and the `/trains` name for Starts at.
+        for bad in [
+            serde_json::json!({"avoid": "WAT"}),
+            serde_json::json!({"operator": "ZZ"}),
+            serde_json::json!({"callsAt": "RDG"}),
+            serde_json::json!({"origin": "WAT"}),
+        ] {
+            let (status, body) = post_json(
+                router.clone(),
+                format!("/Journeys/{journey_id}/legs"),
+                Some(&token),
+                window_leg(bad.clone()),
+            )
+            .await;
+            assert!(
+                status.is_client_error(),
+                "{bad} must be refused: {status} {body:?}"
+            );
+        }
+
+        let (status, added) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&token),
+            window_leg(serde_json::json!({"operator": "sw", "startsAt": " wat "})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "add window leg: {added:?}");
+        let leg_id = added["legId"].as_i64().expect("legId present");
+
+        let (status, journey) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "journey: {journey:?}");
+        let legs = journey["legs"].as_array().expect("legs");
+        assert_eq!(legs.len(), 2, "the first leg, then the new one");
+        assert_eq!(legs[0]["searchFilters"], Value::Null);
+        assert_eq!(
+            legs[1]["searchFilters"],
+            serde_json::json!({"operator": "SW", "startsAt": "WAT"}),
+            "saved normalized"
+        );
+
+        let uids = |body: &Value| -> Vec<String> {
+            body["results"]
+                .as_array()
+                .expect("results is an array")
+                .iter()
+                .map(|r| r["uid"].as_str().expect("uid present").to_string())
+                .collect()
+        };
+        let candidates = |query: &str| {
+            let router = router.clone();
+            let uri = format!("/Journeys/{journey_id}/legs/{leg_id}/candidates{query}");
+            let token = token.clone();
+            async move { request(router, uri, Some(&token)).await }
+        };
+
+        let (status, body) = candidates("").await;
+        assert_eq!(status, StatusCode::OK, "stored filters: {body:?}");
+        assert_eq!(uids(&body), ["LGFSW1"]);
+
+        // The card's operator field replaces the stored operator; the
+        // stored Starts at stays.
+        let (status, body) = candidates("?operator=vt").await;
+        assert_eq!(status, StatusCode::OK, "operator replaced: {body:?}");
+        assert_eq!(uids(&body), ["LGFVT1"]);
+
+        // An edited search carries its own filters only.
+        let edited =
+            format!("?origin=WAT&destination=RDG&serviceDate={service_date}&departAfter=08:00");
+        let (status, body) = candidates(&edited).await;
+        assert_eq!(status, StatusCode::OK, "edited search: {body:?}");
+        assert_eq!(uids(&body), ["LGFSW1", "LGFVT1", "LGFSW2"]);
+        let (status, body) = candidates(&format!("{edited}&startsAt=CLJ")).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "edited search's own filter: {body:?}"
+        );
+        assert_eq!(uids(&body), ["LGFSW2"]);
+
+        // A filter other than operator only comes with an edited search.
+        let (status, _) = candidates("?startsAt=CLJ").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // Picking from an edited search saves its filters with it.
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}/train"),
+            Some(&token),
+            serde_json::json!({
+                "trainUid": "LGFSW2",
+                "serviceDate": service_date.to_string(),
+                "search": {
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "departWindow": { "after": "08:00:00" },
+                    "filters": {"startsAt": "clj"}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "pick: {body:?}");
+        let (_, journey) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(
+            journey["legs"][1]["searchFilters"],
+            serde_json::json!({"startsAt": "CLJ"})
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-WINDOW-LEG-FILTERS").await;
     }
 
     #[tokio::test]

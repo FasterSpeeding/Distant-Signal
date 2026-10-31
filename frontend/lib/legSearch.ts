@@ -1,12 +1,14 @@
 import { legDepartureInstant, londonDateTime } from './journeyLegChaining';
-import type { JourneyLegDetail } from './types';
+import type { JourneyLegDetail, LegSearchFilters } from './types';
 
 /** A train leg's window search, as "Edit search" on a journey leg holds it
  * once it is complete: the stations as codes, the London service date, and
  * up to four `'HH:MM'` bounds (at least one). What
  * `GET /Journeys/{id}/legs/{legId}/candidates` searches instead of the
  * leg's stored search (`legSearchQuery`), and what the pick saves as the
- * leg's own (`legSearchPickBody`), so the leg and its train always agree. */
+ * leg's own (`legSearchPickBody`), so the leg and its train always agree.
+ * `filters` are its Between stations filters (DS-215, `lib/legFilters.ts`),
+ * `null` for none: an edited search has only its own. */
 export interface LegSearch {
   originCrs: string;
   destinationCrs: string;
@@ -15,6 +17,7 @@ export interface LegSearch {
   departBefore: string | null;
   arriveAfter: string | null;
   arriveBefore: string | null;
+  filters: LegSearchFilters | null;
 }
 
 /** The form's text for one search, before it is checked. */
@@ -77,6 +80,7 @@ export function legSearchPrefill(leg: JourneyLegDetail): LegSearch | null {
     departBefore: null,
     arriveAfter: null,
     arriveBefore: null,
+    filters: null,
   };
 }
 
@@ -91,6 +95,7 @@ const DATE = /^\d{4}-\d{2}-\d{2}$/;
 export function legSearchFromDraft(
   draft: LegSearchDraft,
   stations: { origin: string | null; destination: string | null },
+  filters: LegSearchFilters | null = null,
 ): LegSearch | null {
   const time = (value: string) => (value.trim() === '' ? null : value.trim());
   const bounds = {
@@ -109,6 +114,7 @@ export function legSearchFromDraft(
     destinationCrs: stations.destination,
     serviceDate: draft.serviceDate,
     ...bounds,
+    filters,
   };
 }
 
@@ -123,6 +129,9 @@ export function legSearchQuery(search: LegSearch): URLSearchParams {
     const value = search[key];
     if (value !== null) params.set(key, value);
   }
+  for (const [key, value] of Object.entries(search.filters ?? {})) {
+    if (typeof value === 'string' && value !== '') params.set(key, value);
+  }
   return params;
 }
 
@@ -134,5 +143,6 @@ export function legSearchPickBody(search: LegSearch) {
     destinationCrs: search.destinationCrs,
     departWindow: { after: search.departAfter, before: search.departBefore },
     arriveWindow: { after: search.arriveAfter, before: search.arriveBefore },
+    filters: search.filters,
   };
 }

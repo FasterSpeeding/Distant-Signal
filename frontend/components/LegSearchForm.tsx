@@ -8,6 +8,8 @@ import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { legSearchDraftFromLeg, legSearchFromDraft, type LegSearch, type LegSearchDraft } from '@/lib/legSearch';
 import { resolveStationCode } from '@/lib/suggestionAutocomplete';
 import { StationField } from './StationField';
+import { LegFilterFields } from './LegFilterFields';
+import { legFilterErrors, legFiltersFromApi, legFiltersToApi, type LegFilters } from '@/lib/legFilters';
 import type { JourneyLegDetail } from '@/lib/types';
 
 type TimeField = 'departAfter' | 'departBefore' | 'arriveAfter' | 'arriveBefore';
@@ -22,9 +24,9 @@ type TimeField = 'departAfter' | 'departBefore' | 'arriveAfter' | 'arriveBefore'
  *
  * The same fields and rules as the "Search a time window" mode of "Add a
  * leg" (`AddJourneyLegButton`): station search by code or name, at least
- * one time, no earliest later than its latest. A window search has no via
- * or avoid stations, and the leg stores nothing else, so there is nothing
- * else to carry over. */
+ * one time, no earliest later than its latest, and the Trains section's
+ * Between stations filters (DS-215, `LegFilterFields`), opened with the
+ * leg's saved ones (`searchFilters`). */
 export function LegSearchForm({
   leg,
   initial = null,
@@ -56,11 +58,18 @@ export function LegSearchForm({
     arriveBefore: false,
   });
   const [touched, setTouched] = useState({ origin: false, destination: false });
+  const [filters, setFilters] = useState<LegFilters>(() =>
+    legFiltersFromApi(initial ? initial.filters : leg.searchFilters),
+  );
   // A picked station, or a typed name the field matched on blur, is its
   // code already (`StationField`).
   const origin = resolveStationCode(draft.origin, []);
   const destination = resolveStationCode(draft.destination, []);
-  const search = Object.values(incomplete).some(Boolean) ? null : legSearchFromDraft(draft, { origin, destination });
+  const filtersValid = Object.keys(legFilterErrors(filters, { origin, destination })).length === 0;
+  const search =
+    Object.values(incomplete).some(Boolean) || !filtersValid
+      ? null
+      : legSearchFromDraft(draft, { origin, destination }, legFiltersToApi(filters));
 
   const set = (patch: Partial<LegSearchDraft>) => setDraft((current) => ({ ...current, ...patch }));
   const stationError = (field: 'origin' | 'destination', code: string | null) =>
@@ -130,6 +139,7 @@ export function LegSearchForm({
           `Only trains reaching ${destination ?? 'the destination'} at or before this time.`,
         )}
       </Group>
+      <LegFilterFields filters={filters} onChange={setFilters} origin={origin} destination={destination} />
       <Group gap="xs">
         <Button size="xs" disabled={search === null} onClick={() => search && onSearch(search)}>
           Search
