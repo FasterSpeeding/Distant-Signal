@@ -335,6 +335,7 @@ fn chain_from_stops(uid: &str, date: NaiveDate, stops: &[JourneyStop]) -> Vec<Co
         .filter_map(|pair| {
             let (from, to) = (&pair[0], &pair[1]);
             Some(Connection {
+                operator: schedule_query::OperatorId::UNKNOWN,
                 uid: uid.to_string().into(),
                 from_tiploc: from.tiploc.clone().into(),
                 to_tiploc: to.tiploc.clone().into(),
@@ -607,6 +608,7 @@ mod tests {
         data.fixed_links_from_crs = schedule_query::index_fixed_links_both_ways([(
             "KGX".to_string(),
             FixedLink {
+                operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "WALK".to_string(),
                 to_crs: "STP".to_string(),
                 minutes: 6,

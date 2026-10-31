@@ -21,6 +21,7 @@ use trip_planner::{
 
 fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
     Connection {
+        operator: schedule_query::OperatorId::UNKNOWN,
         uid: uid.to_string().into(),
         from_tiploc: from.to_string().into(),
         to_tiploc: to.to_string().into(),
@@ -35,6 +36,7 @@ fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
 
 fn walk(to_crs: &str, minutes: i32) -> FixedLink {
     FixedLink {
+        operator: schedule_query::OperatorId::UNKNOWN,
         mode: "WALK".to_string(),
         to_crs: to_crs.to_string(),
         minutes,

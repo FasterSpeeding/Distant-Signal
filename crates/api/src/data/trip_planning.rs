@@ -240,6 +240,7 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
                 (
                     row.from_crs,
                     FixedLink {
+                        operator: schedule_query::OperatorId::UNKNOWN,
                         mode: row.mode,
                         to_crs: row.to_crs,
                         minutes: row.minutes,
@@ -286,6 +287,7 @@ pub fn supplementary_link_rows(
         (
             link.from_crs.clone(),
             FixedLink {
+                operator: schedule_query::OperatorId::UNKNOWN,
                 mode: link.mode.clone(),
                 to_crs: link.to_crs.clone(),
                 minutes: link.minutes,
@@ -345,6 +347,7 @@ pub fn add_parent_walk_links(
             .and_then(|row| row.walk_minutes);
         let walk = common::tiploc_parents::walk_minutes(link.distance_m, curated_minutes);
         let walk_link = |to_crs: &str, minutes: i32| FixedLink {
+            operator: schedule_query::OperatorId::UNKNOWN,
             mode: PARENT_WALK_MODE.to_string(),
             to_crs: to_crs.to_string(),
             minutes,
@@ -508,6 +511,10 @@ pub struct PlanningGraph {
     /// data instead of `interchange` (see `data::transit_planning`). `None`
     /// with the switch empty.
     pub transit: Option<crate::data::transit_planning::TransitGraph>,
+    /// The date's UID -> operator (operator filtering spec §6.1), from
+    /// `schedule_services`: what `connections`' `operator` was set from, and
+    /// what leg details and replans read a train's operator from.
+    pub operators: crate::data::planner_operators::OperatorTable,
 }
 
 /// When `schedule-reference` last finished publishing a delivery
@@ -964,6 +971,7 @@ mod parent_walk_tests {
 
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         Connection {
+            operator: schedule_query::OperatorId::UNKNOWN,
             uid: uid.to_string().into(),
             from_tiploc: from.to_string().into(),
             to_tiploc: to.to_string().into(),
@@ -1309,6 +1317,7 @@ mod supplementary_link_tests {
         let alf = (
             "EUS".to_string(),
             FixedLink {
+                operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "TUBE".to_string(),
                 to_crs: "VXH".to_string(),
                 minutes: 22,
@@ -1345,6 +1354,7 @@ mod supplementary_link_tests {
         (
             from.to_string(),
             FixedLink {
+                operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "TUBE".to_string(),
                 to_crs: to.to_string(),
                 minutes,
@@ -1395,6 +1405,7 @@ mod supplementary_link_tests {
             ..InterchangeData::default()
         };
         let connections = vec![Connection {
+            operator: schedule_query::OperatorId::UNKNOWN,
             uid: "LM1".to_string().into(),
             from_tiploc: "MKNSCEN".to_string().into(),
             to_tiploc: "EUSTON".to_string().into(),

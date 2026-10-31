@@ -25,10 +25,14 @@
 //!   passes an avoided station, its base connections in order with the
 //!   blocked ones marked. (`avoid`.)
 //!
-//! A fourth, [`Restrictions::with_allowed_uids`], keeps the searches to
-//! some trains only (journey alternatives' "same operator" search, mid-
-//! journey changes spec 2026-10-22 §17.7): every other train's connections
-//! are blocked, so it is never boarded.
+//! A fourth, [`Restrictions::with_operator_rule`], keeps the searches to
+//! some operators, or away from some ([`OperatorRule`]; the planner
+//! operator filtering spec, docs/superpowers/specs/2026-10-31-planner-
+//! operator-filtering-design.md, §6.3). It reads each connection's
+//! `operator` id, one array read, and blocks the connections the rule
+//! refuses, so their trains are never boarded. Its first user is the
+//! journey alternatives' "same operator" search (mid-journey changes spec
+//! 2026-10-22 §17.7), which used to list the allowed trains by UID.
 //!
 //! A blocked connection must also END the ride on that train: both searches
 //! decide "already aboard" by UID alone, so merely skipping the connection
@@ -40,7 +44,88 @@
 
 use std::collections::{HashMap, HashSet};
 
-use schedule_query::{Connection, normalize_tiploc};
+use schedule_query::{Connection, FixedLink, OperatorId, OperatorMask, normalize_tiploc};
+
+/// Which operators a search may ride (spec §5.1-5.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperatorMode {
+    /// Only these operators.
+    Only,
+    /// Any operator but these.
+    Avoid,
+}
+
+/// What an [`OperatorRule`] looks at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorScope {
+    /// Everything with an operator: CIF connections, transit trips and
+    /// attributed fixed links (a `/Trips/plan` operator filter: one
+    /// operator, every way of riding it, spec §5.1).
+    Everything,
+    /// CIF connections only (ATOC codes): transit trips and links always
+    /// pass. A ticket's "same operator" search: a ticket valid on one
+    /// operator's trains still allows the Tube across London.
+    CifTrains,
+}
+
+/// An operator filter (spec §6.3). An unknown operator always passes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorRule {
+    pub mode: OperatorMode,
+    pub operators: OperatorMask,
+    pub scope: OperatorScope,
+}
+
+impl OperatorRule {
+    /// Only `operators`, everywhere.
+    #[must_use]
+    pub fn only(operators: OperatorMask) -> Self {
+        Self {
+            mode: OperatorMode::Only,
+            operators,
+            scope: OperatorScope::Everything,
+        }
+    }
+
+    /// Never `operators`, everywhere.
+    #[must_use]
+    pub fn avoid(operators: OperatorMask) -> Self {
+        Self {
+            mode: OperatorMode::Avoid,
+            operators,
+            scope: OperatorScope::Everything,
+        }
+    }
+
+    /// This rule, applied to CIF trains only.
+    #[must_use]
+    pub fn cif_trains_only(mut self) -> Self {
+        self.scope = OperatorScope::CifTrains;
+        self
+    }
+
+    /// Whether something run by `operator` may be ridden.
+    #[must_use]
+    #[inline]
+    pub fn allows(&self, operator: OperatorId) -> bool {
+        if operator.is_unknown()
+            || (self.scope == OperatorScope::CifTrains && operator.ds_operator().is_some())
+        {
+            return true;
+        }
+        match self.mode {
+            OperatorMode::Only => self.operators.contains(operator),
+            OperatorMode::Avoid => !self.operators.contains(operator),
+        }
+    }
+
+    /// Whether `link` may be used: walks always, links only under
+    /// [`OperatorScope::Everything`].
+    #[must_use]
+    pub fn allows_link(&self, link: &FixedLink) -> bool {
+        link.is_walk() || self.scope == OperatorScope::CifTrains || self.allows(link.operator)
+    }
+}
 
 /// One base connection of a train that passes an avoided station, in the
 /// train's own order. `blocked` when its span includes an avoided TIPLOC
@@ -58,8 +143,13 @@ pub struct Restrictions {
     no_interchange: HashSet<String>,
     no_call: HashSet<String>,
     pass_legs: HashMap<String, Vec<PassLeg>>,
-    /// When set, only these trains (UIDs) may be ridden.
-    allowed_uids: Option<HashSet<String>>,
+    /// When set, the operators that may (or may not) be ridden.
+    operator_rule: Option<OperatorRule>,
+    /// `no_call` or `pass_legs` is non-empty: [`Self::blocks`] has station
+    /// rules to check. Without them it skips normalizing both TIPLOCs on
+    /// every connection, which cost about a quarter of a restricted
+    /// Connection Scan (operator filtering spec §7.2).
+    has_station_rules: bool,
 }
 
 impl Restrictions {
@@ -80,7 +170,7 @@ impl Restrictions {
             .map(|t| normalize_tiploc(&t).to_string())
             .collect();
         no_interchange.extend(no_call.iter().cloned());
-        let pass_legs = pass_legs
+        let pass_legs: HashMap<String, Vec<PassLeg>> = pass_legs
             .into_iter()
             .map(|(uid, legs)| {
                 let legs = legs
@@ -94,19 +184,45 @@ impl Restrictions {
                 (uid, legs)
             })
             .collect();
+        let has_station_rules = !no_call.is_empty() || !pass_legs.is_empty();
         Self {
             no_interchange,
             no_call,
             pass_legs,
-            allowed_uids: None,
+            operator_rule: None,
+            has_station_rules,
         }
     }
 
-    /// These restrictions, riding only the trains in `uids`.
+    /// These restrictions, riding only what `rule` allows.
     #[must_use]
-    pub fn with_allowed_uids(mut self, uids: HashSet<String>) -> Self {
-        self.allowed_uids = Some(uids);
+    pub fn with_operator_rule(mut self, rule: OperatorRule) -> Self {
+        self.operator_rule = Some(rule);
         self
+    }
+
+    /// The operator rule, if any.
+    #[must_use]
+    pub fn operator_rule(&self) -> Option<&OperatorRule> {
+        self.operator_rule.as_ref()
+    }
+
+    /// These restrictions without their operator rule (what an empty
+    /// result is explained against).
+    #[must_use]
+    pub fn without_operator_rule(&self) -> Self {
+        Self {
+            operator_rule: None,
+            ..self.clone()
+        }
+    }
+
+    /// Whether `link` may be walked or ridden under the operator rule.
+    #[must_use]
+    pub fn allows_link(&self, link: &FixedLink) -> bool {
+        self.operator_rule
+            .as_ref()
+            .is_none_or(|rule| rule.allows_link(link))
     }
 
     /// These restrictions plus more `no_interchange` and `no_call` TIPLOCs
@@ -124,6 +240,7 @@ impl Restrictions {
             copy.no_interchange.insert(tiploc.clone());
             copy.no_call.insert(tiploc);
         }
+        copy.has_station_rules = !copy.no_call.is_empty() || !copy.pass_legs.is_empty();
         copy.no_interchange.extend(
             no_interchange
                 .into_iter()
@@ -136,12 +253,12 @@ impl Restrictions {
         self.no_interchange.is_empty()
             && self.no_call.is_empty()
             && self.pass_legs.is_empty()
-            && self.allowed_uids.is_none()
+            && self.operator_rule.is_none()
     }
 
     /// Whether a ride may start or end at `tiploc` (or a walk touch it).
     pub fn allows_interchange(&self, tiploc: &str) -> bool {
-        !self.no_interchange.contains(normalize_tiploc(tiploc))
+        self.no_interchange.is_empty() || !self.no_interchange.contains(normalize_tiploc(tiploc))
     }
 
     /// Whether `connection` is unusable: it calls at a `no_call` TIPLOC, or
@@ -152,13 +269,17 @@ impl Restrictions {
     /// between was cancelled) is blocked when any base leg it spans is, and
     /// also -- conservatively -- when it cannot be placed on the train's base
     /// order at all.
+    #[inline]
     pub fn blocks(&self, connection: &Connection) -> bool {
         if self
-            .allowed_uids
+            .operator_rule
             .as_ref()
-            .is_some_and(|allowed| !allowed.contains(connection.uid.as_str()))
+            .is_some_and(|rule| !rule.allows(connection.operator))
         {
             return true;
+        }
+        if !self.has_station_rules {
+            return false;
         }
         let from = normalize_tiploc(&connection.from_tiploc);
         let to = normalize_tiploc(&connection.to_tiploc);
@@ -199,6 +320,7 @@ mod tests {
 
     fn conn(uid: &str, from: &str, to: &str) -> Connection {
         Connection {
+            operator: OperatorId::UNKNOWN,
             uid: uid.to_string().into(),
             from_tiploc: from.to_string().into(),
             to_tiploc: to.to_string().into(),
@@ -229,29 +351,146 @@ mod tests {
         assert!(r.allows_interchange("COV"));
     }
 
+    fn atoc(code: &str) -> OperatorId {
+        OperatorId::from_atoc(code).unwrap()
+    }
+
+    fn run_by(uid: &str, operator: OperatorId) -> Connection {
+        Connection {
+            operator,
+            ..conn(uid, "A", "B")
+        }
+    }
+
+    fn mask(codes: &[&str]) -> OperatorMask {
+        OperatorMask::of(codes.iter().map(|c| OperatorId::from_code(c).unwrap()))
+    }
+
     #[test]
-    fn allowed_uids_block_every_other_train() {
-        let r = Restrictions::default().with_allowed_uids(HashSet::from(["U".to_string()]));
+    fn only_blocks_every_other_operator_and_unknown_passes() {
+        let r = Restrictions::default().with_operator_rule(OperatorRule::only(mask(&["VT"])));
         assert!(!r.is_empty());
-        assert!(!r.blocks(&conn("U", "A", "B")));
-        assert!(r.blocks(&conn("V", "A", "B")));
+        assert!(!r.blocks(&run_by("U", atoc("VT"))));
+        assert!(r.blocks(&run_by("V", atoc("GR"))));
+        assert!(!r.blocks(&run_by("W", OperatorId::UNKNOWN)));
+        // A transit trip is an operator too, under the default scope.
+        let metrolink = OperatorId::ds(schedule_query::DsOperator::Metrolink);
+        assert!(r.blocks(&run_by("metrolink:1", metrolink)));
         assert!(r.allows_interchange("A"));
     }
 
     #[test]
-    fn allowed_uids_keep_both_searches_to_those_trains() {
-        // V is faster, U slower; only U allowed.
-        let connections = vec![timed("V", "A", "D", 10, 20), timed("U", "A", "D", 15, 40)];
-        let r = Restrictions::default().with_allowed_uids(HashSet::from(["U".to_string()]));
+    fn avoid_blocks_only_its_operators() {
+        let r =
+            Restrictions::default().with_operator_rule(OperatorRule::avoid(mask(&["VT", "LT"])));
+        assert!(r.blocks(&run_by("U", atoc("VT"))));
+        assert!(r.blocks(&run_by("U", atoc("LT"))));
+        assert!(!r.blocks(&run_by("V", atoc("GR"))));
+        assert!(!r.blocks(&run_by("W", OperatorId::UNKNOWN)));
+    }
+
+    #[test]
+    fn cif_trains_scope_lets_transit_and_links_through() {
+        let r = Restrictions::default()
+            .with_operator_rule(OperatorRule::only(mask(&["GR"])).cif_trains_only());
+        let metrolink = OperatorId::ds(schedule_query::DsOperator::Metrolink);
+        assert!(!r.blocks(&run_by("metrolink:1", metrolink)));
+        assert!(r.blocks(&run_by("U", atoc("VT"))));
+        assert!(r.allows_link(&fixed("TUBE", OperatorId::LONDON_UNDERGROUND)));
+    }
+
+    fn fixed(mode: &str, operator: OperatorId) -> FixedLink {
+        FixedLink {
+            mode: mode.to_string(),
+            to_crs: "VIC".to_string(),
+            minutes: 10,
+            valid_from: "0000".to_string(),
+            valid_to: "2359".to_string(),
+            days_mask: "1111111".to_string(),
+            operator,
+        }
+    }
+
+    #[test]
+    fn links_follow_the_rule_but_walks_always_pass() {
+        let lu = OperatorId::LONDON_UNDERGROUND;
+        let only_vt = Restrictions::default().with_operator_rule(OperatorRule::only(mask(&["VT"])));
+        assert!(!only_vt.allows_link(&fixed("TUBE", lu)));
+        assert!(!only_vt.allows_link(&fixed("TRANSFER", lu)));
+        assert!(only_vt.allows_link(&fixed("WALK", OperatorId::UNKNOWN)));
+        assert!(only_vt.allows_link(&fixed("BUS", OperatorId::UNKNOWN)));
+        let with_lu =
+            Restrictions::default().with_operator_rule(OperatorRule::only(mask(&["VT", "LT"])));
+        assert!(with_lu.allows_link(&fixed("TUBE", lu)));
+        let avoid_lu =
+            Restrictions::default().with_operator_rule(OperatorRule::avoid(mask(&["LT"])));
+        assert!(!avoid_lu.allows_link(&fixed("TUBE", lu)));
+        assert!(avoid_lu.allows_link(&fixed(
+            "METRO",
+            OperatorId::ds(schedule_query::DsOperator::Dlr)
+        )));
+        // No rule: every link.
+        assert!(Restrictions::default().allows_link(&fixed("TUBE", lu)));
+    }
+
+    #[test]
+    fn the_operator_rule_survives_with_extra_and_can_be_dropped() {
+        let r = Restrictions::default().with_operator_rule(OperatorRule::only(mask(&["VT"])));
+        let extra = r.with_extra([], ["COV".to_string()]);
+        assert!(extra.blocks(&run_by("V", atoc("GR"))));
+        assert!(extra.blocks(&Connection {
+            operator: atoc("VT"),
+            ..conn("U", "COV", "B")
+        }));
+        let dropped = extra.without_operator_rule();
+        assert!(!dropped.blocks(&run_by("V", atoc("GR"))));
+        assert!(
+            dropped.blocks(&conn("U", "COV", "B")),
+            "the station rule stays"
+        );
+        assert!(r.without_operator_rule().is_empty());
+    }
+
+    #[test]
+    fn an_operator_rule_keeps_both_searches_to_its_trains() {
+        // V is faster, U slower; only U's operator allowed.
+        let connections = vec![
+            Connection {
+                operator: atoc("GR"),
+                ..timed("V", "A", "D", 10, 20)
+            },
+            Connection {
+                operator: atoc("VT"),
+                ..timed("U", "A", "D", 15, 40)
+            },
+        ];
+        let r = Restrictions::default().with_operator_rule(OperatorRule::only(mask(&["VT"])));
         assert_eq!(
             both(&connections, &r),
             (vec!["U".to_string()], vec!["U".to_string()])
+        );
+        let r = Restrictions::default().with_operator_rule(OperatorRule::avoid(mask(&["VT"])));
+        assert_eq!(
+            both(&connections, &r),
+            (vec!["V".to_string()], vec!["V".to_string()])
         );
         // An empty restriction changes nothing.
         assert_eq!(
             both(&connections, &Restrictions::default()),
             (vec!["V".to_string()], vec!["V".to_string()])
         );
+    }
+
+    #[test]
+    fn station_rules_still_apply_without_an_operator_rule() {
+        // The fast path must not skip a no-call station.
+        let r = Restrictions::new([], ["B".to_string()], HashMap::new());
+        assert!(r.blocks(&conn("U", "A", "B")));
+        let extra = Restrictions::default().with_extra([], ["B".to_string()]);
+        assert!(extra.blocks(&conn("U", "A", "B")));
+        let change_only = Restrictions::new(["B".to_string()], [], HashMap::new());
+        assert!(!change_only.blocks(&conn("U", "A", "B")));
+        assert!(!change_only.allows_interchange("B"));
     }
 
     #[test]

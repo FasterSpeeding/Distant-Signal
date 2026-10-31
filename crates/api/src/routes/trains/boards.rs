@@ -60,8 +60,15 @@ pub(super) struct ArrivalsParams {
     from_day_offset: Option<String>,
     to_day_offset: Option<String>,
     /// Optional, a 3-letter station code: only trains that start there
-    /// (the search's `origin`).
+    /// (the search's `origin`). The stop filters look at the same rows
+    /// here, so an `origin` in `avoid` or `avoid_stop` is a `400`.
     origin: Option<String>,
+    /// Optional (2026-10-30, DS-213), a 3-letter station code: only trains
+    /// that terminate there (the search's `terminates_at`). `station`
+    /// itself is allowed and is the common case: only the trains that end
+    /// here, the rows with `terminates: true` (and a working that passes
+    /// through and comes back to end here).
+    terminates_at: Option<String>,
     /// Optional comma-separated ATOC codes: only trains run by one of them
     /// (the search's `operator`, validated the same way).
     operator: Option<String>,
@@ -72,6 +79,12 @@ pub(super) struct ArrivalsParams {
     via: Option<String>,
     avoid: Option<String>,
     avoid_stop: Option<String>,
+    /// Optional (2026-10-30, DS-213), the search's `previously_calls_at`
+    /// and `previously_stops_at`, also before `station`: here
+    /// `previously_calls_at` means what `calls_at` does, and
+    /// `previously_stops_at` leaves out the train's origin.
+    previously_calls_at: Option<String>,
+    previously_stops_at: Option<String>,
     /// Page size, as the search's.
     limit: Option<String>,
     /// A previous page's `nextCursor`.
@@ -302,6 +315,8 @@ struct ArrivalsFilter<'a> {
     to_minutes: Option<i32>,
     /// Only trains starting here.
     origin: Option<&'a str>,
+    /// Only trains terminating here.
+    terminates_at: Option<&'a str>,
     /// Only trains run by one of these.
     operators: Option<&'a [String]>,
     /// Only rows after this `(minute, uid)` (a cursor).
@@ -316,6 +331,9 @@ impl ArrivalsFilter<'_> {
             && self
                 .origin
                 .is_none_or(|origin| arrival.row.true_origin_crs.as_deref() == Some(origin))
+            && self
+                .terminates_at
+                .is_none_or(|terminus| arrival.row.destination_crs == terminus)
             && self.operators.is_none_or(|codes| {
                 arrival
                     .row
@@ -367,7 +385,10 @@ impl ArrivalsFilter<'_> {
                     .then_some((arrival.row.scheduled, arrival.row.day_offset));
                 let passes = calls.get(&arrival.row.train_uid).is_some_and(|calls| {
                     stop_filters::arrival_span(calls, &stop_filter.station_tiplocs, departure)
-                        .is_some_and(|span| stop_filter.filters.accepts(span))
+                        .is_some_and(|span| {
+                            stop_filter.filters.accepts(span)
+                                && stop_filter.filters.accepts_earlier(span)
+                        })
                 });
                 if passes {
                     page.push(arrival);
@@ -533,7 +554,7 @@ async fn render_rows(
     Ok(results)
 }
 
-/// `GET /public/trains/arrivals?station=[&date=][&from=][&to=][&from_day_offset=][&to_day_offset=][&origin=][&operator=][&limit=][&after=]`
+/// `GET /public/trains/arrivals?station=[&date=][&from=][&to=][&from_day_offset=][&to_day_offset=][&origin=][&terminates_at=][&operator=][&limit=][&after=]`
 /// -- a station's scheduled arrivals (2026-10-30).
 ///
 /// One row per arrival, in train-day order of the arrival as shown (the
@@ -562,6 +583,9 @@ pub(super) async fn get_trains_arrivals(
     let origin = non_empty(&params.origin)
         .map(|s| normalize_crs("origin", s))
         .transpose()?;
+    let terminates_at = non_empty(&params.terminates_at)
+        .map(|s| normalize_crs("terminates_at", s))
+        .transpose()?;
     let operators = parse_operators(params.operator.as_deref())?;
     let parsed_stop_filters = super::stop_filters::parse_checked(
         super::stop_filters::StopFilterParams {
@@ -569,12 +593,19 @@ pub(super) async fn get_trains_arrivals(
             via: params.via.as_deref(),
             avoid: params.avoid.as_deref(),
             avoid_stop: params.avoid_stop.as_deref(),
+            previously_calls_at: params.previously_calls_at.as_deref(),
+            previously_stops_at: params.previously_stops_at.as_deref(),
         },
         &[super::stop_filters::Anchor {
             crs: &station,
             role: "the station searched",
         }],
+        super::stop_filters::Board::Arrivals,
     )?;
+    // Here the filters look at the run before the station, from its origin.
+    if let (Some(filters), Some(origin)) = (&parsed_stop_filters, origin.as_deref()) {
+        filters.check_end("origin", origin)?;
+    }
     let from_time = non_empty(&params.from)
         .map(|s| normalize_time("from", s))
         .transpose()?;
@@ -637,6 +668,7 @@ pub(super) async fn get_trains_arrivals(
         from_minutes: window.from.minutes(),
         to_minutes: window.to.map(WindowBound::minutes),
         origin: origin.as_deref(),
+        terminates_at: terminates_at.as_deref(),
         operators: operators.as_deref(),
         after: after.as_ref().map(|(minute, uid)| (*minute, uid.as_str())),
     };

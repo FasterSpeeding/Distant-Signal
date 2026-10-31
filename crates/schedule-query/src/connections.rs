@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 
+use crate::operator::OperatorId;
 use chrono::NaiveTime;
 use compact_str::CompactString;
 
@@ -114,6 +115,11 @@ pub struct Connection {
     /// A passenger may get off this train at `to_tiploc`. When `false` the
     /// searches carry on along the train but never record an arrival there.
     pub can_alight: bool,
+    /// Who runs it (planner operator filtering spec §6.2): the schedule's
+    /// ATOC code, or a transit network's DS operator. [`build_connections`]
+    /// leaves it [`OperatorId::UNKNOWN`]; the api's graph build fills it
+    /// from `schedule_services`.
+    pub operator: OperatorId,
 }
 
 fn minutes_from_midnight(time: NaiveTime, day_offset: u8) -> u32 {
@@ -329,6 +335,7 @@ fn build<'a>(
             arrived_at = Some((i + 1 + offset, arrival_min));
             connections.push((
                 Connection {
+                    operator: OperatorId::UNKNOWN,
                     uid: CompactString::from(uid),
                     from_tiploc: CompactString::from(from.tiploc.as_str()),
                     to_tiploc: CompactString::from(to.tiploc.as_str()),
@@ -709,6 +716,6 @@ mod size_tests {
     /// it: three inline codes, four minutes, two flags.
     #[test]
     fn a_connection_is_96_bytes() {
-        assert_eq!(std::mem::size_of::<Connection>(), 96);
+        assert_eq!(size_of::<Connection>(), 96);
     }
 }

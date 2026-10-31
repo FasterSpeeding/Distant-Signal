@@ -439,6 +439,7 @@ function LegTrainPicker({
         legId={leg.id}
         serviceDate={leg.serviceDate}
         search={search}
+        storedFilters={leg.searchFilters ?? null}
         onEditSearch={() => setEditing(true)}
         onPicked={onPicked}
       />

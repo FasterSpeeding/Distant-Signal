@@ -90,7 +90,16 @@ export const FEATURE_STEPS = {
   trains: ['station_departures', 'station_arrivals', 'between', 'headcode', 'uid', 'results', 'no_results', 'failed'],
   /** A `/trains` search with that advanced option set (its kind only,
    * never the stations), one step per option. */
-  trains_filters: ['calls_at', 'via', 'avoid', 'avoid_stop'],
+  trains_filters: [
+    'calls_at',
+    'via',
+    'avoid',
+    'avoid_stop',
+    'previously_calls_at',
+    'previously_stops_at',
+    'origin',
+    'terminates_at',
+  ],
   /** The planner's "Compare options": a search with it on, an option other
    * than the fastest chosen, and that saved as a journey. */
   compare_options: ['searched', 'alternative_selected', 'alternative_saved'],

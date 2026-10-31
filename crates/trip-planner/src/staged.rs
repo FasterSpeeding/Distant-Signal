@@ -1016,6 +1016,7 @@ mod tests {
 
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         Connection {
+            operator: schedule_query::OperatorId::UNKNOWN,
             uid: uid.to_string().into(),
             from_tiploc: from.to_string().into(),
             to_tiploc: to.to_string().into(),
@@ -2799,6 +2800,7 @@ mod tests {
                 .insert(crs.to_string(), vec![tiploc.to_string()]);
         }
         let walk = schedule_query::FixedLink {
+            operator: schedule_query::OperatorId::UNKNOWN,
             mode: "WALK".to_string(),
             to_crs: "HXX".to_string(),
             minutes: 8,

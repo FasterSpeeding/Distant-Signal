@@ -53,6 +53,7 @@ fn fixed_links(to_crs: &str, link: &AccessLink) -> Vec<FixedLink> {
     windows
         .into_iter()
         .map(|(valid_from, valid_to)| FixedLink {
+            operator: schedule_query::OperatorId::UNKNOWN,
             mode: link.mode.clone(),
             to_crs: to_crs.to_owned(),
             minutes: link.minutes,

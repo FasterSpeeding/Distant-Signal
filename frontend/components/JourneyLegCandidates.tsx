@@ -16,6 +16,9 @@ import type { TrainSearchResult } from '@/lib/types';
 import { LoadingText } from '@/components/LoadingText';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { legSearchPickBody, legSearchQuery, type LegSearch } from '@/lib/legSearch';
+import { legFiltersFromApi, legFiltersSummary } from '@/lib/legFilters';
+import { useStopFilterLabels } from '@/lib/useStopFilterLabels';
+import type { LegSearchFilters } from '@/lib/types';
 
 // Mirrors `lib/useSuggestions.ts`'s own (non-exported) `DEBOUNCE_MS = 250`
 // constant -- this is a SEPARATE debounce, for the committed filter value
@@ -110,6 +113,7 @@ export function JourneyLegCandidates({
   legId,
   serviceDate: storedServiceDate,
   search = null,
+  storedFilters = null,
   onEditSearch,
   onPicked,
 }: {
@@ -117,6 +121,10 @@ export function JourneyLegCandidates({
   legId: number;
   serviceDate: string;
   search?: LegSearch | null;
+  /** The leg's saved Between stations filters (`searchFilters`, DS-215),
+   * which the api applies unless `search` (with its own) is given. Named
+   * above the list, so a train they leave out isn't a mystery. */
+  storedFilters?: LegSearchFilters | null;
   /** Offered when no train matches, instead of a manual search that would
    * leave the journey. */
   onEditSearch?: () => void;
@@ -124,6 +132,9 @@ export function JourneyLegCandidates({
 }) {
   const serviceDate = search?.serviceDate ?? storedServiceDate;
   const searchQuery = search ? legSearchQuery(search).toString() : '';
+  const filters = legFiltersFromApi(search ? search.filters : storedFilters);
+  const { labels: filterNames } = useStopFilterLabels(filters.stops);
+  const filterSummary = legFiltersSummary(filters, filterNames);
   const [results, setResults] = useState<Results>(null);
   const [picking, setPicking] = useState<string | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
@@ -383,6 +394,12 @@ export function JourneyLegCandidates({
           (including 'loading' and 'error'), which is also what lets the
           debounced `committedOperator` effect above keep working even while
           `body()` is showing something other than the rows list. */}
+      {filterSummary && (
+        <Text size="sm" c="dimmed">
+          Search filters: {filterSummary}.
+          {filters.operators.length > 0 && " An operator picked below replaces the search's own."}
+        </Text>
+      )}
       <OperatorField label="Operator (optional)" placeholder="e.g. SW" value={operator} onChange={setOperator} />
       {body()}
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>

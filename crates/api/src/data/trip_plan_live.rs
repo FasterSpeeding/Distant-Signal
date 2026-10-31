@@ -651,6 +651,7 @@ pub fn adjusted_connections(uid: &str, points: &[ChainPoint]) -> Option<Vec<Conn
             .filter_map(|pair| {
                 let (from, to) = (pair[0], pair[1]);
                 Some(Connection {
+                    operator: schedule_query::OperatorId::UNKNOWN,
                     uid: uid.to_string().into(),
                     from_tiploc: from.tiploc.clone().into(),
                     to_tiploc: to.tiploc.clone().into(),
@@ -716,7 +717,15 @@ pub fn build_overlay(
         if let Some(adjusted) = adjusted_connections(uid, &evaluate_chain(&refs, live)) {
             replaced.push(uid.clone());
             withdrawn += chain.len();
-            replacements.extend(adjusted);
+            // A replacement is the same train: it keeps the operator an
+            // operator filter matches on (operator filtering spec §5.5).
+            let operator = chain
+                .first()
+                .map_or(schedule_query::OperatorId::UNKNOWN, |c| c.operator);
+            replacements.extend(adjusted.into_iter().map(|mut connection| {
+                connection.operator = operator;
+                connection
+            }));
         }
     }
     (ConnectionOverlay::new(replaced, replacements), withdrawn)
@@ -1698,6 +1707,7 @@ mod tests {
 
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         Connection {
+            operator: schedule_query::OperatorId::UNKNOWN,
             uid: uid.to_string().into(),
             from_tiploc: from.to_string().into(),
             to_tiploc: to.to_string().into(),

@@ -29,6 +29,7 @@ fn hhmm(h: u32, m: u32) -> u32 {
 /// The one train: Moorgate 06:31 to Old Street 06:33.
 fn connections() -> Vec<Connection> {
     vec![Connection {
+        operator: schedule_query::OperatorId::UNKNOWN,
         uid: "C10117".to_string().into(),
         from_tiploc: "MRGT".to_string().into(),
         to_tiploc: "OLDST".to_string().into(),
@@ -45,6 +46,7 @@ fn tube(from: &str, to: &str) -> (String, FixedLink) {
     (
         from.to_string(),
         FixedLink {
+            operator: schedule_query::OperatorId::UNKNOWN,
             mode: "TUBE".to_string(),
             to_crs: to.to_string(),
             minutes: 16,

@@ -3,6 +3,71 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-31: `transfer`, a twelfth untracked-leg `transitMode`
+
+Additive: an untracked leg's `transitMode` may now be `transfer`
+(everywhere one is accepted or served: `POST /Journeys/itinerary`, the
+leg add and edit routes, the replan suggestions; DS-216). It is a
+timetable `TRANSFER` link between two different stations, such as Euston
+to Victoria in 19 minutes: often a Tube hop, but the link does not say
+which way it goes. The planner's save and the mid-journey alternatives
+used to drop every `TRANSFER` transfer leg as a change within one
+station, so a saved journey lost the hop. They now send a `TRANSFER`
+between different station codes as a `transfer` leg on its planned times;
+one with the same code at both ends is still left out. A client that
+does not know the mode should show it as it shows `other`. The `400`
+message for an unknown mode lists the new one.
+
+## 2026-10-31: Between stations filters on a journey's window legs
+
+Additive: a window leg can carry the `/trains` Between stations filters,
+saved with it, and its candidates list only the trains they allow
+(DS-215; `crates/api/src/routes/trains/leg_filters.rs`). A request without
+them is answered exactly as before.
+
+- `POST /Journeys/{journeyId}/legs` with `mode: "window"` takes an
+  optional `filters` object: `operator`, `startsAt`, `terminatesAt`,
+  `previouslyCallsAt`, `previouslyStopsAt`, `callsAt`, `via`, `avoid`,
+  `avoidStop`. Each value is the text `GET /public/trains/search` takes
+  for `operator`, `origin`, `terminates_at`, `previously_calls_at`,
+  `previously_stops_at`, `calls_at`, `via`, `avoid` and `avoid_stop`
+  (comma-separated lists, the same caps and syntax), and means what it
+  does there with `station` the leg's origin and `stops_at` its
+  destination. Starts at is `startsAt` because a leg's `origin` is where
+  the traveller boards. Blank values are dropped. `400` for whatever the
+  search refuses between those two stations (its messages name the
+  search's parameter), including an operator code the timetable does not
+  know on the leg's date; an unknown key is a `422`. `POST /Journeys`'s
+  window leg does not take `filters`.
+- `GET /Journeys/{id}` (and the shared view): each leg gains
+  `searchFilters`, the saved filters with codes upper case and unset ones
+  absent (`{"operator": "SW", "startsAt": "WAT"}`), or `null`.
+- `GET /Journeys/{journeyId}/legs/{legId}/candidates` applies the leg's
+  saved filters. `operator`, as before any text and never a `400`,
+  replaces the saved operator. An edited search (`origin`, `destination`,
+  `serviceDate`, ...) has only the filters given with it: `operator` and
+  the new `startsAt`, `terminatesAt`, `previouslyCallsAt`,
+  `previouslyStopsAt`, `callsAt`, `via`, `avoid` and `avoidStop`
+  parameters, which are a `400` without one.
+- `POST /Journeys/{journeyId}/legs/{legId}/train`'s `search` takes the
+  same optional `filters`, checked the same way and saved with it;
+  absent clears the leg's.
+- Paging is unchanged: a page holds up to `limit` trains that pass the
+  filters.
+
+## 2026-10-31: `/Trips/plan` bus and ferry legs carry their `operator`
+
+A value change, no new fields. A train leg's `operator` (the schedule's
+ATOC code) is now read from `schedule_services`, which has a row for every
+schedule, instead of `schedule_destination_departures`, which lacks one
+for about 850 buses and ferries a day. Those legs used to be served with
+`"operator": null`; they now carry their operator's code, e.g. `"GW"` for a
+GWR rail-replacement bus. Every other leg is unchanged. The same source
+now drives a journey's "same operator" alternatives, which can now offer
+that operator's own buses and ferries (planner operator filtering spec,
+docs/superpowers/specs/2026-10-31-planner-operator-filtering-design.md,
+phase P0).
+
 ## 2026-10-31: `/Trips/plan` rides the Underground, the DLR and the trams by their timetable
 
 Additive, and off until `API_TRIP_PLAN_TRANSIT_NETWORKS` lists `tfl`
@@ -28,6 +93,49 @@ Additive, and off until `API_TRIP_PLAN_TRANSIT_NETWORKS` lists `tfl`
   are (`{id, name, modes, lines}`, `lines` empty).
 - A walk between a National Rail station and a `TfL` station is a
   `transitWalk` as for a tram stop, with `network: "tfl"`.
+
+## 2026-10-30: `previously_calls_at`, `previously_stops_at` and `terminates_at` on the `/trains` boards
+
+Additive: three optional query parameters on `GET /public/trains/search`
+and `GET /public/trains/arrivals`, for finding one specific train by
+where it has already been or where it ends (DS-213;
+`crates/api/src/data/stop_filters.rs`). A request without them is
+answered exactly as before. They are not on `/Trips/plan`.
+
+- They look only at the part of the train's run BEFORE `station` (on the
+  search with `stops_at`, before `station`, the first of the two), the
+  part a passenger does not ride. A call after `station` never counts.
+- `previously_calls_at=A,B`: the train made a passenger call (a public
+  arrival or departure time) at each, in this order, before `station`.
+  The train's origin counts, so `previously_calls_at=X` finds every train
+  `origin=X` finds, and more.
+- `previously_stops_at=A,B`: the same, but the train's origin does not
+  count: it was already running when it stopped there. The origin is the
+  schedule's first location, the one `originCrs` names.
+- A working-only call or a passing point is never a previous call or
+  stop.
+- On the arrivals board every list already looks before `station`, so
+  there `previously_calls_at` means the same as `calls_at`.
+- The same syntax and cap as `calls_at`: at most 3 entries, each a CRS, a
+  `tiploc:` code or an OR choice (`KGX|EUS`, `group:LON`), not the same
+  twice in a row. `400` (plain text naming the parameter) for: too many
+  entries; an unknown code or group; a single-station entry that is
+  `station` or `stops_at`; and, on the arrivals board only, an entry
+  wholly in `avoid` or `avoid_stop`.
+- `terminates_at=X` (one 3-letter station code): only trains whose true
+  terminus (each row's `destinationCrs`) is X, exactly: `origin`'s
+  counterpart. With `stops_at` it is where the train goes on to end (it
+  may be `stops_at` itself). It may be `station`: on the arrivals board
+  that keeps the trains that end there (`terminates: true`), and on the
+  search a working that comes back to end where it started. `400` for a
+  malformed code, and, on the search without `stops_at` (where the stop
+  filters look on to the end of the train), a `terminates_at` in `avoid`
+  or `avoid_stop`.
+- `origin` is unchanged: it still means "starts at" exactly. One new
+  `400`: on the arrivals board, where the stop filters look back to the
+  train's origin, an `origin` in `avoid` or `avoid_stop`. The `/trains`
+  page now offers it as "Starts at" in Advanced options, beside
+  "Terminates at".
 
 ## 2026-10-31: line branches, a stop's first and last departures, TfL stop ids
 

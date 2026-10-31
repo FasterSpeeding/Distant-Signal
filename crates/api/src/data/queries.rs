@@ -1047,6 +1047,9 @@ pub struct CallingPointSearch<'a> {
     /// Inclusive upper bound on that departure, in train-day minutes.
     pub depart_to: Option<i32>,
     pub true_origin_crs: Option<&'a str>,
+    /// The train's true terminus (`destination_crs`), exactly
+    /// (2026-10-30, DS-213: the `/trains` search's `terminates_at`).
+    pub terminates_at: Option<&'a str>,
     pub stops_at: Option<&'a str>,
     /// Inclusive bounds on the arrival at `stops_at`, in train-day minutes.
     pub arrive_from: Option<i32>,
@@ -1205,6 +1208,7 @@ fn calling_point_search_sql(later_days: bool) -> String {
               AND {main_departure} >= $3::int4
               AND ($6::int4 IS NULL OR {main_departure} <= $6)
               AND ($4::text IS NULL OR main.true_origin_crs = $4)
+              AND ($16::text IS NULL OR main.destination_crs = $16)
               AND ($15::text[] IS NULL OR main.operator_atoc = ANY($15))
               AND (
                     $5::text IS NULL
@@ -1375,6 +1379,7 @@ struct DateSearch<'a> {
     station_crs: &'a str,
     service_date: chrono::NaiveDate,
     true_origin_crs: Option<&'a str>,
+    terminates_at: Option<&'a str>,
     stops_at: Option<&'a str>,
     operators: Option<&'a [String]>,
     stop_filter: Option<&'a crate::data::stop_filters::SearchStopFilter>,
@@ -1465,6 +1470,7 @@ async fn search_one_service_date(
                 .bind(range_start)
                 .bind(range_end)
                 .bind(search.operators)
+                .bind(search.terminates_at)
                 .fetch_all(pool)
                 .await?;
             let Some(filter) = search.stop_filter else {
@@ -1733,6 +1739,7 @@ pub async fn search_schedule_calling_point_departures(
         depart_from,
         depart_to,
         true_origin_crs,
+        terminates_at,
         stops_at,
         arrive_from,
         arrive_to,
@@ -1763,6 +1770,7 @@ pub async fn search_schedule_calling_point_departures(
                 station_crs,
                 service_date: date,
                 true_origin_crs,
+                terminates_at,
                 stops_at,
                 operators,
                 stop_filter,
@@ -1999,13 +2007,8 @@ fn nearest_day_offset(
 /// empty `page.departures` means the day IS published and the window
 /// matched nothing.
 #[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
     clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::type_complexity,
-    reason = "each argument is an independent input from the single caller; a struct would only wrap them; the tuple mirrors the SQL row; limit is a validated page size, far below usize::MAX and i64::MAX; long but linear; splitting it would scatter its shared state across helpers"
+    reason = "each argument is an independent input; the route uses the struct form, `search_journey_leg_candidates_filtered`"
 )]
 pub async fn search_journey_leg_candidates(
     pool: &PgPool,
@@ -2020,37 +2023,230 @@ pub async fn search_journey_leg_candidates(
     // filter" shape `search_incidents`'s own `operators` param establishes
     // (`routes::incidents::search_incidents`) -- an "any of" filter. `None`
     // correctly means "no filter": the bound SQL parameter is NULL and the
-    // `$8::text[] IS NULL OR ...` predicate below short-circuits to true
-    // for every row. `Some(vec![])` does NOT also mean "no filter", though
-    // -- an empty-but-present list still binds an empty array, and
+    // `$8::text[] IS NULL OR ...` predicate short-circuits to true for
+    // every row. `Some(vec![])` does NOT also mean "no filter", though --
+    // an empty-but-present list still binds an empty array, and
     // `operator_atoc = ANY('{}')` is false for every row, so it would
-    // filter out everything. The current caller
+    // filter out everything. The route
     // (`routes::journeys::get_leg_candidates`) can never actually produce
     // `Some(vec![])` (its own comma-split collapses an empty result back
-    // to `None`), so this distinction has no live effect today -- but it
-    // is load-bearing for any future caller that skips that step.
+    // to `None`).
     operators: Option<Vec<String>>,
     after: Option<&CallingPointDepartureCursor>,
     limit: i64,
 ) -> Result<Option<CallingPointDeparturePage>> {
-    let fetch = limit.saturating_add(1);
+    search_journey_leg_candidates_filtered(
+        pool,
+        &LegCandidateSearch {
+            origin_crs,
+            destination_crs,
+            service_date,
+            depart_after,
+            depart_before,
+            arrive_after,
+            arrive_before,
+            operators: operators.as_deref(),
+            starts_at: None,
+            terminates_at: None,
+            stop_filter: None,
+            after,
+            limit,
+        },
+    )
+    .await
+}
 
-    let rows: Vec<(
-        String,
-        String,
-        Option<String>,
-        chrono::NaiveTime,
-        Option<chrono::NaiveTime>,
-        i16,
-        Option<String>,
-        Option<chrono::NaiveTime>,
-        Option<i16>,
-        Option<chrono::NaiveTime>,
-        Option<chrono::NaiveTime>,
-        Option<chrono::NaiveTime>,
-        Option<String>,
-    )> = sqlx::query_as(
-        r"
+/// One window search for [`search_journey_leg_candidates_filtered`]: the
+/// leg's stations, date and four optional bounds, and its filters
+/// (DS-215; `routes::trains::leg_filters`).
+pub struct LegCandidateSearch<'a> {
+    pub origin_crs: &'a str,
+    pub destination_crs: &'a str,
+    pub service_date: chrono::NaiveDate,
+    pub depart_after: Option<chrono::NaiveTime>,
+    pub depart_before: Option<chrono::NaiveTime>,
+    pub arrive_after: Option<chrono::NaiveTime>,
+    pub arrive_before: Option<chrono::NaiveTime>,
+    /// An ATOC-code allowlist: see [`search_journey_leg_candidates`]'s
+    /// `operators`.
+    pub operators: Option<&'a [String]>,
+    /// Only trains whose true origin is this station.
+    pub starts_at: Option<&'a str>,
+    /// Only trains whose true terminus is this station.
+    pub terminates_at: Option<&'a str>,
+    /// The stop filters, over the part of the train ridden between the
+    /// leg's two stations (and before its origin for the `previously_*`
+    /// ones), as `/public/trains/search` applies them with `stops_at`.
+    pub stop_filter: Option<&'a crate::data::stop_filters::SearchStopFilter>,
+    pub after: Option<&'a CallingPointDepartureCursor>,
+    pub limit: i64,
+}
+
+/// One [`search_journey_leg_candidates_filtered`] row.
+#[derive(sqlx::FromRow)]
+struct LegCandidateRow {
+    train_uid: String,
+    destination_crs: String,
+    true_origin_crs: Option<String>,
+    scheduled: chrono::NaiveTime,
+    destination_arrival: Option<chrono::NaiveTime>,
+    destination_arrival_day_offset: i16,
+    operator_atoc: Option<String>,
+    leg_destination_arrival: Option<chrono::NaiveTime>,
+    leg_destination_arrival_day_offset: Option<i16>,
+    public_departure: Option<chrono::NaiveTime>,
+    public_destination_arrival: Option<chrono::NaiveTime>,
+    leg_public_destination_arrival: Option<chrono::NaiveTime>,
+    headcode: Option<String>,
+    day_offset: i16,
+    stop_scheduled: Option<chrono::NaiveTime>,
+}
+
+/// [`search_journey_leg_candidates`] with a leg's filters (DS-215). With
+/// stop filters the rows are read in batches, each continuing after the
+/// last row read, until a page's worth pass them (or the window runs
+/// out), as `/public/trains/search` reads them; the cursor is the page's
+/// last row, so the next page carries on after it.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::too_many_lines,
+    reason = "limit is a validated page size, far below usize::MAX and i64::MAX; long but linear: the reads, then the row mapping"
+)]
+pub async fn search_journey_leg_candidates_filtered(
+    pool: &PgPool,
+    search: &LegCandidateSearch<'_>,
+) -> Result<Option<CallingPointDeparturePage>> {
+    let limit = search.limit;
+    let fetch = limit.saturating_add(1);
+    let mut rows: Vec<LegCandidateRow> = Vec::new();
+    let mut position: Option<(chrono::NaiveTime, String)> = search
+        .after
+        .map(|cursor| (cursor.scheduled, cursor.train_uid.clone()));
+    loop {
+        let wanted = fetch - rows.len() as i64;
+        if wanted <= 0 {
+            break;
+        }
+        let batch = if search.stop_filter.is_some() {
+            (wanted * 2).clamp(STOP_FILTER_MIN_BATCH, STOP_FILTER_MAX_BATCH)
+        } else {
+            wanted
+        };
+        let band: Vec<LegCandidateRow> = sqlx::query_as(LEG_CANDIDATES_SQL)
+            .bind(search.service_date)
+            .bind(search.origin_crs)
+            .bind(search.depart_after)
+            .bind(search.depart_before)
+            .bind(search.destination_crs)
+            .bind(search.arrive_after)
+            .bind(search.arrive_before)
+            .bind(search.operators)
+            .bind(position.as_ref().map(|(scheduled, _)| *scheduled))
+            .bind(position.as_ref().map(|(_, uid)| uid.as_str()))
+            .bind(batch)
+            .bind(search.starts_at)
+            .bind(search.terminates_at)
+            .fetch_all(pool)
+            .await?;
+        let Some(filter) = search.stop_filter else {
+            rows.extend(band);
+            break;
+        };
+        let exhausted = (band.len() as i64) < batch;
+        position = band
+            .last()
+            .map(|row| (row.scheduled, row.train_uid.clone()));
+        let mut uids: Vec<String> = band.iter().map(|row| row.train_uid.clone()).collect();
+        uids.sort_unstable();
+        uids.dedup();
+        let calls =
+            crate::data::stop_filters::fetch_calls(pool, search.service_date, &uids).await?;
+        rows.extend(band.into_iter().filter(|row| {
+            let stop = row
+                .stop_scheduled
+                .zip(row.leg_destination_arrival_day_offset);
+            calls
+                .get(&row.train_uid)
+                .is_some_and(|calls| filter.accepts(calls, row.scheduled, row.day_offset, stop))
+        }));
+        if exhausted {
+            break;
+        }
+    }
+
+    if rows.is_empty() {
+        if !schedule_destination_departures_published_for(pool, search.service_date).await? {
+            return Ok(None);
+        }
+        return Ok(Some(CallingPointDeparturePage {
+            departures: Vec::new(),
+            next_cursor: None,
+        }));
+    }
+
+    let has_more = rows.len() as i64 > limit;
+    rows.truncate(limit as usize);
+
+    let next_cursor = if has_more {
+        rows.last().map(|row| CallingPointDepartureCursor {
+            day_offset: 0,
+            scheduled: row.scheduled,
+            train_uid: row.train_uid.clone(),
+            previous_service_date: false,
+        })
+    } else {
+        None
+    };
+
+    let time = |t: Option<chrono::NaiveTime>| t.map(|t| t.format("%H:%M:%S").to_string());
+    let departures = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "uid": row.train_uid,
+                "destination_crs": row.destination_crs,
+                "true_origin_crs": row.true_origin_crs,
+                "scheduled": row.scheduled.format("%H:%M:%S").to_string(),
+                "destination_arrival": time(row.destination_arrival),
+                "destination_arrival_day_offset": row.destination_arrival_day_offset,
+                "operator_atoc": row.operator_atoc,
+                // Two EXTRA keys this sibling emits and
+                // `search_schedule_calling_point_departures` does not:
+                // the arrival at the LEG's own destination. Carried on
+                // the same opaque row `Value` the shared
+                // `render::calling_point_departure_json` already
+                // consumes, so `/public/trains/search` (which has no
+                // leg, and no destination to scope to) is untouched --
+                // the journeys route picks these two off the row
+                // itself. `null` is a real, expected value: a
+                // candidate whose schedule has no arrival or departure
+                // recorded at the leg's destination renders no arrival
+                // rather than a guessed one.
+                "leg_destination_arrival": time(row.leg_destination_arrival),
+                "leg_destination_arrival_day_offset": row.leg_destination_arrival_day_offset,
+                // Public (GBTT) times, as `/public/trains/search` rows
+                // carry them, plus the one at the leg's destination.
+                "public_departure": time(row.public_departure),
+                "public_destination_arrival": time(row.public_destination_arrival),
+                "leg_public_destination_arrival": time(row.leg_public_destination_arrival),
+                "headcode": row.headcode,
+            })
+        })
+        .collect();
+
+    Ok(Some(CallingPointDeparturePage {
+        departures,
+        next_cursor,
+    }))
+}
+
+/// [`search_journey_leg_candidates_filtered`]'s query. `$1` date, `$2`
+/// origin, `$3`/`$4` departure bounds, `$5` destination, `$6`/`$7`
+/// arrival bounds, `$8` operators, `$9`/`$10` keyset, `$11` limit, `$12`
+/// starts at, `$13` terminates at.
+const LEG_CANDIDATES_SQL: &str = r"
             SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc,
                    -- The arrival at the LEG's own destination, which is
                    -- what the traveller is actually choosing between --
@@ -2115,7 +2311,23 @@ pub async fn search_journey_leg_candidates(
                    END AS leg_public_destination_arrival,
                    -- The CIF Train Identity, as `/public/trains/search`
                    -- rows carry it (`identity`).
-                   main.headcode
+                   main.headcode,
+                   -- For the stop filters (DS-215): the train's day
+                   -- offset at the leg's origin, and its departure from
+                   -- the leg's destination call (the same call as
+                   -- `leg_destination_arrival`; NULL at the terminus).
+                   main.day_offset,
+                   CASE WHEN main.destination_crs = $5 THEN NULL
+                        ELSE (SELECT stop.scheduled
+                              FROM schedule_destination_departures stop
+                              WHERE stop.service_date = $1
+                                AND stop.train_uid = main.train_uid
+                                AND stop.origin_crs = $5
+                                AND stop.can_alight IS NOT FALSE
+                                AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled)
+                              ORDER BY stop.day_offset, stop.scheduled
+                              LIMIT 1)
+                   END AS stop_scheduled
             FROM schedule_destination_departures main
             WHERE main.service_date = $1
               AND main.origin_crs = $2
@@ -2164,114 +2376,15 @@ pub async fn search_journey_leg_candidates(
                     )
               )
               AND ($8::text[] IS NULL OR main.operator_atoc = ANY($8))
+              -- The leg's Starts at and Terminates at (DS-215): the
+              -- train's true origin and terminus, exactly.
+              AND ($12::text IS NULL OR main.true_origin_crs = $12)
+              AND ($13::text IS NULL OR main.destination_crs = $13)
               AND ($9::time IS NULL
                    OR (main.scheduled, main.train_uid) > ($9, $10))
             ORDER BY main.scheduled, main.train_uid
             LIMIT $11
-            ",
-    )
-    .bind(service_date)
-    .bind(origin_crs)
-    .bind(depart_after)
-    .bind(depart_before)
-    .bind(destination_crs)
-    .bind(arrive_after)
-    .bind(arrive_before)
-    .bind(operators)
-    .bind(after.map(|c| c.scheduled))
-    .bind(after.map(|c| c.train_uid.as_str()))
-    .bind(fetch)
-    .fetch_all(pool)
-    .await?;
-
-    if rows.is_empty() {
-        if !schedule_destination_departures_published_for(pool, service_date).await? {
-            return Ok(None);
-        }
-        return Ok(Some(CallingPointDeparturePage {
-            departures: Vec::new(),
-            next_cursor: None,
-        }));
-    }
-
-    let has_more = rows.len() as i64 > limit;
-    let page_rows = if has_more {
-        &rows[..limit as usize]
-    } else {
-        &rows[..]
-    };
-
-    let next_cursor = if has_more {
-        page_rows
-            .last()
-            .map(|(train_uid, _, _, scheduled, _, _, _, _, _, _, _, _, _)| {
-                CallingPointDepartureCursor {
-                    day_offset: 0,
-                    scheduled: *scheduled,
-                    train_uid: train_uid.clone(),
-                    previous_service_date: false,
-                }
-            })
-    } else {
-        None
-    };
-
-    let departures = page_rows
-        .iter()
-        .map(
-            |(
-                train_uid,
-                destination_crs,
-                true_origin_crs,
-                scheduled,
-                destination_arrival,
-                destination_arrival_day_offset,
-                operator_atoc,
-                leg_destination_arrival,
-                leg_destination_arrival_day_offset,
-                public_departure,
-                public_destination_arrival,
-                leg_public_destination_arrival,
-                headcode,
-            )| {
-                serde_json::json!({
-                    "uid": train_uid,
-                    "destination_crs": destination_crs,
-                    "true_origin_crs": true_origin_crs,
-                    "scheduled": scheduled.format("%H:%M:%S").to_string(),
-                    "destination_arrival": destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
-                    "destination_arrival_day_offset": destination_arrival_day_offset,
-                    "operator_atoc": operator_atoc,
-                    // Two EXTRA keys this sibling emits and
-                    // `search_schedule_calling_point_departures` does not:
-                    // the arrival at the LEG's own destination. Carried on
-                    // the same opaque row `Value` the shared
-                    // `render::calling_point_departure_json` already
-                    // consumes, so `/public/trains/search` (which has no
-                    // leg, and no destination to scope to) is untouched --
-                    // the journeys route picks these two off the row
-                    // itself. `null` is a real, expected value: a
-                    // candidate whose schedule has no arrival or departure
-                    // recorded at the leg's destination renders no arrival
-                    // rather than a guessed one.
-                    "leg_destination_arrival": leg_destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
-                    "leg_destination_arrival_day_offset": leg_destination_arrival_day_offset,
-                    // Public (GBTT) times, as `/public/trains/search` rows
-                    // carry them, plus the one at the leg's destination.
-                    "public_departure": public_departure.map(|t| t.format("%H:%M:%S").to_string()),
-                    "public_destination_arrival": public_destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
-                    "leg_public_destination_arrival": leg_public_destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
-                    "headcode": headcode,
-                })
-            },
-        )
-        .collect();
-
-    Ok(Some(CallingPointDeparturePage {
-        departures,
-        next_cursor,
-    }))
-}
+            ";
 
 const FULL_COVERAGE_LINE_STATS_COLUMNS: &str = "line_id, service_date, availability, total, delayed, cancelled, skipped, avg_delay_minutes, partial, cancelled_explicit, cancelled_presumed, pending, unobserved, stats_version";
 
@@ -6355,6 +6468,7 @@ mod schedule_destination_departures_query_tests {
                 depart_from: minutes(depart_from),
                 depart_to: depart_to.map(minutes),
                 true_origin_crs,
+                terminates_at: None,
                 stops_at,
                 arrive_from: arrive_from.map(minutes),
                 arrive_to: arrive_to.map(minutes),

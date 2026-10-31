@@ -119,6 +119,14 @@ async function mockApi(page: Page, firstLeg: object = MATCHED_LEG): Promise<unkn
       );
     }
     if (/^\/api\/stations\/[A-Z]{3}\//.test(path)) return json(route, []);
+    if (path === '/api/trains/search/operators') {
+      return json(route, {
+        operators: [
+          { code: 'LM', name: 'West Midlands Trains' },
+          { code: 'VT', name: 'Avanti West Coast' },
+        ],
+      });
+    }
     if (path === '/api/tfl/stops/rail-crs') {
       return json(route, url.searchParams.get('ids') === '940GZZLUEUS' ? { '940GZZLUEUS': ['EUS'] } : {});
     }
@@ -343,5 +351,38 @@ test.describe('add a leg', () => {
     // error-text token (app/globals.css), not its 3.28:1 default.
     const results = await new AxeBuilder({ page }).include('[role="dialog"]').analyze();
     expect(results.violations).toEqual([]);
+  });
+
+  test('adds the leg with an operator filter, the advanced options collapsed, at phone width', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const legBodies = await mockApi(page, MATCHED_LEG_WITH_ARRIVAL);
+    const dialog = await openPrefilledAddLeg(page);
+
+    const to = dialog.getByRole('combobox', { name: 'To station' });
+    await to.fill('mkc');
+    await to.press('Tab');
+    await dialog.getByRole('combobox', { name: 'Operator (optional)' }).click();
+    await page.getByRole('option', { name: 'LM · West Midlands Trains' }).click();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeVisible();
+
+    // The Between stations options, collapsed until asked for.
+    const advanced = dialog.getByRole('button', { name: 'Advanced options' });
+    await expect(advanced).toHaveAttribute('aria-expanded', 'false');
+    await expect(dialog.getByRole('combobox', { name: 'Starts at' })).toBeHidden();
+    // Nothing in the dialog is wider than the phone.
+    const overflow = await dialog.evaluate((element) => element.scrollWidth - element.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+
+    await dialog.getByRole('button', { name: 'Add leg' }).click();
+    await expect.poll(() => legBodies.length).toBe(1);
+    expect(legBodies[0]).toMatchObject({
+      mode: 'window',
+      originCrs: 'EUS',
+      destinationCrs: 'MKC',
+      serviceDate: '2026-09-23',
+      departWindow: { after: '00:12', before: null },
+      filters: { operator: 'LM' },
+    });
   });
 });

@@ -23,6 +23,7 @@ fn date() -> NaiveDate {
 
 fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
     Connection {
+        operator: schedule_query::OperatorId::UNKNOWN,
         uid: uid.to_string().into(),
         from_tiploc: from.to_string().into(),
         to_tiploc: to.to_string().into(),
@@ -71,6 +72,7 @@ fn network() -> (Vec<Connection>, InterchangeData) {
     interchange.fixed_links_from_crs.insert(
         "EUS".to_string(),
         vec![FixedLink {
+            operator: schedule_query::OperatorId::UNKNOWN,
             mode: "TUBE".to_string(),
             to_crs: "KGX".to_string(),
             minutes: 5,
@@ -320,6 +322,7 @@ fn random_networks_agree_on_arrival_and_fewest_changes() {
     interchange.fixed_links_from_crs.insert(
         "CCC".to_string(),
         vec![FixedLink {
+            operator: schedule_query::OperatorId::UNKNOWN,
             mode: "WALK".to_string(),
             to_crs: "DDD".to_string(),
             minutes: 7,

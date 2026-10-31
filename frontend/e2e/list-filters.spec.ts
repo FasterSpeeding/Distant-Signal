@@ -102,7 +102,7 @@ test.describe('/incidents', () => {
 test.describe('/trains', () => {
   test('shows the full form until the first search, then the compact bar', async ({ page }) => {
     await page.goto('/trains');
-    await expect(page.getByRole('combobox', { name: 'Starts at (optional)' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Advanced options/ })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Filters' })).toHaveCount(0);
 
     await page.getByRole('combobox', { name: 'Station' }).fill(REAL_STATION_CRS);
@@ -110,7 +110,7 @@ test.describe('/trains', () => {
     await page.getByRole('button', { name: 'Search' }).click();
 
     await expect(page.getByRole('button', { name: 'Filters' })).toBeVisible();
-    await expect(page.getByRole('combobox', { name: 'Starts at (optional)' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Advanced options/ })).toHaveCount(0);
     await expect(page).toHaveURL(new RegExp(`[?&]station=${REAL_STATION_CRS}(&|$)`));
   });
 
@@ -126,9 +126,9 @@ test.describe('/trains', () => {
     });
     await page.getByRole('button', { name: 'Filters' }).click();
     const dialog = page.getByRole('dialog', { name: 'Filters' });
-    await dialog.getByRole('combobox', { name: 'Starts at (optional)' }).fill('pbo');
-    await expect(page).toHaveURL(/[?&]origin=PBO(&|$)/);
-    await expect.poll(() => searches.some((entry) => entry.includes('origin=PBO'))).toBe(true);
+    await dialog.getByLabel('Earliest departure (optional)').fill('09:00');
+    await expect(page).toHaveURL(/[?&]time=09%3A00(&|$)/);
+    await expect.poll(() => searches.some((entry) => entry.includes('from=09%3A00'))).toBe(true);
     expect(searches).not.toContain('RSC');
     await expect(page.getByTestId('list-filter-count')).toHaveText('1');
 

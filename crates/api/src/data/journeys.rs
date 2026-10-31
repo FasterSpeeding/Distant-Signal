@@ -19,7 +19,7 @@
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use common::TimeWindow;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 // The leg's effective station code: `ds_store::trains::leg_crs_sql`
@@ -87,6 +87,72 @@ pub struct JourneyLegRow {
     /// [`LEG_KIND_TRAIN`] or [`LEG_KIND_UNTRACKED`]: the train routes
     /// (candidates, pick a train) refuse an untracked leg.
     pub kind: String,
+    /// The window search's filters ([`LegSearchFilters`]), `None` for none.
+    pub search_filters: Option<sqlx::types::Json<LegSearchFilters>>,
+}
+
+/// A window leg's search filters (DS-215): the Trains section's Between
+/// stations filters, saved with the leg's window so its candidates list
+/// only the trains they allow. Each value is the text
+/// `GET /public/trains/search` takes for the same filter (`operator`,
+/// `origin` as `startsAt`, `terminates_at`, `previously_calls_at`,
+/// `previously_stops_at`, `calls_at`, `via`, `avoid`, `avoid_stop`), so the
+/// same parsers check it (`routes::trains::leg_filters`). `startsAt` is
+/// that search's `origin`, renamed here because a leg's `origin` is where
+/// the traveller boards. The wire shape and the
+/// `journey_legs.search_filters` column's JSON are both this struct.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LegSearchFilters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminates_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previously_calls_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previously_stops_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avoid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avoid_stop: Option<String>,
+}
+
+impl LegSearchFilters {
+    /// Every value trimmed, an empty one dropped.
+    #[must_use]
+    pub fn trimmed(&self) -> Self {
+        let tidy = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        Self {
+            operator: tidy(&self.operator),
+            starts_at: tidy(&self.starts_at),
+            terminates_at: tidy(&self.terminates_at),
+            previously_calls_at: tidy(&self.previously_calls_at),
+            previously_stops_at: tidy(&self.previously_stops_at),
+            calls_at: tidy(&self.calls_at),
+            via: tidy(&self.via),
+            avoid: tidy(&self.avoid),
+            avoid_stop: tidy(&self.avoid_stop),
+        }
+    }
+
+    /// Whether no filter is set.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 pub async fn get_owned_leg(
@@ -98,7 +164,8 @@ pub async fn get_owned_leg(
     let row = sqlx::query_as::<_, JourneyLegRow>(
         "SELECT jl.id, jl.journey_id, jl.origin_crs, jl.destination_crs, jl.service_date, \
                 jl.depart_after, jl.depart_before, jl.arrive_after, jl.arrive_before, \
-                jl.train_subscription_id, jl.match_mode, jl.window_searched, jl.kind \
+                jl.train_subscription_id, jl.match_mode, jl.window_searched, jl.kind, \
+                jl.search_filters \
          FROM journey_legs jl \
          JOIN journeys j ON j.id = jl.journey_id \
          WHERE jl.id = $1 AND jl.journey_id = $2 AND j.user_id = $3",
@@ -155,6 +222,8 @@ pub struct JourneyLegWithNamesRow {
     /// on a train leg.
     pub origin_stop_id: Option<String>,
     pub destination_stop_id: Option<String>,
+    /// See [`JourneyLegRow::search_filters`].
+    pub search_filters: Option<sqlx::types::Json<LegSearchFilters>>,
 }
 
 /// Generic over `E: PgExecutor` (rather than `&PgPool`) -- see
@@ -1142,11 +1211,13 @@ pub async fn add_window_leg_to_journey(
         depart_window,
         arrive_window,
         None,
+        None,
     )
     .await
 }
 
-/// [`add_window_leg_to_journey`], placed before `before_leg_id` when given.
+/// [`add_window_leg_to_journey`], placed before `before_leg_id` when given,
+/// with its search's `filters` (already checked by the route) when any.
 #[expect(
     clippy::too_many_arguments,
     reason = "each argument is an independent input from the single caller; a struct would only wrap them"
@@ -1161,6 +1232,7 @@ pub async fn add_window_leg_to_journey_at(
     depart_window: TimeWindow,
     arrive_window: TimeWindow,
     before_leg_id: Option<i64>,
+    filters: Option<&LegSearchFilters>,
 ) -> anyhow::Result<AddLegOutcome<i64>> {
     let mut tx = pool.begin().await?;
     let next_leg_order =
@@ -1186,6 +1258,13 @@ pub async fn add_window_leg_to_journey_at(
         true,
     )
     .await?;
+    if let Some(filters) = filters.filter(|f| !f.is_empty()) {
+        sqlx::query("UPDATE journey_legs SET search_filters = $1 WHERE id = $2")
+            .bind(sqlx::types::Json(filters))
+            .bind(leg_id)
+            .execute(&mut *tx)
+            .await?;
+    }
     crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
     tx.commit().await?;
     Ok(AddLegOutcome::Added(leg_id))
@@ -1202,8 +1281,9 @@ pub const LEG_KIND_UNTRACKED: &str = "untracked";
 /// Every `transit_mode` an untracked leg may have, in the order the form
 /// offers them. Checked here, not by the database (whose CHECK only bounds
 /// the shape), so adding a mode needs no migration.
-pub const TRANSIT_MODES: [&str; 11] = [
-    "tube", "dlr", "bus", "tram", "metro", "rail", "walk", "ferry", "taxi", "cycle", "other",
+pub const TRANSIT_MODES: [&str; 12] = [
+    "tube", "dlr", "bus", "tram", "metro", "rail", "walk", "transfer", "ferry", "taxi", "cycle",
+    "other",
 ];
 /// The longest place name an untracked leg keeps (the migration's CHECK).
 pub const UNTRACKED_PLACE_MAX_CHARS: usize = 100;
@@ -1541,6 +1621,21 @@ mod untracked_tests {
             leg.service_date(),
             NaiveDate::from_ymd_opt(2026, 10, 21).unwrap()
         );
+    }
+
+    #[test]
+    fn a_planner_transfer_between_stations_is_a_transfer_leg() {
+        // The planner saves a timetable TRANSFER link between two stations
+        // (Euston to Victoria, 19 minutes) as a `transfer` leg.
+        let leg = validate_untracked_leg(
+            UntrackedLegInput {
+                transit_mode: "TRANSFER",
+                ..input("2026-10-21T08:50:00Z", "2026-10-21T09:09:00Z")
+            },
+            today(),
+        )
+        .unwrap();
+        assert_eq!(leg.transit_mode, "transfer");
     }
 
     #[test]
@@ -2071,8 +2166,9 @@ pub async fn create_subscription_and_bind_leg(
 
 /// A train leg's window search, as "Edit search" on a journey leg saves it
 /// along with the train picked from it: the leg's own origin and
-/// destination, service date and time window. Validated by
-/// [`validate_window_leg`] before it gets here.
+/// destination, service date and time window, and its filters (`None`
+/// for none). Validated by [`validate_window_leg`] (and the filters by
+/// `routes::trains::leg_filters`) before it gets here.
 #[derive(Debug, Clone)]
 pub struct LegSearch {
     pub origin_crs: String,
@@ -2080,6 +2176,7 @@ pub struct LegSearch {
     pub service_date: NaiveDate,
     pub depart_window: TimeWindow,
     pub arrive_window: TimeWindow,
+    pub filters: Option<LegSearchFilters>,
 }
 
 /// [`create_subscription_and_bind_leg`], and when `search` is given, the
@@ -2112,7 +2209,7 @@ pub async fn create_subscription_and_bind_leg_with_search(
         let result = sqlx::query(
             "UPDATE journey_legs SET origin_crs = $1, destination_crs = $2, service_date = $3, \
                  depart_after = $4, depart_before = $5, arrive_after = $6, arrive_before = $7, \
-                 window_searched = TRUE \
+                 window_searched = TRUE, search_filters = $11 \
              WHERE id = $8 AND journey_id = $9 AND kind <> $10",
         )
         .bind(search.origin_crs.trim().to_ascii_uppercase())
@@ -2125,6 +2222,13 @@ pub async fn create_subscription_and_bind_leg_with_search(
         .bind(leg_id)
         .bind(journey_id)
         .bind(LEG_KIND_UNTRACKED)
+        .bind(
+            search
+                .filters
+                .as_ref()
+                .filter(|f| !f.is_empty())
+                .map(sqlx::types::Json),
+        )
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 0 {
@@ -3214,7 +3318,7 @@ static LIST_LEGS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| 
                 jl.transit_mode, {origin_place} AS origin_place, \
                 {destination_place} AS destination_place, jl.line_name, \
                 jl.planned_departure, jl.planned_arrival, jl.origin_stop_id, \
-                jl.destination_stop_id \
+                jl.destination_stop_id, jl.search_filters \
          FROM journey_legs jl \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
