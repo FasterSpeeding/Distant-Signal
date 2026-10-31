@@ -13,7 +13,7 @@ publish.workspace = true
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 # A Push Port document inside a record's `bytes` may be base64 (gzip).
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4.6.6", features = ["derive", "env"] }
 common = { path = "../common", features = ["redis"] }
@@ -31,7 +31,7 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "
 tracing = "0.1.44"
 
 [dev-dependencies]
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "test-util"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "time", "test-util"] }
 
 [lints]
 workspace = true
