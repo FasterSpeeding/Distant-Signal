@@ -180,10 +180,9 @@ test.describe('search-only lists', () => {
     await expect(cards).toHaveCount(before);
   });
 
-  test("a tram network's stops have Find a stop", async ({ page }) => {
-    await page.goto('/transit/metrolink');
+  test("a tram network's A to Z has Find a stop", async ({ page }) => {
+    await page.goto('/transit/metrolink/stops');
     await page.getByRole('textbox', { name: 'Find a stop' }).fill('picc');
-    // The A to Z only: a disruption may link a stop too.
     const stops = page.getByRole('list', { name: 'Stops' }).locator('a[href^="/transit/metrolink/stops/"]');
     await expect(stops).toHaveCount(1);
     await expect(stops.first()).toHaveText('Piccadilly');

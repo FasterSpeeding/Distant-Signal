@@ -1,0 +1,32 @@
+/* `TransitLineList`: one column on a phone, two from `sm`, three from
+   `lg`; every card in a row as tall as the tallest. */
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--mantine-spacing-xs);
+}
+
+@media (min-width: 48em) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 75em) {
+  .grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.item {
+  min-width: 0;
+}
+
+/* The swatch and the name, the name the part that shrinks. */
+.name {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  min-width: 0;
+}
