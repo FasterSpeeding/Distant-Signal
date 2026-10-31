@@ -111,7 +111,6 @@ export default async function TrainsPage({ searchParams }: { searchParams: Promi
           initialBoard: first('board'),
           initialStation: code(between ? 'from' : 'station'),
           initialStopsAt: between ? code('to') : undefined,
-          initialOrigin: between ? undefined : code('origin'),
           initialDate: first('date'),
           initialFrom: first('time'),
           initialTo: first('until'),

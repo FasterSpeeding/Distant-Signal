@@ -3,6 +3,49 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-30: `previously_calls_at`, `previously_stops_at` and `terminates_at` on the `/trains` boards
+
+Additive: three optional query parameters on `GET /public/trains/search`
+and `GET /public/trains/arrivals`, for finding one specific train by
+where it has already been or where it ends (DS-213;
+`crates/api/src/data/stop_filters.rs`). A request without them is
+answered exactly as before. They are not on `/Trips/plan`.
+
+- They look only at the part of the train's run BEFORE `station` (on the
+  search with `stops_at`, before `station`, the first of the two), the
+  part a passenger does not ride. A call after `station` never counts.
+- `previously_calls_at=A,B`: the train made a passenger call (a public
+  arrival or departure time) at each, in this order, before `station`.
+  The train's origin counts, so `previously_calls_at=X` finds every train
+  `origin=X` finds, and more.
+- `previously_stops_at=A,B`: the same, but the train's origin does not
+  count: it was already running when it stopped there. The origin is the
+  schedule's first location, the one `originCrs` names.
+- A working-only call or a passing point is never a previous call or
+  stop.
+- On the arrivals board every list already looks before `station`, so
+  there `previously_calls_at` means the same as `calls_at`.
+- The same syntax and cap as `calls_at`: at most 3 entries, each a CRS, a
+  `tiploc:` code or an OR choice (`KGX|EUS`, `group:LON`), not the same
+  twice in a row. `400` (plain text naming the parameter) for: too many
+  entries; an unknown code or group; a single-station entry that is
+  `station` or `stops_at`; and, on the arrivals board only, an entry
+  wholly in `avoid` or `avoid_stop`.
+- `terminates_at=X` (one 3-letter station code): only trains whose true
+  terminus (each row's `destinationCrs`) is X, exactly: `origin`'s
+  counterpart. With `stops_at` it is where the train goes on to end (it
+  may be `stops_at` itself). It may be `station`: on the arrivals board
+  that keeps the trains that end there (`terminates: true`), and on the
+  search a working that comes back to end where it started. `400` for a
+  malformed code, and, on the search without `stops_at` (where the stop
+  filters look on to the end of the train), a `terminates_at` in `avoid`
+  or `avoid_stop`.
+- `origin` is unchanged: it still means "starts at" exactly. One new
+  `400`: on the arrivals board, where the stop filters look back to the
+  train's origin, an `origin` in `avoid` or `avoid_stop`. The `/trains`
+  page now offers it as "Starts at" in Advanced options, beside
+  "Terminates at".
+
 ## 2026-10-31: the `tfl` transit network, line modes and frequencies
 
 Additive, and dark until `API_TRANSIT_NETWORKS` lists `tfl` (DS-212;

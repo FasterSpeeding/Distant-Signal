@@ -11,6 +11,10 @@
 //! (or a known `tiploc:` location), and the lists must not contradict
 //! each other or the stations searched. Each problem is a `400` before
 //! the board is read.
+//!
+//! `previously_calls_at` and `previously_stops_at` (2026-10-30, DS-213)
+//! are ordered lists like `calls_at`, over the part of the run before the
+//! station searched.
 
 use std::collections::HashSet;
 
@@ -27,25 +31,39 @@ use crate::routes::trips::{MAX_VIAS, parse_ordered_choices, parse_station_list};
 /// needs, and keeps the form's lists short.
 pub(super) const MAX_ORDERED: usize = MAX_VIAS;
 
-/// The four raw parameters.
+/// The raw parameters.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct StopFilterParams<'a> {
     pub calls_at: Option<&'a str>,
     pub via: Option<&'a str>,
     pub avoid: Option<&'a str>,
     pub avoid_stop: Option<&'a str>,
+    pub previously_calls_at: Option<&'a str>,
+    pub previously_stops_at: Option<&'a str>,
 }
 
-/// The four lists as parsed, before their codes are looked up.
+/// The lists as parsed, before their codes are looked up.
 #[derive(Debug, Clone)]
 pub(super) struct ParsedStopFilters {
     calls_at: Vec<StationChoice>,
     via: Vec<StationChoice>,
     avoid: Vec<StationChoice>,
     avoid_stop: Vec<StationChoice>,
+    previously_calls_at: Vec<StationChoice>,
+    previously_stops_at: Vec<StationChoice>,
 }
 
-/// Parses the four lists; `None` when all are absent or empty.
+/// Which part of the run the `previously_*` lists share with the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Board {
+    /// The search (departures, or between two stations): the others look
+    /// after the station, the `previously_*` lists before it.
+    Search,
+    /// The arrivals board: every list looks before the station.
+    Arrivals,
+}
+
+/// Parses the lists; `None` when all are absent or empty.
 pub(super) fn parse(
     params: StopFilterParams<'_>,
 ) -> Result<Option<ParsedStopFilters>, (StatusCode, String)> {
@@ -54,23 +72,36 @@ pub(super) fn parse(
         via: parse_ordered_choices("via", params.via, MAX_ORDERED)?,
         avoid: parse_station_list("avoid", params.avoid)?,
         avoid_stop: parse_station_list("avoid_stop", params.avoid_stop)?,
+        previously_calls_at: parse_ordered_choices(
+            "previously_calls_at",
+            params.previously_calls_at,
+            MAX_ORDERED,
+        )?,
+        previously_stops_at: parse_ordered_choices(
+            "previously_stops_at",
+            params.previously_stops_at,
+            MAX_ORDERED,
+        )?,
     };
     let empty = parsed.calls_at.is_empty()
         && parsed.via.is_empty()
         && parsed.avoid.is_empty()
-        && parsed.avoid_stop.is_empty();
+        && parsed.avoid_stop.is_empty()
+        && parsed.previously_calls_at.is_empty()
+        && parsed.previously_stops_at.is_empty();
     Ok((!empty).then_some(parsed))
 }
 
 /// [`parse`], then [`ParsedStopFilters::check_conflicts`] against
-/// `anchors`.
+/// `anchors` on `board`.
 pub(super) fn parse_checked(
     params: StopFilterParams<'_>,
     anchors: &[Anchor<'_>],
+    board: Board,
 ) -> Result<Option<ParsedStopFilters>, (StatusCode, String)> {
     let parsed = parse(params)?;
     if let Some(filters) = &parsed {
-        filters.check_conflicts(anchors)?;
+        filters.check_conflicts(anchors, board)?;
     }
     Ok(parsed)
 }
@@ -94,9 +125,17 @@ impl ParsedStopFilters {
     ///   `calls_at` entry every station of which is in `avoid` or
     ///   `avoid_stop` (it can never be met). A `via` in `avoid_stop` is
     ///   allowed: pass through without stopping.
+    ///
+    /// The `previously_*` lists get the same checks as `calls_at`: a
+    /// single-station entry that is searched is a `400`, and so, on the
+    /// arrivals board (`board`), where they look at the same rows as the
+    /// avoid lists, is an entry wholly in `avoid` or `avoid_stop`. On the
+    /// search they look before the station and the avoid lists after it,
+    /// so the two never clash.
     pub(super) fn check_conflicts(
         &self,
         anchors: &[Anchor<'_>],
+        board: Board,
     ) -> Result<(), (StatusCode, String)> {
         let bad = |message: String| Err((StatusCode::BAD_REQUEST, message));
         let role_of = |code: &str| anchors.iter().find(|a| a.crs == code).map(|a| a.role);
@@ -125,6 +164,10 @@ impl ParsedStopFilters {
         let avoided = codes(&self.avoid);
         let not_stopped: HashSet<String> =
             avoided.union(&codes(&self.avoid_stop)).cloned().collect();
+        let earlier_blocked = match board {
+            Board::Search => HashSet::new(),
+            Board::Arrivals => not_stopped.clone(),
+        };
         for (name, choices, blocked, blocked_by) in [
             (
                 "calls_at",
@@ -133,6 +176,18 @@ impl ParsedStopFilters {
                 "avoid or avoid_stop",
             ),
             ("via", &self.via, &avoided, "avoid"),
+            (
+                "previously_calls_at",
+                &self.previously_calls_at,
+                &earlier_blocked,
+                "avoid or avoid_stop",
+            ),
+            (
+                "previously_stops_at",
+                &self.previously_stops_at,
+                &earlier_blocked,
+                "avoid or avoid_stop",
+            ),
         ] {
             for choice in choices {
                 let label = &choice.label;
@@ -159,17 +214,44 @@ impl ParsedStopFilters {
         Ok(())
     }
 
+    /// A `400` for a train's end, `name` (`origin`, or `terminates_at`)
+    /// at `code`, that the avoid lists rule out: where they look at the
+    /// same rows (`origin` on the arrivals board, `terminates_at` on the
+    /// departures board), a train cannot both start or end there and
+    /// avoid it. A group is checked by its stations.
+    pub(super) fn check_end(&self, name: &str, code: &str) -> Result<(), (StatusCode, String)> {
+        let listed = |choices: &[StationChoice]| {
+            choices
+                .iter()
+                .any(|choice| choice.codes.iter().any(|c| c == code))
+        };
+        if listed(&self.avoid) || listed(&self.avoid_stop) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("{name}: '{code}' is also in avoid or avoid_stop; a train cannot do both"),
+            ));
+        }
+        Ok(())
+    }
+
     /// The lists as TIPLOC sets. A code with no TIPLOC is a `400`, except
     /// a group member, which is skipped (a group is one entry; it is a
     /// `400` only when none of its stations is known).
     pub(super) async fn resolve(&self, pool: &PgPool) -> Result<StopFilters, (StatusCode, String)> {
-        let all: Vec<String> = [&self.calls_at, &self.via, &self.avoid, &self.avoid_stop]
-            .into_iter()
-            .flatten()
-            .flat_map(|choice| choice.codes.iter().cloned())
-            .collect::<HashSet<String>>()
-            .into_iter()
-            .collect();
+        let all: Vec<String> = [
+            &self.calls_at,
+            &self.via,
+            &self.avoid,
+            &self.avoid_stop,
+            &self.previously_calls_at,
+            &self.previously_stops_at,
+        ]
+        .into_iter()
+        .flatten()
+        .flat_map(|choice| choice.codes.iter().cloned())
+        .collect::<HashSet<String>>()
+        .into_iter()
+        .collect();
         let found = tiplocs_for_codes(pool, &all)
             .await
             .map_err(super::internal_error)?;
@@ -214,6 +296,8 @@ impl ParsedStopFilters {
             via: ordered("via", &self.via)?,
             avoid: union("avoid", &self.avoid)?,
             avoid_stop: union("avoid_stop", &self.avoid_stop)?,
+            previously_calls_at: ordered("previously_calls_at", &self.previously_calls_at)?,
+            previously_stops_at: ordered("previously_stops_at", &self.previously_stops_at)?,
         })
     }
 
@@ -225,6 +309,8 @@ impl ParsedStopFilters {
             ("via", self.via.len()),
             ("avoid", self.avoid.len()),
             ("avoid_stop", self.avoid_stop.len()),
+            ("previously_calls_at", self.previously_calls_at.len()),
+            ("previously_stops_at", self.previously_stops_at.len()),
         ]
         .into_iter()
         .filter(|(_, n)| *n > 0)
@@ -284,6 +370,7 @@ mod tests {
             via: Some(via),
             avoid: Some(avoid),
             avoid_stop: Some(avoid_stop),
+            ..StopFilterParams::default()
         })
         .expect("valid")
         .expect("some list set")
@@ -377,12 +464,13 @@ mod tests {
 
     #[test]
     fn an_avoided_searched_station_is_a_400() {
-        let message = error(parsed("", "", "RDG", "").check_conflicts(&SEARCHED));
+        let message = error(parsed("", "", "RDG", "").check_conflicts(&SEARCHED, Board::Search));
         assert_eq!(
             message,
             "avoid: 'RDG' is the station searched; a train cannot avoid it"
         );
-        let message = error(parsed("", "", "", "group:LON").check_conflicts(&SEARCHED));
+        let message =
+            error(parsed("", "", "", "group:LON").check_conflicts(&SEARCHED, Board::Search));
         assert_eq!(
             message,
             "avoid_stop: 'group:LON' includes 'PAD', which is the stops_at station; a train \
@@ -392,47 +480,130 @@ mod tests {
 
     #[test]
     fn a_searched_station_as_calls_at_or_via_is_a_400_but_a_group_holding_it_is_not() {
-        let message = error(parsed("PAD", "", "", "").check_conflicts(&SEARCHED));
+        let message = error(parsed("PAD", "", "", "").check_conflicts(&SEARCHED, Board::Search));
         assert_eq!(
             message,
             "calls_at: 'PAD' is the stops_at station; name a station elsewhere on the train's \
              route"
         );
         assert!(
-            error(parsed("", "RDG", "", "").check_conflicts(&SEARCHED)).starts_with("via: 'RDG'")
+            error(parsed("", "RDG", "", "").check_conflicts(&SEARCHED, Board::Search))
+                .starts_with("via: 'RDG'")
         );
         assert!(
             parsed("group:LON", "", "", "")
-                .check_conflicts(&SEARCHED)
+                .check_conflicts(&SEARCHED, Board::Search)
                 .is_ok()
         );
     }
 
     #[test]
     fn contradictory_lists_are_400s() {
-        let message = error(parsed("SWI", "", "", "SWI").check_conflicts(&[]));
+        let message = error(parsed("SWI", "", "", "SWI").check_conflicts(&[], Board::Search));
         assert_eq!(
             message,
             "calls_at: 'SWI' is also in avoid or avoid_stop; a train cannot do both"
         );
-        let message = error(parsed("", "DID", "DID", "").check_conflicts(&[]));
+        let message = error(parsed("", "DID", "DID", "").check_conflicts(&[], Board::Search));
         assert_eq!(
             message,
             "via: 'DID' is also in avoid; a train cannot do both"
         );
         // Passing through without stopping is a real question.
-        assert!(parsed("", "DID", "", "DID").check_conflicts(&[]).is_ok());
+        assert!(
+            parsed("", "DID", "", "DID")
+                .check_conflicts(&[], Board::Search)
+                .is_ok()
+        );
         // An OR choice is a 400 only when every station of it is blocked.
         assert!(
             parsed("SWI|DID", "", "SWI", "")
-                .check_conflicts(&[])
+                .check_conflicts(&[], Board::Search)
                 .is_ok()
         );
-        let message = error(parsed("SWI|DID", "", "SWI", "DID").check_conflicts(&[]));
+        let message =
+            error(parsed("SWI|DID", "", "SWI", "DID").check_conflicts(&[], Board::Search));
         assert!(
             message.starts_with("calls_at: every station of 'SWI|DID'"),
             "{message}"
         );
+    }
+
+    fn previously(calls_at: &str, stops_at: &str, avoid: &str) -> ParsedStopFilters {
+        parse(StopFilterParams {
+            previously_calls_at: Some(calls_at),
+            previously_stops_at: Some(stops_at),
+            avoid: Some(avoid),
+            ..StopFilterParams::default()
+        })
+        .expect("valid")
+        .expect("some list set")
+    }
+
+    #[test]
+    fn the_previously_lists_parse_like_calls_at() {
+        let filters = previously("swi|group:lon,did", "oxf", "");
+        assert_eq!(
+            filters.names(),
+            ["previously_calls_at", "previously_stops_at"]
+        );
+        assert_eq!(filters.previously_calls_at[0].label, "SWI|group:LON");
+        let message = error(parse(StopFilterParams {
+            previously_stops_at: Some("AAA,BBB,CCC,DDD"),
+            ..StopFilterParams::default()
+        }));
+        assert_eq!(
+            message,
+            "too many previously_stops_at stations: 4 given, at most 3 allowed"
+        );
+        let message = error(parse(StopFilterParams {
+            previously_calls_at: Some("SWI,SWI"),
+            ..StopFilterParams::default()
+        }));
+        assert_eq!(
+            message,
+            "previously_calls_at: 'SWI' is given twice in a row; name it once"
+        );
+    }
+
+    #[test]
+    fn a_searched_station_as_a_previously_entry_is_a_400() {
+        let message = error(previously("RDG", "", "").check_conflicts(&SEARCHED, Board::Search));
+        assert_eq!(
+            message,
+            "previously_calls_at: 'RDG' is the station searched; name a station elsewhere on \
+             the train's route"
+        );
+        assert!(
+            error(previously("", "PAD", "").check_conflicts(&SEARCHED, Board::Search))
+                .starts_with("previously_stops_at: 'PAD' is the stops_at station")
+        );
+    }
+
+    #[test]
+    fn a_previously_entry_clashes_with_avoid_only_on_the_arrivals_board() {
+        // On the search, avoid looks after the station, previously_* before.
+        assert!(
+            previously("SWI", "", "SWI")
+                .check_conflicts(&[], Board::Search)
+                .is_ok()
+        );
+        let message = error(previously("SWI", "", "SWI").check_conflicts(&[], Board::Arrivals));
+        assert_eq!(
+            message,
+            "previously_calls_at: 'SWI' is also in avoid or avoid_stop; a train cannot do both"
+        );
+    }
+
+    #[test]
+    fn an_end_station_in_an_avoid_list_is_a_400() {
+        let filters = parsed("", "", "SWI", "group:LON");
+        assert_eq!(
+            error(filters.check_end("terminates_at", "SWI")),
+            "terminates_at: 'SWI' is also in avoid or avoid_stop; a train cannot do both"
+        );
+        assert!(error(filters.check_end("origin", "PAD")).starts_with("origin: 'PAD'"));
+        assert!(filters.check_end("origin", "RDG").is_ok());
     }
 
     #[test]
