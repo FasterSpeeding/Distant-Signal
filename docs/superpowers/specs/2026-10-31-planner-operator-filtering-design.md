@@ -527,7 +527,7 @@ The rule:
   `BUS`, `FERRY`, `TRAM`, leftover `METRO` and non-Tube `TRANSFER` links
   of §3.2. The CSV can attribute them later. Each one is counted at
   graph build (§6.7).
-- **Estimated walks instead of the Tube** (proposed default). When the
+- **Estimated walks instead of the Tube** (approved, §11 item 14). When the
   rule leaves `LT` out, each `LT`-attributed link pair whose stations
   have coordinates gets a walk link instead, timed by `tfl_access`'s walk
   model (straight line × 1.25 at 4.5 km/h). It's only offered when that
@@ -623,7 +623,7 @@ does:
 - **Prefer** adds one labelled "<Operator> only" search to the replan,
   next to the ticket's "same operator" search, with the same keep bound
   as §5.4.
-- **When the filter leaves no suggestion at all** (proposed default):
+- **When the filter leaves no suggestion at all** (approved, §11 item 11):
   the replan runs once more without it and returns its best suggestion,
   flagged `outsideOperatorFilter: true` and shown as "Uses operators you
   chose to avoid" or "Uses other operators". A disrupted traveller should
@@ -1264,7 +1264,8 @@ not on each other. P5 needs P2's save change to have anything to store.
    replans and break suggestions honour it (§5.6, §6.9).
 
 **Proposed defaults** (applied in this design; say if any should
-change):
+change). Items 11, 13 and 14 were approved on 2026-10-31 and are marked
+so:
 
 6. **No "faster with other operators" note** on a filtered Fastest
    result for now. It costs one more search (about +5%). Revisit with
@@ -1290,15 +1291,16 @@ change):
     `/trains`. This is offered to whoever owns `TrainSearchForm`; it is
     not part of these phases.
 11. **The replan fallback** (§5.6): when the filter leaves no suggestion
-    in a disruption, show the best unfiltered one, flagged. This was not
-    asked; it is proposed so a stored preference never strands a
-    traveller.
+    in a disruption, show the best unfiltered one, flagged "Uses other
+    operators", so a stored preference never strands a traveller.
+    **Approved by the user, 2026-10-31.**
 12. **Templates** made from a filtered journey don't copy the filter yet.
 13. **`TRANSFER` links on Tube pairs count as London Underground.** The
     timetable doesn't give their mode, but they're Tube-speed (EUS–VIC
     19 minutes against about 62 on foot), and 140 of the 230 `TRANSFER`
     pairs are Tube pairs. The other 90 stay unattributed (§3.2).
+    **Approved by the user, 2026-10-31.**
 14. **Estimated walks replace the Tube when it's left out**, up to 30
     minutes on foot (§5.1). Without them, "no Tube" would mean no way
     between most London termini, because the timetable has no walk rows
-    there.
+    there. **Approved by the user, 2026-10-31.**
