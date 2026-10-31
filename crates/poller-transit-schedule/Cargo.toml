@@ -22,7 +22,7 @@ health-http = { path = "../health-http" }
 ingest-stream = { path = "../ingest-stream" }
 metrics = "0.24"
 # SIRI-SX, streamed (the version poller-incidents uses).
-quick-xml = "0.41.0"
+quick-xml = "0.42.0"
 # Reading the stream back (its cursor, the feed guard's baseline): the
 # version ingest-stream uses.
 redis = { version = "1.8", features = ["tokio-comp", "connection-manager"] }
@@ -32,7 +32,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 # `raw_value`: a timetable part's body is encoded once per chunk.
 serde_json = { version = "1.0.149", features = ["raw_value"] }
 # The timetable's content hash (the version in feed_version).
-sha2 = "0.10"
+sha2 = "0.11"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "signal", "time", "fs", "io-util"] }
 # The network files (networks/<network>.toml), as the line catalogue.
 toml = { version = "1.1.2", features = ["serde"] }
@@ -42,8 +42,8 @@ tracing = "0.1.44"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
-tempfile = "3"
-wiremock = "0.6"
+tempfile = "=3.27.0"
+wiremock = "=0.6.5"
 
 [lints]
 workspace = true

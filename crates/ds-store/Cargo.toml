@@ -23,12 +23,12 @@ chrono-tz = "0.10"
 # (hyper). `postgres`: `common::pg`.
 common = { path = "../common", default-features = false, features = ["postgres"] }
 metrics = "0.24"
-rand = "0.8"
+rand = "0.10"
 schedule-query = { path = "../schedule-query" }
 serde = { version = "1.0.228", features = ["derive"] }
 # `schedule::summaries::derivation_fingerprint` (moved from the api, plan
 # 2a.2); the api's version.
-sha2 = "0.10"
+sha2 = "0.11"
 # `raw_value`: the schedule line population is carried as raw JSON (see the
 # api's `upsert_schedule_line_population`).
 serde_json = { version = "1.0.149", features = ["raw_value"] }
@@ -36,7 +36,7 @@ serde_json = { version = "1.0.149", features = ["raw_value"] }
 # only, so no compile-time query cache: `macros` and `migrate` are here for
 # `migrate`'s `sqlx::migrate!()` (plan 1B.1), not for `query!`. `derive`
 # keeps `#[derive(sqlx::FromRow)]`.
-sqlx = { version = "0.8.6", default-features = false, features = ["chrono", "derive", "json", "macros", "migrate", "postgres", "runtime-tokio", "tls-native-tls"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["chrono", "derive", "json", "macros", "migrate", "postgres", "runtime-tokio", "tls-native-tls"] }
 # `rt`: the loop runner's `JoinSet` (`loops::runner`).
 tokio = { version = "1.52.3", features = ["rt", "sync", "time"] }
 tracing = "0.1.44"
@@ -53,8 +53,8 @@ trust-schema = { path = "../trust-schema" }
 test-support = ["tokio/rt"]
 
 [dev-dependencies]
-metrics-exporter-prometheus = { version = "0.18", default-features = false }
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
+tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true
