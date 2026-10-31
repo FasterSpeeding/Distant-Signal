@@ -87,12 +87,14 @@ fn tube_hours() -> Vec<(String, String)> {
 fn links() -> Vec<AccessLink> {
     vec![
         AccessLink {
+            operator: schedule_query::OperatorId::UNKNOWN,
             crs: "HOH".to_string(),
             mode: "TUBE".to_string(),
             minutes: 32,
             windows: tube_hours(),
         },
         AccessLink {
+            operator: schedule_query::OperatorId::UNKNOWN,
             crs: "WRU".to_string(),
             mode: "WALK".to_string(),
             minutes: 50,
@@ -313,6 +315,7 @@ fn a_journey_never_passes_through_a_virtual_stop() {
 fn two_stops_on_one_line_get_the_direct_ride() {
     let links = links();
     let direct = AccessLink {
+        operator: schedule_query::OperatorId::UNKNOWN,
         crs: String::new(),
         mode: "TUBE".to_string(),
         minutes: 20,

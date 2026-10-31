@@ -47,7 +47,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use chrono::NaiveDate;
 use schedule_query::{
-    Connection, InterchangeData, fixed_link_between, fixed_links_between, normalize_tiploc,
+    Connection, InterchangeData, fixed_link_between_where, fixed_links_between, normalize_tiploc,
     sibling_tiplocs,
 };
 
@@ -225,8 +225,11 @@ impl<'a> Reverse<'a> {
                 continue;
             };
             for &from_crs in sources {
+                let allowed = |link: &schedule_query::FixedLink| {
+                    restrictions::allows_link(self.restrictions, link)
+                };
                 let mut minutes: Vec<u32> = fixed_links_between(self.interchange, from_crs, crs)
-                    .filter(|link| link.minutes > 0)
+                    .filter(|link| link.minutes > 0 && allowed(link))
                     .map(|link| link.minutes as u32)
                     .collect();
                 minutes.sort_unstable();
@@ -238,9 +241,15 @@ impl<'a> Reverse<'a> {
                     // The forward search takes the shortest link valid at
                     // the walk's start time; accept `start` only if that
                     // link arrives in time.
-                    let fits =
-                        fixed_link_between(self.interchange, from_crs, crs, self.date, start)
-                            .is_some_and(|link| start + link.minutes.max(0) as u32 <= time);
+                    let fits = fixed_link_between_where(
+                        self.interchange,
+                        from_crs,
+                        crs,
+                        self.date,
+                        start,
+                        allowed,
+                    )
+                    .is_some_and(|link| start + link.minutes.max(0) as u32 <= time);
                     if !fits {
                         continue;
                     }
@@ -892,6 +901,7 @@ mod tests {
         ic.fixed_links_from_crs.insert(
             "EUS".to_string(),
             vec![FixedLink {
+                only_without: schedule_query::OperatorId::UNKNOWN,
                 operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "TUBE".to_string(),
                 to_crs: "KGX".to_string(),

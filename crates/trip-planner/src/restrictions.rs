@@ -119,10 +119,15 @@ impl OperatorRule {
         }
     }
 
-    /// Whether `link` may be used: walks always, links only under
-    /// [`OperatorScope::Everything`].
+    /// Whether `link` may be used: walks always, links under
+    /// [`OperatorScope::Everything`] by their operator. A stand-in
+    /// ([`FixedLink::only_without`]: an estimated walk instead of the Tube)
+    /// only when this rule rules its operator out.
     #[must_use]
     pub fn allows_link(&self, link: &FixedLink) -> bool {
+        if link.is_stand_in() {
+            return self.scope == OperatorScope::Everything && !self.allows(link.only_without);
+        }
         link.is_walk() || self.scope == OperatorScope::CifTrains || self.allows(link.operator)
     }
 }
@@ -217,12 +222,13 @@ impl Restrictions {
         }
     }
 
-    /// Whether `link` may be walked or ridden under the operator rule.
+    /// Whether `link` may be walked or ridden under the operator rule
+    /// (with none, every link but the stand-ins).
     #[must_use]
     pub fn allows_link(&self, link: &FixedLink) -> bool {
         self.operator_rule
             .as_ref()
-            .is_none_or(|rule| rule.allows_link(link))
+            .map_or(!link.is_stand_in(), |rule| rule.allows_link(link))
     }
 
     /// These restrictions plus more `no_interchange` and `no_call` TIPLOCs
@@ -307,6 +313,12 @@ impl Restrictions {
 /// `Restrictions::allows_interchange`, treating "no restrictions" as allowed.
 pub(crate) fn allows_interchange(restrictions: Option<&Restrictions>, tiploc: &str) -> bool {
     restrictions.is_none_or(|r| r.allows_interchange(tiploc))
+}
+
+/// `Restrictions::allows_link`, treating "no restrictions" as every link
+/// but the stand-ins.
+pub(crate) fn allows_link(restrictions: Option<&Restrictions>, link: &FixedLink) -> bool {
+    restrictions.map_or(!link.is_stand_in(), |r| r.allows_link(link))
 }
 
 /// `Restrictions::blocks`, treating "no restrictions" as not blocked.
@@ -401,6 +413,7 @@ mod tests {
 
     fn fixed(mode: &str, operator: OperatorId) -> FixedLink {
         FixedLink {
+            only_without: OperatorId::UNKNOWN,
             mode: mode.to_string(),
             to_crs: "VIC".to_string(),
             minutes: 10,

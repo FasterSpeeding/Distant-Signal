@@ -834,6 +834,8 @@ mod tests {
     /// stops' `NaPTAN` ids without `940GZZLU`) on `line`.
     fn tube_leg(from: &str, to: &str, line: Option<&str>, minutes: i32) -> PlannedLeg {
         PlannedLeg::Transfer {
+            operator: None,
+            estimated_walk: false,
             mode: "TUBE".to_owned(),
             origin_crs: Some(from.to_owned()),
             destination_crs: Some(to.to_owned()),
@@ -1265,6 +1267,8 @@ mod db_tests {
 
     fn transfer(mode: &str, from: &str, to: &str) -> PlannedLeg {
         PlannedLeg::Transfer {
+            operator: None,
+            estimated_walk: false,
             mode: mode.to_owned(),
             origin_crs: Some(from.to_owned()),
             destination_crs: Some(to.to_owned()),
@@ -1362,6 +1366,8 @@ mod db_tests {
                 minutes,
                 ..
             } => PlannedLeg::Transfer {
+                operator: None,
+                estimated_walk: false,
                 mode,
                 origin_crs,
                 destination_crs,

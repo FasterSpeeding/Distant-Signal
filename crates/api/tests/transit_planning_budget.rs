@@ -141,6 +141,7 @@ fn rail_interchange() -> InterchangeData {
         (
             crs(from),
             FixedLink {
+                only_without: schedule_query::OperatorId::UNKNOWN,
                 operator: schedule_query::OperatorId::UNKNOWN,
                 mode: ["WALK", "TUBE", "TRANSFER", "BUS"][rng.next(4) as usize].to_owned(),
                 to_crs: crs(to),

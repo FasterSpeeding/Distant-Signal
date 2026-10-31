@@ -1046,12 +1046,14 @@ mod tests {
         let stop = "940GZZTEST";
         let links = [
             crate::AccessLink {
+                operator: schedule_query::OperatorId::UNKNOWN,
                 crs: "E".to_string(),
                 mode: "TUBE".to_string(),
                 minutes: 12,
                 windows: Vec::new(),
             },
             crate::AccessLink {
+                operator: schedule_query::OperatorId::UNKNOWN,
                 crs: "Y".to_string(),
                 mode: "TUBE".to_string(),
                 minutes: 10,

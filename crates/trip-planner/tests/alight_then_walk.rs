@@ -36,6 +36,7 @@ fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
 
 fn walk(to_crs: &str, minutes: i32) -> FixedLink {
     FixedLink {
+        only_without: schedule_query::OperatorId::UNKNOWN,
         operator: schedule_query::OperatorId::UNKNOWN,
         mode: "WALK".to_string(),
         to_crs: to_crs.to_string(),

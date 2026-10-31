@@ -1,0 +1,24 @@
+# Display names for operator codes the timetable carries but the `tocs`
+# list does not name, for GET /Trips/operator-groups (`names`) and the
+# planner's operator picker. Compiled into the api
+# (crates/api/src/data/operator_groups.rs). See
+# docs/superpowers/specs/2026-10-31-planner-operator-filtering-design.md §3.1
+# and §11 item 9. Identified from the timetable only:
+#
+# TW: 174 trains a weekday on the Tyne and Wear Metro's own route (Newcastle
+#     Airport - Newcastle - Sunderland - South Hylton), sharing the Sunderland
+#     line with Northern.
+# QC: ferries only (77 a weekday), e.g. Ullapool - Stornoway.
+# LF: 10 express passenger trains (category XX) a weekday, open access
+#     (retail service IDs LF1xxxxx): London Euston - Stirling via Milton
+#     Keynes, Nuneaton, Crewe, Preston, Carlisle, Lockerbie, Motherwell,
+#     Whifflet, Greenfaulds and Larbert, 5 each way, plus Preston - Euston
+#     (1A00) and Euston - Preston (1P04). That route and calling pattern is
+#     Grand Union's open-access Euston - Stirling service; recorded from that
+#     evidence on 2026-10-31, to be confirmed if `tocs` names the code.
+#
+# code: a 2-character ATOC code; name: what the picker shows.
+code,name
+TW,Tyne and Wear Metro
+QC,CalMac ferries
+LF,Grand Union (London - Stirling)

@@ -72,6 +72,7 @@ fn network() -> (Vec<Connection>, InterchangeData) {
     interchange.fixed_links_from_crs.insert(
         "EUS".to_string(),
         vec![FixedLink {
+            only_without: schedule_query::OperatorId::UNKNOWN,
             operator: schedule_query::OperatorId::UNKNOWN,
             mode: "TUBE".to_string(),
             to_crs: "KGX".to_string(),
@@ -322,6 +323,7 @@ fn random_networks_agree_on_arrival_and_fewest_changes() {
     interchange.fixed_links_from_crs.insert(
         "CCC".to_string(),
         vec![FixedLink {
+            only_without: schedule_query::OperatorId::UNKNOWN,
             operator: schedule_query::OperatorId::UNKNOWN,
             mode: "WALK".to_string(),
             to_crs: "DDD".to_string(),

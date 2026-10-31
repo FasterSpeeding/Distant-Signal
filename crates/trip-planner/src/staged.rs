@@ -63,7 +63,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use chrono::NaiveDate;
 use schedule_query::{
-    ChangeTime, Connection, InterchangeData, fixed_links_from, minimum_change_time,
+    ChangeTime, Connection, InterchangeData, fixed_links_from_where, minimum_change_time,
     normalize_tiploc, sibling_tiplocs,
 };
 
@@ -465,7 +465,10 @@ impl<'a> Forward<'a> {
         let Some(crs) = self.interchange.tiploc_to_crs.get(from_tiploc) else {
             return;
         };
-        for link in fixed_links_from(self.interchange, crs, self.date, at) {
+        let restrictions = self.restrictions;
+        for link in fixed_links_from_where(self.interchange, crs, self.date, at, |link| {
+            restrictions::allows_link(restrictions, link)
+        }) {
             let Some(destinations) = self.interchange.crs_to_tiplocs.get(&link.to_crs) else {
                 continue;
             };
@@ -2800,6 +2803,7 @@ mod tests {
                 .insert(crs.to_string(), vec![tiploc.to_string()]);
         }
         let walk = schedule_query::FixedLink {
+            only_without: schedule_query::OperatorId::UNKNOWN,
             operator: schedule_query::OperatorId::UNKNOWN,
             mode: "WALK".to_string(),
             to_crs: "HXX".to_string(),

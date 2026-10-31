@@ -51,6 +51,7 @@ fn row(
     (
         from.to_string(),
         FixedLink {
+            only_without: schedule_query::OperatorId::UNKNOWN,
             operator: schedule_query::OperatorId::UNKNOWN,
             mode: mode.to_string(),
             to_crs: to.to_string(),

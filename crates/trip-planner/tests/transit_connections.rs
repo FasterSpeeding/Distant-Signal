@@ -57,6 +57,7 @@ fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
 
 fn link(mode: &str, to: &str, minutes: i32) -> FixedLink {
     FixedLink {
+        only_without: schedule_query::OperatorId::UNKNOWN,
         operator: schedule_query::OperatorId::UNKNOWN,
         mode: mode.to_string(),
         to_crs: to.to_string(),

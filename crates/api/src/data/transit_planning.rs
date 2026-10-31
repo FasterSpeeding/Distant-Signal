@@ -1076,6 +1076,7 @@ pub fn build_transit_graph(
             let walk = rail_link_walk_minutes(distance, &link.kind);
             let minutes = walk + buffer as i32;
             let fixed = |to: &str| FixedLink {
+                only_without: schedule_query::OperatorId::UNKNOWN,
                 operator: schedule_query::OperatorId::UNKNOWN,
                 mode: RAIL_LINK_MODE.to_owned(),
                 to_crs: to.to_owned(),
@@ -1113,6 +1114,7 @@ pub fn build_transit_graph(
                     .push(FixedLink {
                         // A walk: no operator, passes every filter.
                         operator: schedule_query::OperatorId::UNKNOWN,
+                        only_without: schedule_query::OperatorId::UNKNOWN,
                         mode: RAIL_LINK_MODE.to_owned(),
                         to_crs: to.clone(),
                         minutes: walk.minutes,

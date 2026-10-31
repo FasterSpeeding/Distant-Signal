@@ -218,6 +218,16 @@ pub enum PlannedLeg {
         /// `null`. Filled in by `transit_planning` dressing.
         #[serde(skip_serializing_if = "Option::is_none")]
         transit_walk: Option<Box<crate::data::transit_planning::TransitWalk>>,
+        /// Who runs the link (additive, 2026-10-31): `LT` for a Tube link
+        /// or ride, `ds:DLR` and so on (planner operator filtering spec
+        /// §6.5). Absent for a walk or when no operator is known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        operator: Option<String>,
+        /// `true` for an estimated walk standing in for the Tube, which only
+        /// a plan whose operator filter rules the Tube out uses (additive,
+        /// 2026-10-31, spec §5.1). Absent otherwise.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        estimated_walk: bool,
     },
 }
 
@@ -468,17 +478,35 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
                 transit: None,
             }
         }
-        JourneyLeg::Transfer(transfer) => PlannedLeg::Transfer {
-            mode: transfer.mode.clone(),
-            origin_crs: crs_for_tiploc(interchange, &transfer.from_tiploc),
-            destination_crs: crs_for_tiploc(interchange, &transfer.to_tiploc),
-            minutes: transfer.minutes,
-            line: None,
-            origin_stop: None,
-            destination_stop: None,
-            access: None,
-            transit_walk: None,
-        },
+        JourneyLeg::Transfer(transfer) => {
+            let origin_crs = crs_for_tiploc(interchange, &transfer.from_tiploc);
+            let destination_crs = crs_for_tiploc(interchange, &transfer.to_tiploc);
+            let link = origin_crs
+                .as_deref()
+                .zip(destination_crs.as_deref())
+                .and_then(|(from, to)| {
+                    crate::data::planner_operators::transfer_link(
+                        interchange,
+                        from,
+                        to,
+                        &transfer.mode,
+                        transfer.minutes,
+                    )
+                });
+            PlannedLeg::Transfer {
+                operator: link.and_then(|link| link.operator.code()),
+                estimated_walk: link.is_some_and(schedule_query::FixedLink::is_stand_in),
+                mode: transfer.mode.clone(),
+                origin_crs,
+                destination_crs,
+                minutes: transfer.minutes,
+                line: None,
+                origin_stop: None,
+                destination_stop: None,
+                access: None,
+                transit_walk: None,
+            }
+        }
     }
 }
 
@@ -962,13 +990,25 @@ fn alternative_crs<J>(
 /// - `noRoute`: nothing reaches the destination that service day at all
 ///   (under the avoid lists, if any);
 /// - `previousSegment` / `nextSegment`: a waypoint segment that was not
-///   searched, because the one it chains from found nothing.
+///   searched, because the one it chains from found nothing;
+/// - `operator` / `avoidOperator` (2026-10-31, `?operator=` /
+///   `?avoidOperator=`): an itinerary exists without the operator filter,
+///   none with it (`values` is the filter's codes; `linkOperators` names
+///   the operators whose links or connecting rides, rather than trains,
+///   the route needs). `operator` also when none of the chosen operators
+///   runs that day. A filter that only fails together with the avoid lists
+///   is `avoidCombined`, its `values` then holding the operator codes too.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoResultReason {
     pub constraint: &'static str,
     pub values: Vec<String>,
     pub message: String,
+    /// `operator` / `avoidOperator` only (2026-10-31): the operators whose
+    /// links or connecting rides, not trains, made the difference (`["LT"]`:
+    /// crossing London needs the Tube). Absent otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub link_operators: Vec<String>,
 }
 
 /// One resolved leg of a multi-waypoint plan -- `origin`/`destination` name
@@ -2057,6 +2097,7 @@ fn explain_unpassable_via(
         format!(" through {}", input.waypoints.join(", "))
     };
     Some(NoResultReason {
+        link_operators: Vec::new(),
         constraint: "via",
         values,
         message: format!(
@@ -2159,6 +2200,7 @@ fn explain_infeasible_joint_plan(
         let search = &input.search;
         let reason = if capped {
             NoResultReason {
+                link_operators: Vec::new(),
                 constraint: "maxChanges",
                 values: vec![search.max_changes.to_string()],
                 message: format!(
@@ -2170,6 +2212,7 @@ fn explain_infeasible_joint_plan(
             }
         } else {
             NoResultReason {
+                link_operators: Vec::new(),
                 constraint: "noRoute",
                 values: Vec::new(),
                 message: format!(
@@ -2195,6 +2238,7 @@ fn explain_infeasible_joint_plan(
                 .expect("an empty chained segment is explained")
         } else {
             NoResultReason {
+                link_operators: Vec::new(),
                 constraint: if index < failing {
                     "nextSegment"
                 } else {
@@ -2489,6 +2533,161 @@ fn clock_label(minutes: u32) -> String {
 /// "arrive at all".
 const END_OF_SERVICE_DAYS_MIN: u32 = 4 * 1440;
 
+/// "using only VT, GR" / "avoiding LT" -- how a message describes an
+/// operator filter.
+fn describe_rule(rule: &trip_planner::OperatorRule) -> String {
+    let codes = rule.operators.codes().join(", ");
+    match rule.mode {
+        trip_planner::OperatorMode::Only => format!("using only {codes}"),
+        trip_planner::OperatorMode::Avoid => format!("avoiding operators {codes}"),
+    }
+}
+
+/// The wire name of `rule`'s constraint.
+fn rule_constraint(rule: &trip_planner::OperatorRule) -> &'static str {
+    match rule.mode {
+        trip_planner::OperatorMode::Only => "operator",
+        trip_planner::OperatorMode::Avoid => "avoidOperator",
+    }
+}
+
+/// Whether anything `rule` allows runs in `search`'s graph at all: an
+/// "only" rule whose operators run nothing that day finds nothing anywhere.
+fn rule_runs_at_all(search: &SegmentSearch<'_>, rule: &trip_planner::OperatorRule) -> bool {
+    if rule.mode == trip_planner::OperatorMode::Avoid {
+        return true;
+    }
+    search
+        .connections
+        .iter()
+        .any(|c| !c.operator.is_unknown() && rule.operators.contains(c.operator))
+        || search
+            .interchange
+            .fixed_links_from_crs
+            .values()
+            .flatten()
+            .any(|link| !link.operator.is_unknown() && rule.operators.contains(link.operator))
+}
+
+/// The operator filter's part of [`explain_empty_segment`] (spec 2026-10-31
+/// §6.5, steps 3): `Some` when the filter alone is to blame -- dropping it
+/// (keeping the station lists, `lists_only`) finds an itinerary -- or when
+/// none of an "only" filter's operators runs that day. `linkOperators`
+/// names the link-only networks (the Tube, the DLR, trams) whose links or
+/// rides the route needs, found by a search that applies the filter to CIF
+/// trains only.
+fn explain_operator_rule(
+    input: &TripPlanInput<'_>,
+    rule: &trip_planner::OperatorRule,
+    bound: TimeBound,
+    found: &dyn Fn(TimeBound, Option<&Restrictions>) -> Option<trip_planner::Journey>,
+    lists_only: Option<&Restrictions>,
+    (from, to, phrase, date): (&str, &str, &str, NaiveDate),
+) -> Option<NoResultReason> {
+    let search = &input.search;
+    let codes = rule.operators.codes();
+    let constraint = rule_constraint(rule);
+    let described = describe_rule(rule);
+    if !rule_runs_at_all(search, rule) {
+        return Some(NoResultReason {
+            constraint,
+            values: codes.clone(),
+            message: format!(
+                "None of the chosen operators ({}) runs on {date}.",
+                codes.join(", ")
+            ),
+            link_operators: Vec::new(),
+        });
+    }
+    found(bound, lists_only)?;
+    // With the filter on trains only: does relaxing the links do it?
+    let trains_only = lists_only
+        .cloned()
+        .unwrap_or_default()
+        .with_operator_rule(rule.clone().cif_trains_only());
+    let link_operators = found(bound, Some(&trains_only))
+        .map(|journey| refused_link_operators(search, rule, &journey))
+        .unwrap_or_default();
+    let message = if link_operators.is_empty() {
+        format!(
+            "No itinerary from {from} to {to} {phrase} on {date} while {described}; one exists \
+             with other operators."
+        )
+    } else {
+        format!(
+            "No itinerary from {from} to {to} {phrase} on {date} while {described}: the route \
+             needs {}, which this filter leaves out.",
+            link_operators.join(", ")
+        )
+    };
+    Some(NoResultReason {
+        constraint,
+        values: codes,
+        message,
+        link_operators,
+    })
+}
+
+/// The operators `rule` refuses among the links and transit rides
+/// `journey` takes: what a "trains only" search used that the full filter
+/// did not allow.
+fn refused_link_operators(
+    search: &SegmentSearch<'_>,
+    rule: &trip_planner::OperatorRule,
+    journey: &trip_planner::Journey,
+) -> Vec<String> {
+    let mut refused: Vec<schedule_query::OperatorId> = Vec::new();
+    let mut note = |operator: schedule_query::OperatorId| {
+        if !rule.allows(operator) && !refused.contains(&operator) {
+            refused.push(operator);
+        }
+    };
+    for leg in &journey.legs {
+        match leg {
+            JourneyLeg::Transfer(transfer) => {
+                let crs = |tiploc: &str| {
+                    search
+                        .interchange
+                        .tiploc_to_crs
+                        .get(schedule_query::normalize_tiploc(tiploc))
+                        .cloned()
+                };
+                if let (Some(from), Some(to)) =
+                    (crs(&transfer.from_tiploc), crs(&transfer.to_tiploc))
+                {
+                    for link in schedule_query::fixed_links_between(search.interchange, &from, &to)
+                    {
+                        if link.mode == transfer.mode && link.minutes == transfer.minutes {
+                            note(link.operator);
+                        }
+                    }
+                }
+            }
+            JourneyLeg::Train(train) => {
+                if crate::data::transit_planning::is_transit_uid(&train.uid) {
+                    // The trip's connections carry its operator (a `tfl`
+                    // trip's follows its line's mode); a scan, as this runs
+                    // only to explain an empty result.
+                    let operator = search
+                        .connections
+                        .iter()
+                        .find(|connection| connection.uid == train.uid.as_str())
+                        .map_or_else(
+                            || crate::data::planner_operators::transit_operator(&train.uid, None),
+                            |connection| connection.operator,
+                        );
+                    note(operator);
+                }
+            }
+        }
+    }
+    refused.sort();
+    refused
+        .into_iter()
+        .filter_map(schedule_query::OperatorId::code)
+        .collect()
+}
+
 /// See [`NoResultReason`]. Adapted from `train-mcp`'s `attributeFailure`:
 /// re-run the segment without the avoid lists, and blame them if that
 /// finds something -- narrowed here to the single list whose removal is
@@ -2517,6 +2716,7 @@ fn explain_empty_segment(
                 TimeBound::DepartAfter(_) => {
                     let previous = &segments[index - 1];
                     NoResultReason {
+                        link_operators: Vec::new(),
                         constraint: "previousSegment",
                         values: vec![format!(
                             "{} -> {}",
@@ -2532,6 +2732,7 @@ fn explain_empty_segment(
                 TimeBound::ArriveBy(_) => {
                     let next = &segments[index + 1];
                     NoResultReason {
+                        link_operators: Vec::new(),
                         constraint: "nextSegment",
                         values: vec![format!("{} -> {}", next.origin_crs, next.destination_crs)],
                         message: format!(
@@ -2552,6 +2753,7 @@ fn explain_empty_segment(
 
     if segment.capped_by_max_changes {
         return NoResultReason {
+            link_operators: Vec::new(),
             constraint: "maxChanges",
             values: vec![search.max_changes.to_string()],
             message: format!(
@@ -2566,6 +2768,7 @@ fn explain_empty_segment(
     let Ok((from_tiplocs, to_tiplocs)) = input.segment_tiplocs(from, to) else {
         // Validated before any search; unreachable.
         return NoResultReason {
+            link_operators: Vec::new(),
             constraint: "noRoute",
             values: Vec::new(),
             message: format!("No itinerary from {from} to {to}."),
@@ -2576,39 +2779,71 @@ fn explain_empty_segment(
     };
 
     let restricted = search.restrictions.is_some();
+    let rule = search
+        .restrictions
+        .and_then(Restrictions::operator_rule)
+        .cloned();
+    // The station-list restrictions of `lists`, with the operator rule (if
+    // any) put back: every variant tried below keeps what it doesn't drop.
+    let station_variant = |lists: &AvoidLists, with_rule: bool| -> Option<Restrictions> {
+        let base = build_restrictions(search.connections, search.interchange, input.passes, lists)
+            .ok()
+            .flatten();
+        match (&rule, with_rule) {
+            (Some(rule), true) => Some(base.unwrap_or_default().with_operator_rule(rule.clone())),
+            _ => base,
+        }
+    };
     if restricted && found(bound, None).is_some() {
+        if let Some(rule) = &rule
+            && let Some(reason) = explain_operator_rule(
+                input,
+                rule,
+                bound,
+                &found,
+                station_variant(input.avoid, false).as_ref(),
+                (from, to, &phrase, date),
+            )
+        {
+            return reason;
+        }
         let active: Vec<(&'static str, &[String])> = input
             .avoid
             .lists()
             .into_iter()
             .filter(|(_, codes)| !codes.is_empty())
             .collect();
-        let single = if active.len() == 1 {
+        // The station lists alone, the operator rule kept: one of them is to
+        // blame when dropping it finds something.
+        let lists_alone = rule.is_none()
+            || found(
+                bound,
+                station_variant(&AvoidLists::default(), true).as_ref(),
+            )
+            .is_some();
+        let single = if !lists_alone {
+            None
+        } else if active.len() == 1 {
             Some(active[0])
         } else {
             active.iter().copied().find(|(name, _)| {
-                let variant = build_restrictions(
-                    search.connections,
-                    search.interchange,
-                    input.passes,
-                    &input.avoid.without(name),
-                )
-                .ok()
-                .flatten();
+                let variant = station_variant(&input.avoid.without(name), true);
                 found(bound, variant.as_ref()).is_some()
             })
         };
-        let (constraint, values, described) = match single {
-            Some((name, codes)) => (name, codes.to_vec(), describe_list(name, codes)),
-            None => (
-                "avoidCombined",
-                input.avoid.all_codes(),
-                active
-                    .iter()
-                    .map(|(name, codes)| describe_list(name, codes))
-                    .collect::<Vec<_>>()
-                    .join(" and "),
-            ),
+        let (constraint, values, described) = if let Some((name, codes)) = single {
+            (name, codes.to_vec(), describe_list(name, codes))
+        } else {
+            let mut values = input.avoid.all_codes();
+            let mut described: Vec<String> = active
+                .iter()
+                .map(|(name, codes)| describe_list(name, codes))
+                .collect();
+            if let Some(rule) = &rule {
+                values.extend(rule.operators.codes());
+                described.push(describe_rule(rule));
+            }
+            ("avoidCombined", values, described.join(" and "))
         };
         return NoResultReason {
             constraint,
@@ -2617,17 +2852,19 @@ fn explain_empty_segment(
                 "No itinerary from {from} to {to} {phrase} on {date} while {described}; one \
                  exists without that restriction."
             ),
+            link_operators: Vec::new(),
         };
     }
 
     let under = if restricted {
-        let described: Vec<String> = input
+        let mut described: Vec<String> = input
             .avoid
             .lists()
             .into_iter()
             .filter(|(_, codes)| !codes.is_empty())
             .map(|(name, codes)| describe_list(name, codes))
             .collect();
+        described.extend(rule.as_ref().map(describe_rule));
         format!(" while {}", described.join(" and "))
     } else {
         String::new()
@@ -2637,6 +2874,7 @@ fn explain_empty_segment(
         TimeBound::ArriveBy(deadline) => {
             if let Some(earliest) = found(TimeBound::DepartAfter(0), restrictions) {
                 return NoResultReason {
+                    link_operators: Vec::new(),
                     constraint: "arriveBy",
                     values: vec![clock_label(deadline)],
                     message: format!(
@@ -2657,6 +2895,7 @@ fn explain_empty_segment(
             );
             if let Some(last) = last {
                 return NoResultReason {
+                    link_operators: Vec::new(),
                     constraint: "departAfter",
                     values: vec![clock_label(start)],
                     message: format!(
@@ -2670,6 +2909,7 @@ fn explain_empty_segment(
         }
     }
     NoResultReason {
+        link_operators: Vec::new(),
         constraint: "noRoute",
         values: Vec::new(),
         message: format!("No itinerary from {from} to {to} runs at all on {date}{under}."),
@@ -4574,6 +4814,8 @@ mod tests {
             labels: Vec::new(),
         };
         let walk = PlannedLeg::Transfer {
+            operator: None,
+            estimated_walk: false,
             mode: "WALK".to_string(),
             origin_crs: None,
             destination_crs: None,
@@ -4644,6 +4886,8 @@ mod tests {
         use crate::data::tfl_access::{AccessBasis, AccessLeg, AccessLegEnd};
         use crate::data::tfl_stops::TflStopSummary;
         let tube = |change_at: Option<&str>| PlannedLeg::Transfer {
+            operator: None,
+            estimated_walk: false,
             mode: "TUBE".to_string(),
             origin_crs: None,
             destination_crs: None,

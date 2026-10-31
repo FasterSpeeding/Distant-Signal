@@ -19,8 +19,8 @@ use serde::Deserialize;
 use crate::app::App;
 use crate::data::station_groups::{self, StationChoice};
 use crate::data::{
-    planner_operators, tfl_access, transit_planning, trip_plan_live, trip_planning,
-    trip_planning_itinerary,
+    operator_groups, planner_operators, tfl_access, transit_planning, trip_plan_live,
+    trip_planning, trip_planning_itinerary,
 };
 
 /// Hard cap on `?waypoints=`, enforced before any database read (2026-09-25
@@ -185,6 +185,28 @@ pub fn router() -> crate::app::Router {
             "/Trips/station-groups",
             axum::routing::get(get_station_groups),
         )
+        .route(
+            "/Trips/operator-groups",
+            axum::routing::get(get_operator_groups),
+        )
+}
+
+/// `GET /Trips/operator-groups` (2026-10-31, planner operator filtering
+/// spec §6.4): the named operator groups `/Trips/plan`'s `operator` and
+/// `avoidOperator` accept as `group:NAME`, the `ds:` operators (the DLR,
+/// London Trams, Metrolink, NET), and display names for the timetable codes
+/// `tocs` doesn't name. Unauthenticated, no database read: compiled in.
+async fn get_operator_groups() -> (
+    [(axum::http::header::HeaderName, &'static str); 1],
+    Json<serde_json::Value>,
+) {
+    (
+        [(
+            axum::http::header::CACHE_CONTROL,
+            STATION_GROUPS_CACHE_CONTROL,
+        )],
+        Json(operator_groups::catalogue()),
+    )
 }
 
 /// `Cache-Control` for [`get_station_groups`]: the groups are compiled in
@@ -284,6 +306,103 @@ struct TripPlanParams {
     /// stop as `origin` or `destination` opts in too. See [`parse_transit`].
     #[serde(default)]
     transit: Option<String>,
+    /// `?operator=VT,group:GTR,ds:DLR` (2026-10-31): ride only these
+    /// operators -- their trains, buses, ferries, links and connecting
+    /// rides; walks always. See [`parse_operator_filter`].
+    #[serde(default)]
+    operator: Option<String>,
+    /// `?avoidOperator=LT` (2026-10-31): never these operators, in any
+    /// way. Not together with `operator`.
+    #[serde(default)]
+    avoid_operator: Option<String>,
+}
+
+/// A request's operator filter (2026-10-31): `?operator=` (only) or
+/// `?avoidOperator=`.
+#[derive(Debug, Clone)]
+struct OperatorFilter {
+    only: bool,
+    list: operator_groups::OperatorList,
+}
+
+impl OperatorFilter {
+    /// The search rule: one operator, every way of riding it (spec §5.1).
+    fn rule(&self) -> trip_planner::OperatorRule {
+        if self.only {
+            trip_planner::OperatorRule::only(self.list.mask())
+        } else {
+            trip_planner::OperatorRule::avoid(self.list.mask())
+        }
+    }
+
+    /// The listed operators with nothing in any of `graphs`.
+    fn not_running(&self, graphs: &[&trip_planning::PlanningGraph]) -> Vec<String> {
+        self.list
+            .operators
+            .iter()
+            .filter(|id| !graphs.iter().any(|graph| graph.running.contains(**id)))
+            .filter_map(|id| id.code())
+            .collect()
+    }
+}
+
+/// Parses and checks `?operator=` and `?avoidOperator=` (at most one), a
+/// `400` for: both; a malformed entry, an unknown `group:` or `ds:` name,
+/// more than 8 entries ([`operator_groups::parse_operator_list`]); an ATOC
+/// code neither `tocs` nor the timetable of `service_dates` knows (the
+/// Trains search's rule, `reference::known_operator_codes`). A known code
+/// that runs nothing those days is fine (`operatorsNotRunning`).
+async fn parse_operator_filter(
+    app: &App,
+    only: Option<&str>,
+    avoid: Option<&str>,
+    service_dates: &[NaiveDate],
+) -> Result<Option<OperatorFilter>, (StatusCode, String)> {
+    let bad = |message: String| (StatusCode::BAD_REQUEST, message);
+    let only = operator_groups::parse_operator_list("operator", only).map_err(bad)?;
+    let avoid = operator_groups::parse_operator_list("avoidOperator", avoid).map_err(bad)?;
+    let filter = match (only, avoid) {
+        (Some(_), Some(_)) => {
+            return Err(bad(
+                "operator and avoidOperator can't be used together: choose one".to_string(),
+            ));
+        }
+        (Some(list), None) => OperatorFilter { only: true, list },
+        (None, Some(list)) => OperatorFilter { only: false, list },
+        (None, None) => return Ok(None),
+    };
+    let codes = filter.list.named_atoc_codes();
+    if !codes.is_empty() {
+        let known =
+            crate::data::reference::known_operator_codes(&app.database, &codes, service_dates)
+                .await
+                .map_err(internal_error("check operator codes"))?;
+        let unknown: Vec<&str> = codes
+            .iter()
+            .filter(|code| !known.contains(*code))
+            .map(String::as_str)
+            .collect();
+        match unknown.as_slice() {
+            [] => {}
+            [code] => {
+                return Err(bad(format!(
+                    "operator {code} is not a known train operator code"
+                )));
+            }
+            codes => {
+                return Err(bad(format!(
+                    "operators {} are not known train operator codes",
+                    codes.join(", ")
+                )));
+            }
+        }
+    }
+    metrics::counter!(
+        common::metrics::metric_name("api_trip_plan_operator_filter_total"),
+        "mode" => if filter.only { "only" } else { "avoid" }
+    )
+    .increment(1);
+    Ok(Some(filter))
 }
 
 /// The live overlay's configuration, read once from the environment.
@@ -521,6 +640,12 @@ fn default_results() -> String {
 ///   as the response's top-level `maxChanges`. With `results=options`, the
 ///   combination of waypoints, vias and `maxChanges` must also fit
 ///   [`OPTIONS_SEARCH_SIZE_LIMIT`] (a 400 otherwise).
+/// - `operator` / `avoidOperator` (2026-10-31): ride only, or never, these
+///   operators, every way of riding them (trains, buses, ferries, links,
+///   access rides; walks always pass). See [`parse_operator_filter`] for
+///   the 400s and `data::planner_operators` for who runs what. The filter
+///   is one more rule in the searches' `Restrictions`; the options
+///   search-size guard is unchanged.
 ///
 /// **Read this before adding work to this handler.** One request here reads
 /// every `schedule_calling_points_full` row for the requested date (hundreds
@@ -696,6 +821,18 @@ async fn plan_trip_request(
     let waypoints: Vec<String> = waypoints.into_iter().map(|w| w.label).collect();
     let vias: Vec<String> = via_choices.iter().map(|via| via.label.clone()).collect();
     let via_codes: Vec<Vec<String>> = via_choices.into_iter().map(|via| via.codes).collect();
+    // Operator filters (2026-10-31): parsed and checked before the permit,
+    // like the station lists.
+    let service_dates_searched: Vec<NaiveDate> = std::iter::once(params.date)
+        .chain(params.date.succ_opt().filter(|_| across_midnight))
+        .collect();
+    let operator_filter = parse_operator_filter(
+        &app,
+        params.operator.as_deref(),
+        params.avoid_operator.as_deref(),
+        &service_dates_searched,
+    )
+    .await?;
     // A `TfL` stop end (DS-135): its access candidates, read before the
     // permit like the other checks (a few hundred `tfl_stops` rows). A tram
     // stop end of a planner network is a graph node instead (spec §12.2).
@@ -764,7 +901,7 @@ async fn plan_trip_request(
         alternatives,
         max_changes,
         live_requested,
-        operator_rule: None,
+        operator_rule: operator_filter.as_ref().map(OperatorFilter::rule),
         access: access.clone(),
         transit,
     };
@@ -895,6 +1032,17 @@ async fn plan_trip_request(
         // member CRS codes,
         // as expanded. `{}` when none.
         "stationGroups": station_groups,
+        // Additive (2026-10-31): the operator filter as applied, each list
+        // expanded to its operators (`[]` when unused), the groups it named
+        // (`{}` when none), and the chosen operators that run nothing on
+        // `date`.
+        "operator": operator_filter.as_ref().filter(|f| f.only).map(|f| f.list.codes()).unwrap_or_default(),
+        "avoidOperator": operator_filter.as_ref().filter(|f| !f.only).map(|f| f.list.codes()).unwrap_or_default(),
+        "operatorGroups": operator_filter.as_ref().map(|f| f.list.groups.clone()).unwrap_or_default(),
+        "operatorsNotRunning": operator_filter
+            .as_ref()
+            .map(|f| f.not_running(&[&graph]))
+            .unwrap_or_default(),
         "segments": segments.iter().map(|segment| serde_json::json!({
             "originCrs": segment.origin_crs,
             "destinationCrs": segment.destination_crs,
@@ -1071,6 +1219,11 @@ async fn load_graph(
             // Who runs each link (operator filtering spec §5.1), before the
             // transit graph copies the rail interchange data.
             let unattributed_links = planner_operators::attribute_fixed_links(&mut interchange);
+            // The estimated walks a filter that rules the Tube out uses
+            // instead (spec §5.1); no other request ever sees them.
+            let positions =
+                planner_operators::fetch_tube_station_positions(&pool, &interchange).await?;
+            planner_operators::add_tube_stand_in_walks(&mut interchange, &positions);
             let operators = planner_operators::OperatorTable::fetch(&pool, date).await?;
             let road_or_water = trip_planning::fetch_road_or_water_tiplocs(&pool).await?;
             // Per-UID published modes; an error degrades to the bus-stop
@@ -1100,7 +1253,7 @@ async fn load_graph(
             // The sort over every calling point of the day, on the blocking
             // pool (bound 4 in `get_trip_plan`'s doc comment), and the
             // transit interchange data (a copy of the rail data).
-            let (connections, passes, interchange, transit, operators, unknown_operators) =
+            let (connections, passes, interchange, transit, operators, unknown_operators, running) =
                 tokio::task::spawn_blocking(move || {
                     let (mut connections, passes) =
                         trip_planning::build_connections_with_passes(calling_points);
@@ -1120,6 +1273,7 @@ async fn load_graph(
                         .attribute_connections(&mut connections, |uid| {
                             transit.as_ref().and_then(|graph| graph.trip_mode(uid))
                         });
+                    let running = planner_operators::running_operators(&connections, &interchange);
                     (
                         connections,
                         passes,
@@ -1127,6 +1281,7 @@ async fn load_graph(
                         transit,
                         operators,
                         unknown_operators,
+                        running,
                     )
                 })
                 .await?;
@@ -1140,6 +1295,7 @@ async fn load_graph(
                 passes,
                 transit,
                 operators,
+                running,
             }))
         })
         .await
@@ -3178,6 +3334,7 @@ mod tests {
 )]
 mod db_tests {
     mod live_in_search;
+    mod operator_filter;
     mod operator_rule;
     mod tfl_access;
     mod tfl_access_times;

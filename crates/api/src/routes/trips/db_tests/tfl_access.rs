@@ -306,6 +306,50 @@ async fn a_tfl_stop_origin_plans_from_its_best_station() {
     cleanup(&pool).await;
 }
 
+/// Avoiding the London Underground (operator filtering spec 2026-10-31,
+/// §5.1) leaves the stop only its walk: to `ZTW` and the slow 08:30. The
+/// Tube ride's leg says who runs it. (`tocs` gets an `LT` row if it has
+/// none, so the code is known.)
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api \
+            routes::trips -- --ignored --test-threads=1`"]
+async fn avoiding_the_underground_leaves_a_tfl_stop_its_walk() {
+    let pool = connect().await;
+    seed(&pool).await;
+    let inserted: Option<String> = sqlx::query_scalar(
+        "INSERT INTO tocs (atoc_code, name, legal_name) \
+         VALUES ('LT', 'London Underground', 'London Underground Limited') \
+         ON CONFLICT DO NOTHING RETURNING atoc_code::text",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("seed tocs");
+    let router = test_router(test_app(pool.clone()));
+    let (status, body) = get(router.clone(), plan_uri(UXB, "ZTM", "departAfter=08:00")).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let ride = &body["segments"][0]["itineraries"][0]["legs"][0];
+    assert_eq!(ride["mode"], "TUBE", "{ride}");
+    assert_eq!(ride["operator"], "LT", "{ride}");
+
+    let (status, body) = get(
+        router,
+        plan_uri(UXB, "ZTM", "departAfter=08:00&avoidOperator=LT"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(
+        describe(&body["segments"][0]["itineraries"][0]),
+        [format!("WALK {UXB}-ZTW origin"), "TTUP2".to_string()]
+    );
+    if inserted.is_some() {
+        sqlx::query("DELETE FROM tocs WHERE atoc_code = 'LT'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+    cleanup(&pool).await;
+}
+
 /// To the stop, depart-after and arrive-by: the train to `Test Harrow`
 /// and the Tube back beats the train to `ZTW` and the walk.
 #[tokio::test]

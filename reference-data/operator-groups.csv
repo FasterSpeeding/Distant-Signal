@@ -1,0 +1,25 @@
+# Named operator groups for GET /Trips/plan's operator filters
+# (`operator=group:GTR`, `avoidOperator=group:TFL`): a group stands for ANY
+# of its members. Compiled into the api (crates/api/src/data/operator_groups.rs);
+# its test checks every row. Served by GET /Trips/operator-groups. See
+# docs/superpowers/specs/2026-10-31-planner-operator-filtering-design.md §4.2.
+#
+# GTR: Govia Thameslink Railway's four brands (user decision, 2026-10-30).
+# TFL: the TfL services the planner can ride (proposed default, 2026-10-31).
+# SWR: South Western Railway with Island Line, which it runs (proposed default).
+#
+# group: 2-12 characters A-Z/0-9; member: a 2-character ATOC code or a ds:
+# operator (ds:DLR, ds:LONDON_TRAMS, ds:METROLINK, ds:NET); name: the
+# group's display name, on its first row.
+group,member,name
+GTR,TL,GTR (Thameslink, Great Northern, Southern, Gatwick Express)
+GTR,GN,
+GTR,SN,
+GTR,GX,
+TFL,LO,TfL (Overground, Elizabeth line, Underground, DLR, London Trams)
+TFL,XR,
+TFL,LT,
+TFL,ds:DLR,
+TFL,ds:LONDON_TRAMS,
+SWR,SW,South Western Railway (with Island Line)
+SWR,IL,

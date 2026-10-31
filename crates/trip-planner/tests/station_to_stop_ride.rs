@@ -46,6 +46,7 @@ fn tube(from: &str, to: &str) -> (String, FixedLink) {
     (
         from.to_string(),
         FixedLink {
+            only_without: schedule_query::OperatorId::UNKNOWN,
             operator: schedule_query::OperatorId::UNKNOWN,
             mode: "TUBE".to_string(),
             to_crs: to.to_string(),
@@ -84,6 +85,7 @@ fn base() -> InterchangeData {
 
 fn link(crs: &str, mode: &str, minutes: i32) -> AccessLink {
     AccessLink {
+        operator: schedule_query::OperatorId::UNKNOWN,
         crs: crs.to_string(),
         mode: mode.to_string(),
         minutes,
