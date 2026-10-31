@@ -1743,6 +1743,7 @@ mod chart_env_wiring_tests {
         declared.push(crate::data::config::STORED_GROUPS_EXTRA_ENV.to_string());
         declared.push("TRIP_PLAN_GRAPH_CACHE_DATES".to_string());
         declared.push("TRIP_PLAN_GRAPH_CACHE_MAX_AGE_SECS".to_string());
+        declared.push("TRIP_PLAN_GRAPH_PREWARM_INTERVAL_SECS".to_string());
         assert!(declared.len() >= 16, "{declared:?}");
         let missing: Vec<&String> = declared
             .iter()

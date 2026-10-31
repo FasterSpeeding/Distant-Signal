@@ -697,9 +697,12 @@ async fn bench_in_search() {
         .await
         .expect("read the states");
     let read = started.elapsed();
-    let marker = trip_planning::latest_schedule_publish(&pool)
-        .await
-        .expect("marker");
+    let marker = trip_planning::GraphMarker {
+        schedule: trip_planning::latest_schedule_publish(&pool)
+            .await
+            .expect("marker"),
+        transit: Some(Vec::new()),
+    };
     let graph = load_graph(&app, date, marker)
         .await
         .expect("graph")

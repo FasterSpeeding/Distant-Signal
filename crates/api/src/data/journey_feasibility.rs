@@ -440,9 +440,11 @@ static INTERCHANGE_CACHE: LazyLock<Arc<GraphCache<InterchangeData>>> = LazyLock:
 async fn interchange_data(pool: &PgPool) -> anyhow::Result<Arc<InterchangeData>> {
     let pool = pool.clone();
     INTERCHANGE_CACHE
-        .get_or_build(NaiveDate::MIN, None, move || async move {
-            trip_planning::fetch_interchange_data(&pool).await.map(Some)
-        })
+        .get_or_build(
+            NaiveDate::MIN,
+            trip_planning::GraphMarker::default(),
+            move || async move { trip_planning::fetch_interchange_data(&pool).await.map(Some) },
+        )
         .await?
         .map(|(data, _)| data)
         .ok_or_else(|| anyhow::anyhow!("interchange data build returned nothing"))

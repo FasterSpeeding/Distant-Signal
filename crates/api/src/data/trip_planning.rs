@@ -535,22 +535,62 @@ pub async fn latest_schedule_publish(pool: &PgPool) -> Result<Option<DateTime<Ut
     )
 }
 
+/// One switched-on transit network's active feed, as read for the graph
+/// cache's key ([`GraphMarker`]): a new feed version, or the same version
+/// activated again, invalidates every cached graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransitFeedMarker {
+    pub network: String,
+    /// `transit_networks.active_feed_version`; `None` before the first
+    /// activation (or for a network with no row).
+    pub feed_version: Option<String>,
+    pub activated_at: Option<DateTime<Utc>>,
+}
+
+/// What a cached graph was built from: [`GraphCache`]'s key besides the
+/// date.
+///
+/// - `schedule`: the latest completed schedule publish
+///   ([`latest_schedule_publish`]), written once a whole delivery's
+///   products have published, about once a day.
+/// - `transit`: each switched-on transit network's active feed (DS-164),
+///   by network. `None` when that read failed: a key that matches no
+///   successful read, so the graph built while the read was failing (which
+///   skipped the networks it could not read) is replaced once it succeeds
+///   again, and a rail plan never fails because of the transit read.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GraphMarker {
+    pub schedule: Option<DateTime<Utc>>,
+    pub transit: Option<Vec<TransitFeedMarker>>,
+}
+
 /// TRIPS-1: a small per-date cache of built [`PlanningGraph`]s.
 ///
 /// Building a date's graph reads ~490k `schedule_calling_points_full` rows
-/// and sorts the day's connections, so before this every `/Trips/plan`
-/// request, anonymous and unauthenticated, did that from scratch, and one
-/// client looping on it kept every planning slot busy.
+/// (and, with the transit switch on, ~220k `TfL` calls) and sorts the day's
+/// connections: about 2.7 s on production (2026-10-31). Before this every
+/// `/Trips/plan` request, anonymous and unauthenticated, did that from
+/// scratch, and one client looping on it kept every planning slot busy.
 ///
 /// An entry is reused while both hold:
 ///
-/// - the latest publish marker ([`latest_schedule_publish`]) is the one it
-///   was built under, so a completed delivery invalidates it at once;
-/// - it is younger than `max_age`. The marker is written only when a whole
-///   delivery's products have published, so a calling-points publish that
-///   lands without one (another product failed, or a request raced a
-///   publish in progress and cached a half-written day) is picked up within
-///   `max_age` instead of never.
+/// - it was built under the current [`GraphMarker`], so a completed
+///   schedule delivery or a transit feed activation invalidates it at once;
+/// - it is younger than `max_age`, a safety net for changes no marker
+///   records (see below). It was 600 s until DS-225; with publishes about
+///   once a day that rebuilt nearly every request's graph on a quiet
+///   service, so the default is now 6 hours and the api's prewarm loop
+///   (`routes::trips::prewarm_graphs`) rebuilds today's and tomorrow's
+///   graphs before a request has to.
+///
+/// What `max_age` still catches (DS-225): a schedule publish cycle in which
+/// one product failed writes no marker until a later cycle retries it, yet
+/// its other products (the calling points among them) have landed; and the
+/// slow-moving reference data the build also reads that no marker covers
+/// (`tiploc_locations`, `tfl_stops`, `tfl_stop_crs`, a Tube station's
+/// position). A graph read while a publish is still in flight is replaced
+/// by the marker that publish writes when it completes. The live overlay is
+/// not affected: it is its own snapshot (`TRIP_PLAN_LIVE_SNAPSHOT_TTL_SECONDS`).
 ///
 /// At most `capacity` dates are kept (least recently used evicted); each is
 /// on the order of 100 MB, so the default is 2 (today and tomorrow).
@@ -567,7 +607,7 @@ pub struct GraphCache<T> {
 
 struct CacheEntry<T> {
     date: NaiveDate,
-    marker: Option<DateTime<Utc>>,
+    marker: GraphMarker,
     built_at: Instant,
     last_used: Instant,
     value: Arc<T>,
@@ -577,7 +617,31 @@ struct CacheEntry<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheOutcome {
     Hit,
-    Built,
+    Built(BuildReason),
+}
+
+/// Why a graph was (or, for [`GraphCache::prewarm_reason`], should be)
+/// built: `api_trip_plan_graph_builds_total`'s `reason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildReason {
+    /// No entry for the date: never built, evicted, or the cache is off.
+    Absent,
+    /// Built under another [`GraphMarker`]: a new publish or feed.
+    Marker,
+    /// Older than `max_age`.
+    Expired,
+}
+
+impl BuildReason {
+    pub const ALL: [Self; 3] = [Self::Absent, Self::Marker, Self::Expired];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Marker => "marker",
+            Self::Expired => "expired",
+        }
+    }
 }
 
 impl<T: Send + Sync + 'static> GraphCache<T> {
@@ -590,27 +654,48 @@ impl<T: Send + Sync + 'static> GraphCache<T> {
         }
     }
 
-    #[expect(
-        clippy::expect_used,
-        reason = "a poisoned lock means another thread already panicked"
-    )]
-    fn lookup(&self, date: NaiveDate, marker: Option<DateTime<Utc>>) -> Option<Arc<T>> {
-        let now = Instant::now();
-        let mut entries = self.entries.lock().expect("graph cache lock poisoned");
-        let entry = entries.iter_mut().find(|entry| {
-            entry.date == date
-                && entry.marker == marker
-                && now.duration_since(entry.built_at) < self.max_age
-        })?;
-        entry.last_used = now;
-        Some(entry.value.clone())
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Why `date`'s entry can't serve `marker`, `None` when it can.
+    fn stale_reason(
+        &self,
+        entry: &CacheEntry<T>,
+        marker: &GraphMarker,
+        now: Instant,
+    ) -> Option<BuildReason> {
+        if entry.marker != *marker {
+            Some(BuildReason::Marker)
+        } else if now.duration_since(entry.built_at) >= self.max_age {
+            Some(BuildReason::Expired)
+        } else {
+            None
+        }
     }
 
     #[expect(
         clippy::expect_used,
         reason = "a poisoned lock means another thread already panicked"
     )]
-    fn insert(&self, date: NaiveDate, marker: Option<DateTime<Utc>>, value: Arc<T>) {
+    fn lookup(&self, date: NaiveDate, marker: &GraphMarker) -> Result<Arc<T>, BuildReason> {
+        let now = Instant::now();
+        let mut entries = self.entries.lock().expect("graph cache lock poisoned");
+        let Some(entry) = entries.iter_mut().find(|entry| entry.date == date) else {
+            return Err(BuildReason::Absent);
+        };
+        if let Some(reason) = self.stale_reason(entry, marker, now) {
+            return Err(reason);
+        }
+        entry.last_used = now;
+        Ok(entry.value.clone())
+    }
+
+    #[expect(
+        clippy::expect_used,
+        reason = "a poisoned lock means another thread already panicked"
+    )]
+    fn insert(&self, date: NaiveDate, marker: GraphMarker, value: Arc<T>) {
         let now = Instant::now();
         let mut entries = self.entries.lock().expect("graph cache lock poisoned");
         entries.retain(|entry| entry.date != date);
@@ -634,6 +719,42 @@ impl<T: Send + Sync + 'static> GraphCache<T> {
         });
     }
 
+    /// Whether the prewarm loop should build `date` under `marker` now, and
+    /// why; `None` to leave it. Never marks an entry used, so prewarming
+    /// doesn't keep a date in the cache that no request wants.
+    ///
+    /// A cached entry that can't serve `marker` is rebuilt. An absent date
+    /// is built only while that costs nothing a request is using: a free
+    /// slot, or a least recently used entry idle for at least `idle`. So a
+    /// client planning some other date keeps its graph, instead of the loop
+    /// and the client evicting each other's every minute.
+    #[expect(
+        clippy::expect_used,
+        reason = "a poisoned lock means another thread already panicked"
+    )]
+    pub fn prewarm_reason(
+        &self,
+        date: NaiveDate,
+        marker: &GraphMarker,
+        idle: Duration,
+    ) -> Option<BuildReason> {
+        if self.capacity == 0 {
+            return None;
+        }
+        let now = Instant::now();
+        let entries = self.entries.lock().expect("graph cache lock poisoned");
+        if let Some(entry) = entries.iter().find(|entry| entry.date == date) {
+            return self.stale_reason(entry, marker, now);
+        }
+        let evictable = entries.len() < self.capacity
+            || entries
+                .iter()
+                .map(|entry| entry.last_used)
+                .min()
+                .is_some_and(|last_used| now.duration_since(last_used) >= idle);
+        evictable.then_some(BuildReason::Absent)
+    }
+
     /// The cached value for `date` under `marker`, else `build()`'s, cached.
     /// `build` returning `Ok(None)` (nothing published for the date) is not
     /// cached: that answer costs one index probe, and a publish can change it
@@ -641,7 +762,7 @@ impl<T: Send + Sync + 'static> GraphCache<T> {
     pub async fn get_or_build<F, Fut>(
         self: &Arc<Self>,
         date: NaiveDate,
-        marker: Option<DateTime<Utc>>,
+        marker: GraphMarker,
         build: F,
     ) -> Result<Option<(Arc<T>, CacheOutcome)>>
     where
@@ -651,16 +772,17 @@ impl<T: Send + Sync + 'static> GraphCache<T> {
         if self.capacity == 0 {
             return Ok(build()
                 .await?
-                .map(|value| (Arc::new(value), CacheOutcome::Built)));
+                .map(|value| (Arc::new(value), CacheOutcome::Built(BuildReason::Absent))));
         }
-        if let Some(hit) = self.lookup(date, marker) {
-            return Ok(Some((hit, CacheOutcome::Hit)));
-        }
+        let reason = match self.lookup(date, &marker) {
+            Ok(hit) => return Ok(Some((hit, CacheOutcome::Hit))),
+            Err(reason) => reason,
+        };
         let this = self.clone();
         tokio::spawn(async move {
             let _building = this.build_lock.lock().await;
             // Another request may have built it while this one waited.
-            if let Some(hit) = this.lookup(date, marker) {
+            if let Ok(hit) = this.lookup(date, &marker) {
                 return Ok(Some((hit, CacheOutcome::Hit)));
             }
             let Some(value) = build().await? else {
@@ -668,7 +790,7 @@ impl<T: Send + Sync + 'static> GraphCache<T> {
             };
             let value = Arc::new(value);
             this.insert(date, marker, value.clone());
-            Ok(Some((value, CacheOutcome::Built)))
+            Ok(Some((value, CacheOutcome::Built(reason))))
         })
         .await
         .map_err(|err| anyhow::anyhow!("trip-planning graph build task failed: {err}"))?
@@ -686,8 +808,7 @@ impl<T: Send + Sync + 'static> GraphCache<T> {
 #[cfg(test)]
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::unnecessary_wraps,
-    reason = "test code: casts of small known test values; fakes mirror the signatures they stand in for"
+    reason = "test code: casts of small known test values"
 )]
 mod graph_cache_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -698,14 +819,30 @@ mod graph_cache_tests {
         NaiveDate::from_ymd_opt(2026, 9, day).unwrap()
     }
 
-    fn marker(hour: u32) -> Option<DateTime<Utc>> {
-        Some(
-            NaiveDate::from_ymd_opt(2026, 9, 27)
-                .unwrap()
-                .and_hms_opt(hour, 0, 0)
-                .unwrap()
-                .and_utc(),
-        )
+    fn at(hour: u32) -> DateTime<Utc> {
+        NaiveDate::from_ymd_opt(2026, 9, 27)
+            .unwrap()
+            .and_hms_opt(hour, 0, 0)
+            .unwrap()
+            .and_utc()
+    }
+
+    fn marker(hour: u32) -> GraphMarker {
+        GraphMarker {
+            schedule: Some(at(hour)),
+            transit: Some(Vec::new()),
+        }
+    }
+
+    fn with_feed(hour: u32, version: &str, activated: u32) -> GraphMarker {
+        GraphMarker {
+            schedule: Some(at(hour)),
+            transit: Some(vec![TransitFeedMarker {
+                network: "tfl".to_string(),
+                feed_version: Some(version.to_string()),
+                activated_at: Some(at(activated)),
+            }]),
+        }
     }
 
     /// Builds `day * 100 + n` where n counts builds, so a rebuild is visible.
@@ -713,7 +850,7 @@ mod graph_cache_tests {
         cache: &Arc<GraphCache<u32>>,
         builds: &Arc<AtomicUsize>,
         day: u32,
-        marker: Option<DateTime<Utc>>,
+        marker: GraphMarker,
     ) -> (u32, CacheOutcome) {
         let builds = builds.clone();
         let (value, outcome) = cache
@@ -733,7 +870,7 @@ mod graph_cache_tests {
         let builds = Arc::new(AtomicUsize::new(0));
         assert_eq!(
             get(&cache, &builds, 1, marker(1)).await,
-            (100, CacheOutcome::Built)
+            (100, CacheOutcome::Built(BuildReason::Absent))
         );
         assert_eq!(
             get(&cache, &builds, 1, marker(1)).await,
@@ -750,7 +887,7 @@ mod graph_cache_tests {
         get(&cache, &builds, 1, marker(1)).await;
         assert_eq!(
             get(&cache, &builds, 1, marker(2)).await,
-            (101, CacheOutcome::Built)
+            (101, CacheOutcome::Built(BuildReason::Marker))
         );
         assert_eq!(
             cache.cached_dates(),
@@ -767,7 +904,7 @@ mod graph_cache_tests {
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert_eq!(
             get(&cache, &builds, 1, marker(1)).await,
-            (101, CacheOutcome::Built)
+            (101, CacheOutcome::Built(BuildReason::Expired))
         );
     }
 
@@ -828,9 +965,104 @@ mod graph_cache_tests {
         get(&cache, &builds, 1, marker(1)).await;
         assert_eq!(
             get(&cache, &builds, 1, marker(1)).await,
-            (101, CacheOutcome::Built)
+            (101, CacheOutcome::Built(BuildReason::Absent))
         );
         assert!(cache.cached_dates().is_empty());
+    }
+
+    /// A new transit feed version, or the same one activated again,
+    /// invalidates the cached graph; the same feed is a hit.
+    #[tokio::test]
+    async fn a_transit_feed_change_rebuilds() {
+        let cache = Arc::new(GraphCache::new(2, Duration::from_secs(600)));
+        let builds = Arc::new(AtomicUsize::new(0));
+        get(&cache, &builds, 1, with_feed(1, "v1", 3)).await;
+        assert_eq!(
+            get(&cache, &builds, 1, with_feed(1, "v1", 3)).await.1,
+            CacheOutcome::Hit
+        );
+        assert_eq!(
+            get(&cache, &builds, 1, with_feed(1, "v2", 4)).await,
+            (101, CacheOutcome::Built(BuildReason::Marker))
+        );
+        assert_eq!(
+            get(&cache, &builds, 1, with_feed(1, "v2", 5)).await,
+            (102, CacheOutcome::Built(BuildReason::Marker)),
+            "a re-activation moves the key too"
+        );
+    }
+
+    /// A failed transit read is its own key: the graph built then is
+    /// replaced once the read works again.
+    #[tokio::test]
+    async fn a_failed_transit_read_is_replaced_once_it_reads() {
+        let cache = Arc::new(GraphCache::new(2, Duration::from_secs(600)));
+        let builds = Arc::new(AtomicUsize::new(0));
+        let failed = GraphMarker {
+            schedule: Some(at(1)),
+            transit: None,
+        };
+        get(&cache, &builds, 1, failed.clone()).await;
+        assert_eq!(get(&cache, &builds, 1, failed).await.1, CacheOutcome::Hit);
+        assert_eq!(
+            get(&cache, &builds, 1, with_feed(1, "v1", 3)).await,
+            (101, CacheOutcome::Built(BuildReason::Marker))
+        );
+    }
+
+    #[tokio::test]
+    async fn prewarm_builds_absent_and_stale_dates_but_not_fresh_ones() {
+        let cache = Arc::new(GraphCache::new(2, Duration::from_millis(200)));
+        let builds = Arc::new(AtomicUsize::new(0));
+        let idle = Duration::from_secs(600);
+        assert_eq!(
+            cache.prewarm_reason(date(1), &marker(1), idle),
+            Some(BuildReason::Absent)
+        );
+        get(&cache, &builds, 1, marker(1)).await;
+        assert_eq!(cache.prewarm_reason(date(1), &marker(1), idle), None);
+        assert_eq!(
+            cache.prewarm_reason(date(1), &marker(2), idle),
+            Some(BuildReason::Marker)
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            cache.prewarm_reason(date(1), &marker(1), idle),
+            Some(BuildReason::Expired)
+        );
+        // A free slot: the second date is built.
+        assert_eq!(
+            cache.prewarm_reason(date(2), &marker(1), idle),
+            Some(BuildReason::Absent)
+        );
+    }
+
+    /// At capacity, an absent date is prewarmed only over an idle entry, so
+    /// the loop never evicts a graph a client is using.
+    #[tokio::test]
+    async fn prewarm_does_not_evict_a_date_in_use() {
+        let cache = Arc::new(GraphCache::new(2, Duration::from_secs(600)));
+        let builds = Arc::new(AtomicUsize::new(0));
+        get(&cache, &builds, 1, marker(1)).await;
+        get(&cache, &builds, 5, marker(1)).await;
+        assert_eq!(
+            cache.prewarm_reason(date(2), &marker(1), Duration::from_secs(600)),
+            None
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            cache.prewarm_reason(date(2), &marker(1), Duration::from_millis(20)),
+            Some(BuildReason::Absent)
+        );
+    }
+
+    #[tokio::test]
+    async fn prewarm_does_nothing_with_the_cache_off() {
+        let cache: Arc<GraphCache<u32>> = Arc::new(GraphCache::new(0, Duration::from_secs(600)));
+        assert_eq!(
+            cache.prewarm_reason(date(1), &marker(1), Duration::ZERO),
+            None
+        );
     }
 }
 

@@ -694,30 +694,46 @@ pub async fn network_covers(pool: &PgPool, network: &str, date: NaiveDate) -> Re
     .context("transit coverage")
 }
 
-/// The latest `activated_at` among `networks`: the graph cache's key is the
-/// later of this and the schedule publish marker (spec §6.4), so a new tram
-/// feed invalidates the cached graphs at once. `None` for an empty list
-/// (no read).
-pub async fn latest_activation(
+/// Each of `networks`' active feed, by network: the transit half of the
+/// graph cache's key ([`crate::data::trip_planning::GraphMarker`]), so a
+/// new feed version, or the same one activated again, invalidates the
+/// cached graphs at once (spec §6.4; DS-225 replaced the later of the two
+/// timestamps with the versions themselves). A network with no
+/// `transit_networks` row is listed with no version. Empty for an empty
+/// list (no read).
+pub async fn active_feeds(
     pool: &PgPool,
     networks: &[String],
-) -> Result<Option<DateTime<Utc>>> {
+) -> Result<Vec<crate::data::trip_planning::TransitFeedMarker>> {
     if networks.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
-    sqlx::query_scalar("SELECT max(activated_at) FROM transit_networks WHERE network = ANY($1)")
-        .bind(networks)
-        .fetch_one(pool)
-        .await
-        .context("transit activation marker")
-}
-
-/// The graph cache key: the later of the two markers.
-pub fn cache_marker(
-    schedule: Option<DateTime<Utc>>,
-    transit: Option<DateTime<Utc>>,
-) -> Option<DateTime<Utc>> {
-    schedule.max(transit)
+    let rows: Vec<(String, Option<String>, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT network, active_feed_version, activated_at FROM transit_networks \
+         WHERE network = ANY($1)",
+    )
+    .bind(networks)
+    .fetch_all(pool)
+    .await
+    .context("transit active feeds")?;
+    let mut by_network: HashMap<String, (Option<String>, Option<DateTime<Utc>>)> = rows
+        .into_iter()
+        .map(|(network, version, activated_at)| (network, (version, activated_at)))
+        .collect();
+    let mut sorted: Vec<&String> = networks.iter().collect();
+    sorted.sort();
+    sorted.dedup();
+    Ok(sorted
+        .into_iter()
+        .map(|network| {
+            let (feed_version, activated_at) = by_network.remove(network).unwrap_or_default();
+            crate::data::trip_planning::TransitFeedMarker {
+                network: network.clone(),
+                feed_version,
+                activated_at,
+            }
+        })
+        .collect())
 }
 
 // --- Expansion -------------------------------------------------------------
@@ -2225,22 +2241,5 @@ mod tests {
                 "message": "Tram times aren't available for this date.",
             }])
         );
-    }
-
-    #[test]
-    fn the_cache_marker_moves_on_a_transit_activation() {
-        let at = |hour: u32| {
-            Some(
-                NaiveDate::from_ymd_opt(2026, 11, 4)
-                    .unwrap()
-                    .and_hms_opt(hour, 0, 0)
-                    .unwrap()
-                    .and_utc(),
-            )
-        };
-        assert_eq!(cache_marker(at(3), None), at(3));
-        assert_eq!(cache_marker(at(3), at(5)), at(5));
-        assert_eq!(cache_marker(at(6), at(5)), at(6));
-        assert_eq!(cache_marker(None, at(5)), at(5));
     }
 }
