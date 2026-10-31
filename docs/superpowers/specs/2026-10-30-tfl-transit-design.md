@@ -680,7 +680,7 @@ TfL's override files with their base files. Measured again on 2026-10-30
   rail day 64 MB (from 104), TfL +28 MB a date, 56 MB for two (within
   budget). The operator filtering P0 (#98) put its 2-byte `OperatorId`
   in the struct's padding: still 96 bytes, and the same figures after
-  merging it.
+  merging it and P1 (#99).
 - **Operators** (operator filtering spec §6.2): a `tfl` trip's
   connections take its line's mode's operator once the transit graph is
   built (`TransitGraph::trip_mode`, `planner_operators::transit_operator`):
@@ -690,5 +690,6 @@ TfL's override files with their base files. Measured again on 2026-10-30
   unknown too.
 - **Latency** (same bench): searches with Metrolink and `TfL` against
   Metrolink alone, `fastest` +8%, `options` -1%; re-run after merging
-  #98, `fastest` +6%, `options` +15% (budget 1.60).
+  #98 and then #99, `fastest` +6% and +5%, `options` +15% and -3% (the
+  `options` figure swings between runs; budget 1.60).
 

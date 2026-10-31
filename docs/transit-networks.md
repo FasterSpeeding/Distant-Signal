@@ -167,8 +167,8 @@ graph (the TfL design §11). What differs from Metrolink:
   `ds:LONDON_TRAMS`.
 - **Cost** (`DS_RUN_BUDGET_BENCH`, release, hand-made TfL-scale data:
   222,000 connections): +28 MB a cached date, 56 MB for two (budget
-  60 MB); searches with transit +6 to +8% (`fastest`) and -1 to +15%
-  (`options`) over two runs, within the 1.60 budget. The planner's connections hold their codes inline since
+  60 MB); searches with transit +5 to +8% (`fastest`) and -3 to +15%
+  (`options`) over three runs, within the 1.60 budget. The planner's connections hold their codes inline since
   this change, which took the rail day from about 104 MB to 64 MB, so the
   api with TfL uses less than it did with Metrolink alone.
 
