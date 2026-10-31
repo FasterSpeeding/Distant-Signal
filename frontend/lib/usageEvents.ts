@@ -63,6 +63,7 @@ export const ROUTE_TEMPLATES = [
   '/trains',
   '/transit',
   '/transit/[network]',
+  '/transit/[network]/incidents/[id]',
   '/transit/[network]/lines/[line]',
   '/transit/[network]/lines/[line]/timetable',
   '/transit/[network]/stops/[stop]',
