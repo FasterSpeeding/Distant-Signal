@@ -133,7 +133,8 @@ pub enum PlannedLeg {
         public_departure_day_offset: Option<u8>,
         public_arrival_day_offset: Option<u8>,
         /// The schedule's `BX` ATOC operator code (e.g. `"SW"`), via
-        /// `schedule_destination_departures.operator_atoc`. Filled in by
+        /// `schedule_services.operator_atoc` (buses and ferries too, since
+        /// 2026-10-31). Filled in by
         /// `trip_leg_details::attach_leg_details`; `None` when unknown.
         operator: Option<String>,
         /// The schedule's CIF `BS` Train Identity -- the 4-character
@@ -2711,6 +2712,7 @@ mod tests {
 
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> schedule_query::Connection {
         schedule_query::Connection {
+            operator: schedule_query::OperatorId::UNKNOWN,
             uid: uid.to_string(),
             from_tiploc: from.to_string(),
             to_tiploc: to.to_string(),

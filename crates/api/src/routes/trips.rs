@@ -19,7 +19,8 @@ use serde::Deserialize;
 use crate::app::App;
 use crate::data::station_groups::{self, StationChoice};
 use crate::data::{
-    tfl_access, transit_planning, trip_plan_live, trip_planning, trip_planning_itinerary,
+    planner_operators, tfl_access, transit_planning, trip_plan_live, trip_planning,
+    trip_planning_itinerary,
 };
 
 /// Hard cap on `?waypoints=`, enforced before any database read (2026-09-25
@@ -762,7 +763,7 @@ async fn plan_trip_request(
         alternatives,
         max_changes,
         live_requested,
-        allowed_uids: None,
+        operator_rule: None,
         access: access.clone(),
         transit,
     };
@@ -1022,9 +1023,9 @@ struct DateInputs {
     alternatives: bool,
     max_changes: u32,
     live_requested: bool,
-    /// Ride only these trains (a journey alternative's "same operator"
-    /// search, `plan_for_journey`); `None` for `/Trips/plan`.
-    allowed_uids: Option<Arc<std::collections::HashSet<String>>>,
+    /// Ride only what this allows (a journey alternative's "same
+    /// operator" search, `plan_for_journey`); `None` for `/Trips/plan`.
+    operator_rule: Option<trip_planner::OperatorRule>,
     /// The `TfL` stop ends and their access candidates (DS-135); `None`
     /// when both ends are stations.
     access: Option<Arc<tfl_access::AccessEnds>>,
@@ -1066,6 +1067,10 @@ async fn load_graph(
                 return Ok(None);
             };
             let mut interchange = trip_planning::fetch_interchange_data(&pool).await?;
+            // Who runs each link (operator filtering spec §5.1), before the
+            // transit graph copies the rail interchange data.
+            let unattributed_links = planner_operators::attribute_fixed_links(&mut interchange);
+            let operators = planner_operators::OperatorTable::fetch(&pool, date).await?;
             let road_or_water = trip_planning::fetch_road_or_water_tiplocs(&pool).await?;
             // Per-UID published modes; an error degrades to the bus-stop
             // heuristic for every UID rather than failing the plan.
@@ -1094,10 +1099,11 @@ async fn load_graph(
             // The sort over every calling point of the day, on the blocking
             // pool (bound 4 in `get_trip_plan`'s doc comment), and the
             // transit interchange data (a copy of the rail data).
-            let (connections, passes, interchange, transit) =
+            let (connections, passes, interchange, transit, operators, unknown_operators) =
                 tokio::task::spawn_blocking(move || {
-                    let (connections, passes) =
+                    let (mut connections, passes) =
                         trip_planning::build_connections_with_passes(calling_points);
+                    let unknown_operators = operators.attribute_connections(&mut connections);
                     let transit = transit_days.map(|(days, skipped)| {
                         transit_planning::build_transit_graph(
                             &interchange,
@@ -1108,17 +1114,26 @@ async fn load_graph(
                             trip_planning::road_water_change_minutes(),
                         )
                     });
-                    (connections, passes, interchange, transit)
+                    (
+                        connections,
+                        passes,
+                        interchange,
+                        transit,
+                        operators,
+                        unknown_operators,
+                    )
                 })
                 .await?;
             if let Some(transit) = &transit {
                 transit_planning::record_connections(transit);
             }
+            planner_operators::record_attribution(date, unknown_operators, &unattributed_links);
             Ok(Some(trip_planning::PlanningGraph {
                 connections,
                 interchange,
                 passes,
                 transit,
+                operators,
             }))
         })
         .await
@@ -1188,13 +1203,13 @@ async fn plan_on_date(
         .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
         (restrictions.map(Arc::new), via_search.map(Arc::new))
     };
-    let restrictions = match &inputs.allowed_uids {
+    let restrictions = match &inputs.operator_rule {
         None => restrictions,
-        Some(uids) => Some(Arc::new(
+        Some(rule) => Some(Arc::new(
             restrictions
                 .map(|r| (*r).clone())
                 .unwrap_or_default()
-                .with_allowed_uids((**uids).clone()),
+                .with_operator_rule(rule.clone()),
         )),
     };
     // A `TfL` stop end (DS-135): this request's own copy of the interchange
@@ -1829,8 +1844,8 @@ pub(crate) struct ReplanQuery {
     /// `fastest` (CSA) or `options` (RAPTOR's Pareto set).
     pub results: &'static str,
     pub max_changes: u32,
-    /// Ride only these trains, when set.
-    pub allowed_uids: Option<Arc<std::collections::HashSet<String>>>,
+    /// Ride only what this allows, when set.
+    pub operator_rule: Option<trip_planner::OperatorRule>,
 }
 
 /// Plans one of a journey's alternative searches exactly as
@@ -1878,7 +1893,7 @@ pub(crate) async fn plan_for_journey(
             .max_changes
             .min(trip_planning_itinerary::MAX_CHANGES_LIMIT),
         live_requested: true,
-        allowed_uids: query.allowed_uids.clone(),
+        operator_rule: query.operator_rule.clone(),
         access: None,
         // Journey alternatives and re-plans ride trains only (spec §9).
         transit: false,
@@ -3147,6 +3162,7 @@ mod tests {
 )]
 mod db_tests {
     mod live_in_search;
+    mod operator_rule;
     mod tfl_access;
     mod tfl_access_times;
 
@@ -5108,12 +5124,23 @@ mod db_tests {
         sqlx::query(
             "INSERT INTO schedule_destination_departures \
              (service_date, destination_crs, scheduled, train_uid, origin_crs, operator_atoc, headcode) \
-             VALUES ($1, 'ZYB', '08:00:00', 'TESTPLAT1', 'ZYA', 'SW', '1S00') ON CONFLICT DO NOTHING",
+             VALUES ($1, 'ZYB', '08:00:00', 'TESTPLAT1', 'ZYA', NULL, '1S00') ON CONFLICT DO NOTHING",
         )
         .bind(date)
         .execute(&pool)
         .await
         .expect("seed schedule_destination_departures");
+        // The operator comes from `schedule_services` (2026-10-31), which
+        // has every schedule, buses included: this one is a bus, with no
+        // operator on its `schedule_destination_departures` row.
+        sqlx::query(
+            "INSERT INTO schedule_services (service_date, uid, mode, stp, operator_atoc) \
+             VALUES ($1, 'TESTPLAT1', 'bus', 'P', 'SW') ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed schedule_services");
         sqlx::query(
             "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
              VALUES ('TESTPLAT-ZYA', 'ZYA', 'TESTPT1O', 'TEST PLAT ORIGIN', 1), \
@@ -5168,6 +5195,10 @@ mod db_tests {
             .await
             .ok();
         sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TESTPLAT1'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_services WHERE uid = 'TESTPLAT1'")
             .execute(&pool)
             .await
             .ok();
