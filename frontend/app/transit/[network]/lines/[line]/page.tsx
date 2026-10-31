@@ -1,4 +1,14 @@
-import { ColorSwatch, Group, SimpleGrid, Stack, Text, Title } from '@mantine/core';
+import {
+  Accordion,
+  AccordionControl,
+  AccordionItem,
+  AccordionPanel,
+  ColorSwatch,
+  Group,
+  Stack,
+  Text,
+  Title,
+} from '@mantine/core';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { ButtonLink } from '@/components/ButtonLink';
@@ -7,13 +17,14 @@ import { TextLink } from '@/components/TextLink';
 import { PinToggle } from '@/components/PinToggle';
 import { TransitAttributionNote } from '@/components/TransitAttributionNote';
 import { TransitDisruptions } from '@/components/TransitDisruptions';
-import { TransitBranches } from '@/components/TransitBranches';
 import { TransitFrequency } from '@/components/TransitFrequency';
+import { TransitLineDiagram } from '@/components/TransitLineDiagram';
 import { TransitStatusBadge } from '@/components/TransitStatusBadge';
 import { getPreferences, getTransitLine, getTransitNetwork } from '@/lib/api';
 import { formatDate } from '@/lib/dateFormat';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
-import { lineColour, orNotFound, TRANSIT_ID, transitStopHref } from '@/lib/transit';
+import { lineColour, orNotFound, TRANSIT_ID } from '@/lib/transit';
+import { buildLineDiagram } from '@/lib/transitLineDiagram';
 import { branchesHeading, directionHeading } from '@/lib/transitModes';
 import type { Preferences } from '@/lib/types';
 
@@ -50,8 +61,9 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 /** `/transit/[network]/lines/[line]`: a line's status and disruptions
  * (when the network has a disruptions feed; for TfL, TfL's own status and
  * a link to its line page), how often it runs today and its first and
- * last departures, its stops in order, each way, and a link to its
- * timetable. The star pins it (`statusLineId`: its public id,
+ * last departures, its stops drawn once as a route strip with its
+ * branches (`TransitLineDiagram`; trains run both ways along it), and links
+ * to its timetable each way and by branch. The star pins it (`statusLineId`: its public id,
  * `metrolink:blue`, or TfL's line, `tfl-victoria`), as for a National
  * Rail line. */
 export default async function TransitLinePage({ params, searchParams }: Params & Search) {
@@ -72,6 +84,10 @@ export default async function TransitLinePage({ params, searchParams }: Params &
     return branches.length > 1 ? branchesHeading(branches) : directionHeading(direction);
   };
   const pinId = lineDetail.statusLineId ?? lineDetail.id;
+  const diagram = buildLineDiagram(lineDetail);
+  const timetableHref = (query: Record<string, string>) =>
+    `/transit/${network}/lines/${line}/timetable?${new URLSearchParams(query).toString()}`;
+  const branches = lineDetail.branches ?? [];
   const stopNames = Object.fromEntries(
     lineDetail.directions.flatMap((direction) => direction.stations.map((station) => [station.id, station.name])),
   );
@@ -122,24 +138,62 @@ export default async function TransitLinePage({ params, searchParams }: Params &
         />
       )}
 
-      <SimpleGrid cols={{ base: 1, sm: lineDetail.directions.length > 1 ? 2 : 1 }} spacing="lg">
-        {lineDetail.directions.map((direction) => (
-          <Stack key={direction.direction} gap="sm">
-            <SectionTitle>{headingOf(direction)}</SectionTitle>
-            {branchesOf(direction.direction).length > 1 ? (
-              <TransitBranches network={network} line={line} branches={branchesOf(direction.direction)} />
-            ) : (
-              <Stack component="ol" gap={4} className="ds-plain-list">
-                {direction.stations.map((station) => (
-                  <li key={station.id}>
-                    <TextLink href={transitStopHref(network, station.id)}>{station.name}</TextLink>
-                  </li>
-                ))}
-              </Stack>
-            )}
-          </Stack>
-        ))}
-      </SimpleGrid>
+      {diagram.stops.length > 0 && (
+        <Stack gap="sm">
+          <SectionTitle>Stops</SectionTitle>
+          <Text size="sm" c="dimmed">
+            {diagram.from && diagram.to && diagram.from.id !== diagram.to.id
+              ? `${diagram.from.name} to ${diagram.to.name}, both ways. `
+              : 'Both ways. '}
+            {branches.length > 1 || diagram.stops.some((stop) => stop.spurs.length > 0)
+              ? 'Each branch hangs off the stop where it splits or joins.'
+              : ''}
+          </Text>
+          {/* Direction is a choice of timetable, not a second list of stops. */}
+          <Group gap="md" component="ul" className="ds-plain-list" aria-label="Timetable each way">
+            {lineDetail.directions.map((direction) => (
+              <li key={direction.direction}>
+                <TextLink href={timetableHref({ direction: direction.direction })} underline="always">
+                  {`Timetable: ${headingOf(direction).replace(/^Towards/, 'towards')}`}
+                </TextLink>
+              </li>
+            ))}
+          </Group>
+          <TransitLineDiagram
+            network={network}
+            diagram={diagram}
+            colour={lineColour(lineDetail)}
+            label={`${lineDetail.name} stops${diagram.from && diagram.to ? `, ${diagram.from.name} to ${diagram.to.name}` : ''}`}
+            idPrefix="line-diagram"
+          />
+          {branches.length > 1 && (
+            <Accordion variant="separated" chevronPosition="left">
+              <AccordionItem value="branches">
+                <AccordionControl>
+                  <Text fw={500}>Timetables by branch</Text>
+                  <Text size="xs" c="dimmed">
+                    {branches.length} branches
+                  </Text>
+                </AccordionControl>
+                <AccordionPanel>
+                  <Stack component="ul" gap={4} className="ds-plain-list">
+                    {branches.map((branch) => (
+                      <li key={branch.id}>
+                        <TextLink href={timetableHref({ direction: branch.direction, branch: branch.id })}>
+                          {branch.name}
+                        </TextLink>{' '}
+                        <Text span size="xs" c="dimmed">
+                          {branch.stations.length} stops, {branch.sharePercent}% of trips
+                        </Text>
+                      </li>
+                    ))}
+                  </Stack>
+                </AccordionPanel>
+              </AccordionItem>
+            </Accordion>
+          )}
+        </Stack>
+      )}
       {lineDetail.directions.length === 0 && <Text c="dimmed">Nothing runs on this line in the timetable.</Text>}
 
       <TransitAttributionNote network={detail} />

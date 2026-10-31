@@ -602,12 +602,15 @@ INSERT INTO transit_stops (network, feed_version, stop_id, kind, parent_stop_id,
   ('tfl', 'e2e-v1', '9400ZZDLBNK', 'station', NULL, 'Bank', NULL, 51.5133, -0.0886, NULL),
   ('tfl', 'e2e-v1', '9400ZZDLBNK1', 'platform', '9400ZZDLBNK', 'Bank', NULL, NULL, NULL, NULL),
   ('tfl', 'e2e-v1', '9400ZZDLCAN', 'station', NULL, 'Canary Wharf', NULL, 51.5052, -0.0209, NULL),
-  ('tfl', 'e2e-v1', '9400ZZDLCAN1', 'platform', '9400ZZDLCAN', 'Canary Wharf', NULL, NULL, NULL, NULL)
+  ('tfl', 'e2e-v1', '9400ZZDLCAN1', 'platform', '9400ZZDLCAN', 'Canary Wharf', NULL, NULL, NULL, NULL),
+  ('tfl', 'e2e-v1', '9400ZZDLTWG', 'station', NULL, 'Tower Gateway', NULL, 51.5106, -0.0743, NULL),
+  ('tfl', 'e2e-v1', '9400ZZDLTWG1', 'platform', '9400ZZDLTWG', 'Tower Gateway', NULL, NULL, NULL, NULL)
 ON CONFLICT DO NOTHING;
 
 INSERT INTO transit_patterns (network, feed_version, pattern_id, line_id, direction, headsign) VALUES
   ('tfl', 'e2e-v1', 'v1', 'victoria', 0, NULL),
-  ('tfl', 'e2e-v1', 'd1', 'dlr', 0, NULL)
+  ('tfl', 'e2e-v1', 'd1', 'dlr', 0, NULL),
+  ('tfl', 'e2e-v1', 'd2', 'dlr', 0, NULL)
 ON CONFLICT DO NOTHING;
 
 INSERT INTO transit_pattern_stops (network, feed_version, pattern_id, seq, stop_id, arr_offset_s, dep_offset_s, pickup, drop_off) VALUES
@@ -616,7 +619,9 @@ INSERT INTO transit_pattern_stops (network, feed_version, pattern_id, seq, stop_
   ('tfl', 'e2e-v1', 'v1', 2, '9400ZZLUKSX1', 900, 900, 0, 0),
   ('tfl', 'e2e-v1', 'v1', 3, '9400ZZLUWWL1', 1500, 1500, 1, 0),
   ('tfl', 'e2e-v1', 'd1', 0, '9400ZZDLBNK1', 0, 0, 0, 1),
-  ('tfl', 'e2e-v1', 'd1', 1, '9400ZZDLCAN1', 600, 600, 1, 0)
+  ('tfl', 'e2e-v1', 'd1', 1, '9400ZZDLCAN1', 600, 600, 1, 0),
+  ('tfl', 'e2e-v1', 'd2', 0, '9400ZZDLTWG1', 0, 0, 0, 1),
+  ('tfl', 'e2e-v1', 'd2', 1, '9400ZZDLCAN1', 540, 540, 1, 0)
 ON CONFLICT DO NOTHING;
 
 INSERT INTO transit_trips (network, feed_version, trip_id, line_id, pattern_id, service_id, start_s, headsign, replacement_bus) VALUES
@@ -625,7 +630,12 @@ INSERT INTO transit_trips (network, feed_version, trip_id, line_id, pattern_id, 
   ('tfl', 'e2e-v1', 'E2E-V0707', 'victoria', 'v1', 's1', 25620, NULL, false),
   ('tfl', 'e2e-v1', 'E2E-V0710', 'victoria', 'v1', 's1', 25800, NULL, false),
   ('tfl', 'e2e-v1', 'E2E-D0705', 'dlr', 'd1', 's1', 25500, NULL, false),
-  ('tfl', 'e2e-v1', 'E2E-D0715', 'dlr', 'd1', 's1', 26100, NULL, false)
+  ('tfl', 'e2e-v1', 'E2E-D0715', 'dlr', 'd1', 's1', 26100, NULL, false),
+  -- A DLR branch, from Tower Gateway, for the line page's route strip
+  -- (transit.spec.ts, the transit-tfl-branch screenshot). Its service runs
+  -- on no day, so no board, frequency or timetable changes: branches count
+  -- a pattern's trips whatever their days.
+  ('tfl', 'e2e-v1', 'E2E-D-TWG', 'dlr', 'd2', 's-branch', 25800, NULL, false)
 ON CONFLICT DO NOTHING;
 
 INSERT INTO transit_service_days (network, feed_version, service_id, service_date) VALUES

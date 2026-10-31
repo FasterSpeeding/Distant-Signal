@@ -1,0 +1,83 @@
+/* `TransitLineDiagram`: a vertical route strip in the line's colour
+   (`--line-colour`), a ring at each stop and a filled dot at each end.
+   A branch is the same strip indented under the stop where it splits or
+   joins, tied to the main line by a short rule. All drawing is
+   decoration (pseudo-elements); the lists carry the meaning. */
+
+.strip {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.stop {
+  position: relative;
+  padding-block: 3px;
+  padding-inline-start: 28px;
+  min-height: 28px;
+}
+
+/* The line: the full height of the row, branches included. */
+.stop::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 9px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--line-colour);
+}
+
+/* It starts and ends at the end stops' dots. */
+.strip > .stop:first-child::before {
+  top: 14px;
+}
+
+.strip > .stop:last-child::before {
+  bottom: auto;
+  height: 14px;
+}
+
+.strip > .stop:only-child::before {
+  display: none;
+}
+
+.stop::after {
+  content: '';
+  position: absolute;
+  inset-inline-start: 5px;
+  top: 8px;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 3px solid var(--line-colour);
+  background: var(--mantine-color-body);
+}
+
+.stop[data-terminus]::after {
+  inset-inline-start: 3px;
+  top: 6px;
+  width: 16px;
+  height: 16px;
+  background: var(--line-colour);
+}
+
+.spur {
+  position: relative;
+  margin-block: 4px 6px;
+}
+
+/* The branch's tie to the line it leaves or joins. */
+.spur::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: -17px;
+  top: 10px;
+  width: 24px;
+  border-top: 3px dotted var(--line-colour);
+}
+
+.spurLabel {
+  padding-inline-start: 8px;
+}

@@ -39,15 +39,27 @@ describe('/transit/[network]/lines/[line]', () => {
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
   });
 
-  it('lists the stops in order each way and links the timetable', async () => {
+  it('draws the stops once, in order, with the timetable each way', async () => {
     renderWithMantine(await TransitLinePage(params('blue')));
     expect(screen.getByRole('heading', { level: 1, name: 'Blue Line' })).toBeTruthy();
-    const towardsEccles = screen.getByRole('heading', { name: 'Towards Eccles' }).parentElement!;
-    const stops = within(towardsEccles)
-      .getAllByRole('link')
-      .map((a) => a.textContent);
-    expect(stops).toEqual(['Piccadilly', 'Eccles']);
-    expect(screen.getByRole('heading', { name: 'Towards Piccadilly' })).toBeTruthy();
+    // One list, not one per direction.
+    const stops = screen.getByRole('list', { name: 'Blue Line stops, Piccadilly to Eccles' });
+    expect(
+      within(stops)
+        .getAllByRole('link')
+        .map((a) => a.textContent),
+    ).toEqual(['Piccadilly', 'Eccles']);
+    expect(screen.queryByRole('heading', { name: 'Towards Eccles' })).toBeNull();
+    expect(screen.getByText(/Piccadilly to Eccles, both ways/)).toBeTruthy();
+    const each = screen.getByRole('list', { name: 'Timetable each way' });
+    expect(
+      within(each)
+        .getAllByRole('link')
+        .map((a) => [a.textContent, a.getAttribute('href')]),
+    ).toEqual([
+      ['Timetable: towards Eccles', '/transit/metrolink/lines/blue/timetable?direction=outbound'],
+      ['Timetable: towards Piccadilly', '/transit/metrolink/lines/blue/timetable?direction=inbound'],
+    ]);
     expect(screen.getByRole('link', { name: 'Timetable' }).getAttribute('href')).toBe(
       '/transit/metrolink/lines/blue/timetable',
     );
@@ -66,7 +78,8 @@ describe('/transit/[network]/lines/[line]', () => {
     expect(screen.getByRole('link', { name: 'Status details' }).getAttribute('href')).toBe('/lines/tfl-victoria');
     expect(screen.queryByRole('heading', { name: 'Disruptions' })).toBeNull();
     // No headsign: the direction is named by its last stop.
-    expect(screen.getAllByRole('heading', { name: 'Towards Walthamstow Central' })).toHaveLength(2);
+    expect(screen.getByRole('heading', { name: 'Towards Walthamstow Central' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Timetable: towards Walthamstow Central' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'How often it runs today' })).toBeTruthy();
     expect(screen.getByText('From Brixton: first 05:27, last 00:28')).toBeTruthy();
     expect(screen.getByText('Every 1 to 3 minutes')).toBeTruthy();
@@ -78,16 +91,19 @@ describe('/transit/[network]/lines/[line]', () => {
     vi.mocked(api.getTransitNetwork).mockResolvedValue(TFL_NETWORK);
     vi.mocked(api.getTransitLine).mockResolvedValue(TFL_BRANCHED_LINE);
     renderWithMantine(await TransitLinePage({ params: Promise.resolve({ network: 'tfl', line: 'northern' }) }));
-    expect(screen.getByRole('heading', { level: 2, name: 'Towards Edgware or High Barnet' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Morden to Edgware/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Morden to High Barnet/ })).toBeTruthy();
+    // The busiest branch is the main line; the other hangs off Morden.
+    const stops = screen.getByRole('list', { name: 'Northern stops, Morden to Edgware' });
+    const branch = within(stops).getByRole('group', { name: 'Branch to High Barnet' });
+    expect(within(branch).getByRole('link', { name: 'High Barnet' })).toBeTruthy();
+    expect(screen.getAllByRole('link', { name: 'Morden' })).toHaveLength(1);
+    expect(screen.getByRole('link', { name: 'Timetable: towards Edgware or High Barnet' })).toBeTruthy();
     // A TfL station links TfL's stop page.
-    expect(screen.getAllByRole('link', { name: 'Morden', hidden: true })[0]!.getAttribute('href')).toBe(
-      '/tfl/stops/940GZZLUMDN',
+    expect(screen.getByRole('link', { name: 'Morden' }).getAttribute('href')).toBe('/tfl/stops/940GZZLUMDN');
+    // Every branch's timetable, in a closed panel.
+    expect(screen.getByRole('button', { name: /Timetables by branch/ })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Morden to High Barnet', hidden: true }).getAttribute('href')).toBe(
+      '/transit/tfl/lines/northern/timetable?direction=outbound&branch=outbound-2',
     );
-    expect(
-      screen.getAllByRole('link', { name: 'Timetable for this branch', hidden: true })[1]!.getAttribute('href'),
-    ).toBe('/transit/tfl/lines/northern/timetable?direction=outbound&branch=outbound-2');
   });
 
   it("shows the line's status and its disruptions", async () => {
