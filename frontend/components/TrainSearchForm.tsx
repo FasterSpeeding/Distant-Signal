@@ -120,14 +120,18 @@ const CRS_PATTERN = STATION_CODE_PATTERN;
  * departure, or an arrival on the arrivals board; between two stations,
  * the departure from the first), each with a "Next day" box for a time
  * after the date's midnight; between two stations, an earliest/latest
- * arrival at the second; on a station's board, "Starts at" (the train's
- * first station); and Operator, "any of" the operators picked, a code
- * that is not on the page's list dropped (`parseOperatorParam`). Under
- * them, "Advanced options" (`TrainsAdvancedOptions`): the planner's Call
- * at, Pass through, Avoid completely and Don't stop at, applied to the
- * part of the train ridden (after the station, before it on the arrivals
- * board, or between the two stations), sent and kept in the URL as
- * `calls_at`, `via`, `avoid` and `avoid_stop`.
+ * arrival at the second; and Operator, "any of" the operators picked, a
+ * code that is not on the page's list dropped (`parseOperatorParam`).
+ * Under them, "Advanced options" (`TrainsAdvancedOptions`): Starts at,
+ * Previously calls at and Previously stops at, about the route before the
+ * station (before the first of two), sent and kept in the URL as
+ * `origin`, `previously_calls_at` and `previously_stops_at`; then
+ * Terminates at (`terminates_at`) and the planner's Call at, Pass
+ * through, Avoid completely and Don't stop at, applied to the part of the
+ * train ridden (after the station, before it on the arrivals board, or
+ * between the two stations), as `calls_at`, `via`, `avoid` and
+ * `avoid_stop`. Starts at moved there from the main form under the same
+ * `origin`, so an old link keeps its meaning.
  *
  * The rows are the timetable, each a link to the train's page. Only in the
  * ticket flow (`attachTicketId`, from the Journeys page) does a row carry
@@ -141,7 +145,6 @@ export function TrainSearchForm({
   view = 'station',
   initialBoard: initialBoardProp = '',
   initialStation: initialStationProp = '',
-  initialOrigin: initialOriginProp = '',
   initialStopsAt: initialStopsAtProp = '',
   initialDate: initialDateProp = '',
   initialFrom: initialFromProp = '',
@@ -167,8 +170,6 @@ export function TrainSearchForm({
   /** The station (`?station=`), or between two stations the first
    * (`?from=`). */
   initialStation?: string | undefined;
-  /** `?origin=`, where the train starts. Station view only. */
-  initialOrigin?: string | undefined;
   /** Between two stations, the second (`?to=`). */
   initialStopsAt?: string | undefined;
   initialDate?: string | undefined;
@@ -185,8 +186,9 @@ export function TrainSearchForm({
   initialArrivalToDayOffset?: string | undefined;
   /** `?operator=`, comma-separated ATOC codes. */
   initialOperator?: string | undefined;
-  /** `?calls_at=`, `?via=`, `?avoid=` and `?avoid_stop=`
-   * (`parseStopFilterParams`). */
+  /** `?calls_at=`, `?via=`, `?avoid=`, `?avoid_stop=`,
+   * `?previously_calls_at=` and `?previously_stops_at=` (and in the
+   * station view a legacy `?origin=`; `parseStopFilterParams`). */
   initialStopFilters?: TrainStopFilters | undefined;
   /** `false` when the view was switched to on the page, so the address
    * bar (just cleared) seeds nothing. */
@@ -205,7 +207,6 @@ export function TrainSearchForm({
   const seed = (key: string, prop: string, code: boolean) =>
     urlParams ? ((code ? paramValue(urlParams, key)?.toUpperCase() : paramValue(urlParams, key)) ?? '') : prop;
   const initialStation = seed(between ? 'from' : 'station', initialStationProp, true);
-  const initialOrigin = between ? '' : seed('origin', initialOriginProp, true);
   const initialStopsAt = between ? seed('to', initialStopsAtProp, true) : '';
   const initialDate = seed('date', initialDateProp, false);
   const initialFrom = seed('time', initialFromProp, false);
@@ -243,7 +244,6 @@ export function TrainSearchForm({
   const [arrivalFromNextDay, setArrivalFromNextDay] = useState(() => parseNextDayParam(initialArrivalFromDayOffset));
   const [arrivalToNextDay, setArrivalToNextDay] = useState(() => parseNextDayParam(initialArrivalToDayOffset));
   const [stationCrs, setStationCrs] = useState(initialStation);
-  const [originCrs, setOriginCrs] = useState(initialOrigin);
   const [stopsAt, setStopsAt] = useState(initialStopsAt);
   const [dateValue, setDateValue] = useState<string | null>(initialDate || null);
   const [fromTime, setFromTime] = useState(initialFrom);
@@ -260,6 +260,10 @@ export function TrainSearchForm({
   const addStopNames = (found: Map<string, string>) => setStopNames((current) => new Map([...current, ...found]));
   useEffect(() => {
     const restored = [
+      ...stopFilters.startsAt,
+      ...stopFilters.terminatesAt,
+      ...stopFilters.previouslyCallsAt,
+      ...stopFilters.previouslyStopsAt,
       ...stopFilters.callsAt,
       ...stopFilters.via,
       ...stopFilters.avoid,
@@ -275,7 +279,14 @@ export function TrainSearchForm({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the restored filters are read on mount only
   }, []);
-  const stopGroups = useStationGroups([...stopFilters.callsAt, ...stopFilters.via].some(isGroupCode));
+  const stopGroups = useStationGroups(
+    [
+      ...stopFilters.previouslyCallsAt,
+      ...stopFilters.previouslyStopsAt,
+      ...stopFilters.callsAt,
+      ...stopFilters.via,
+    ].some(isGroupCode),
+  );
   const stopLabels = useMemo(() => new Map([...groupLabels(stopGroups), ...stopNames]), [stopGroups, stopNames]);
   /** Which of the four time filters are currently HALF-entered -- an hour
    * segment filled in with the minutes left blank, or vice versa. A native
@@ -310,7 +321,6 @@ export function TrainSearchForm({
   const boardLabelId = useId();
 
   const stationValid = CRS_PATTERN.test(stationCrs.trim());
-  const originValid = originCrs.trim() === '' || CRS_PATTERN.test(originCrs.trim());
   // Between two stations the second is required; on a station's board
   // there is none.
   const stopsAtValid = between ? CRS_PATTERN.test(stopsAt.trim()) : stopsAt.trim() === '';
@@ -332,11 +342,12 @@ export function TrainSearchForm({
         ]
       : [[stationCrs, 'the station on this board']],
     names: stopLabels,
+    arrivals,
+    between,
   });
   const filtersValid =
     Object.keys(stopErrors).length === 0 &&
     stationValid &&
-    originValid &&
     stopsAtValid &&
     fromValid &&
     toValid &&
@@ -374,7 +385,6 @@ export function TrainSearchForm({
   function searchParams() {
     const params = new URLSearchParams({ station: stationCrs.trim().toUpperCase() });
     if (dateValue) params.set('date', dateValue);
-    if (!between && originCrs.trim()) params.set('origin', originCrs.trim().toUpperCase());
     if (between) {
       params.set('stops_at', stopsAt.trim().toUpperCase());
       if (arrivalFrom.trim()) {
@@ -421,7 +431,6 @@ export function TrainSearchForm({
     } else {
       state.station = station;
       if (arrivals) state.board = 'arrivals';
-      if (originCrs.trim()) state.origin = originCrs.trim().toUpperCase();
     }
     if (dateValue) state.date = dateValue;
     if (fromTime.trim()) {
@@ -595,17 +604,6 @@ export function TrainSearchForm({
         clearButtonProps={{ 'aria-label': 'Clear the date' }}
         {...(inPanel && { popoverProps: { withinPortal: false } })}
       />
-      {!between && (
-        <StationField
-          label="Starts at (optional)"
-          placeholder="e.g. Paddington or PAD"
-          description="The station the train starts from."
-          value={originCrs}
-          onChange={setOriginCrs}
-          {...comboboxProps}
-          error={originCrs.length > 0 && !originValid ? codeError : null}
-        />
-      )}
       <MultiSelect
         label="Operator (optional)"
         placeholder="Any operator"
@@ -711,18 +709,19 @@ export function TrainSearchForm({
         comboboxProps={inPanel ? { withinPortal: false } : undefined}
         scope={
           between
-            ? `They look at the train's route between ${stationDisplay} and ${stopsAtDisplay}.`
+            ? `These look at the train's route between ${stationDisplay} and ${stopsAtDisplay}.`
             : arrivals
-              ? `They look at the train's route before it reaches ${stationDisplay}.`
-              : `They look at the train's route after ${stationDisplay}.`
+              ? `These look at the train's route before it reaches ${stationDisplay}.`
+              : `These look at the train's route after ${stationDisplay}.`
         }
+        earlierScope={`To find a particular train, these look at where it has been before ${stationDisplay}.`}
+        arrivals={arrivals}
       />
     </>
   );
 
   const activeCount =
     (dateValue ? 1 : 0) +
-    (!between && originCrs.trim() ? 1 : 0) +
     (fromTime.trim() ? 1 : 0) +
     (toTime.trim() ? 1 : 0) +
     (between && arrivalFrom.trim() ? 1 : 0) +
@@ -732,7 +731,6 @@ export function TrainSearchForm({
 
   function clearPanelFilters() {
     setDateValue(null);
-    setOriginCrs('');
     setOperators([]);
     setFromTime('');
     setToTime('');

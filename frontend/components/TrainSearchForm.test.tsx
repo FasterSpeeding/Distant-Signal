@@ -368,7 +368,9 @@ describe('TrainSearchForm', () => {
   it('sends every optional filter it has, uppercased', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" />);
+    renderWithMantine(
+      <TrainSearchForm initialStation="man" initialStopFilters={{ ...noFilters, startsAt: ['EUS'] }} />,
+    );
 
     fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '09:00' } });
     fireEvent.change(panelField('Latest departure (optional)'), { target: { value: '12:00' } });
@@ -376,7 +378,7 @@ describe('TrainSearchForm', () => {
 
     await waitFor(() =>
       expect(searchCallUrl(fetchMock)).toBe(
-        '/api/trains/search?station=MAN&origin=EUS&from=09%3A00&to=12%3A00&across_midnight=true',
+        '/api/trains/search?station=MAN&from=09%3A00&to=12%3A00&origin=EUS&across_midnight=true',
       ),
     );
   });
@@ -394,8 +396,7 @@ describe('TrainSearchForm', () => {
         '/api/trains/search?station=MAN&stops_at=OXF&from=09%3A00&across_midnight=true',
       ),
     );
-    // No "Starts at" between two stations, and no station view fields.
-    expect(screen.queryByRole('combobox', { name: 'Starts at (optional)' })).not.toBeInTheDocument();
+    // No station view fields.
     expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('MAN');
     expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('OXF');
   });
@@ -1475,7 +1476,9 @@ describe('TrainSearchForm', () => {
           : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" />);
+    renderWithMantine(
+      <TrainSearchForm initialStation="man" initialStopFilters={{ ...noFilters, startsAt: ['EUS'] }} />,
+    );
 
     fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '09:00' } });
     fireEvent.change(panelField('Latest departure (optional)'), { target: { value: '12:00' } });
@@ -1487,7 +1490,7 @@ describe('TrainSearchForm', () => {
     // filters (the changes land before or after the mount search; either
     // way the rows on screen are from the search that has them).
     expect(searchCallUrl(fetchMock)).toBe(
-      '/api/trains/search?station=MAN&origin=EUS&from=09%3A00&to=12%3A00&after=CURSOR1&across_midnight=true',
+      '/api/trains/search?station=MAN&from=09%3A00&to=12%3A00&origin=EUS&after=CURSOR1&across_midnight=true',
     );
   });
 
@@ -1637,7 +1640,9 @@ describe('TrainSearchForm', () => {
     it('replaces the URL with the query string it just searched, not pushes a new history entry', async () => {
       const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);
-      renderWithMantine(<TrainSearchForm initialStation="MAN" initialOrigin="EUS" />);
+      renderWithMantine(
+        <TrainSearchForm initialStation="MAN" initialStopFilters={{ ...noFilters, startsAt: ['EUS'] }} />,
+      );
 
       // Mount's own search does not write to the URL (it came from it).
       window.history.replaceState(null, '', '/trains?station=MAN&origin=EUS&ticketId=7');
@@ -1707,11 +1712,17 @@ describe('TrainSearchForm', () => {
     it('auto-runs the search on mount when the initial station is valid, with no click at all', async () => {
       const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);
-      renderWithMantine(<TrainSearchForm initialStation="MAN" initialOrigin="EUS" initialFrom="09:00" />);
+      renderWithMantine(
+        <TrainSearchForm
+          initialStation="MAN"
+          initialStopFilters={{ ...noFilters, startsAt: ['EUS'] }}
+          initialFrom="09:00"
+        />,
+      );
 
       await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(1));
       expect(searchCallUrls(fetchMock)[0]).toBe(
-        '/api/trains/search?station=MAN&origin=EUS&from=09%3A00&across_midnight=true',
+        '/api/trains/search?station=MAN&from=09%3A00&origin=EUS&across_midnight=true',
       );
       expect(await screen.findByRole('link', { name: rowName('08:22', 'WAT') })).toBeInTheDocument();
       // The mount effect itself must not touch the URL -- only an explicit
@@ -1836,7 +1847,7 @@ describe('TrainSearchForm advanced options', () => {
     }
     // The planner's change options mean nothing for one train.
     expect(screen.queryByRole('combobox', { name: "Don't change at" })).not.toBeInTheDocument();
-    expect(screen.getByText("They look at the train's route after MAN.")).toBeInTheDocument();
+    expect(screen.getByText("These look at the train's route after MAN.")).toBeInTheDocument();
   });
 
   it('sends a station added to Call at with the departures search, and keeps it in the URL', async () => {
@@ -1861,7 +1872,13 @@ describe('TrainSearchForm advanced options', () => {
         view="between"
         initialStation="MAN"
         initialStopsAt="WAT"
-        initialStopFilters={{ callsAt: ['RDG', 'group:LON'], via: ['OXF'], avoid: ['BHM'], avoidStop: ['CRE'] }}
+        initialStopFilters={{
+          ...noFilters,
+          callsAt: ['RDG', 'group:LON'],
+          via: ['OXF'],
+          avoid: ['BHM'],
+          avoidStop: ['CRE'],
+        }}
       />,
     );
     await awaitMountSettled();
@@ -1895,7 +1912,172 @@ describe('TrainSearchForm advanced options', () => {
       expect(fetchMock.mock.calls.map((args) => String(args[0]))).toContain('/api/trains/arrivals?station=MAN&via=OXF'),
     );
     await openAdvanced();
-    expect(screen.getByText("They look at the train's route before it reaches MAN.")).toBeInTheDocument();
+    expect(screen.getByText("These look at the train's route before it reaches MAN.")).toBeInTheDocument();
+    // One line on this board: every list looks before the station, so
+    // "Previously calls at" (the same as "Call at" here) is left out.
+    expect(screen.queryByText(/To find a particular train/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Previously calls at (in order)' })).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Previously stops at (in order)' })).toBeInTheDocument();
+  });
+
+  it('offers Previously calls at and Previously stops at before the station, and sends them', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState(null, '', '/trains?station=MAN');
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+    await awaitMountSettled();
+    await openAdvanced();
+    expect(
+      screen.getByText('To find a particular train, these look at where it has been before MAN.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText("These look at the train's route after MAN.")).toBeInTheDocument();
+    addTyped('Previously calls at (in order)', 'eus');
+    await waitFor(() =>
+      expect(searchCallUrl(fetchMock)).toBe(
+        '/api/trains/search?station=MAN&previously_calls_at=EUS&across_midnight=true',
+      ),
+    );
+    addTyped('Previously stops at (in order)', 'crE');
+    await waitFor(() =>
+      expect(searchCallUrl(fetchMock)).toBe(
+        '/api/trains/search?station=MAN&previously_calls_at=EUS&previously_stops_at=CRE&across_midnight=true',
+      ),
+    );
+    await waitFor(() =>
+      expect(window.location.search).toBe('?station=MAN&previously_calls_at=EUS&previously_stops_at=CRE'),
+    );
+  });
+
+  it('sends the Previously lists between two stations, before the first', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <TrainSearchForm
+        view="between"
+        initialStation="MAN"
+        initialStopsAt="WAT"
+        initialStopFilters={{ ...noFilters, previouslyStopsAt: ['group:LON', 'CRE'] }}
+      />,
+    );
+    await awaitMountSettled();
+    expect(searchCallUrl(fetchMock)).toBe(
+      '/api/trains/search?station=MAN&stops_at=WAT&previously_stops_at=group%3ALON%2CCRE&across_midnight=true',
+    );
+    await openAdvanced();
+    expect(
+      screen.getByText('To find a particular train, these look at where it has been before MAN.'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a Previously calls at in force on the arrivals board rather than hiding it', async () => {
+    const base = mockFetchByUrl();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/trains/arrivals'))
+        return Promise.resolve(new Response(JSON.stringify({ results: [], nextCursor: null }), { status: 200 }));
+      return base(input);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <TrainSearchForm
+        initialStation="MAN"
+        initialBoard="arrivals"
+        initialStopFilters={{ ...noFilters, previouslyCallsAt: ['EUS'] }}
+      />,
+    );
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map((args) => String(args[0]))).toContain(
+        '/api/trains/arrivals?station=MAN&previously_calls_at=EUS',
+      ),
+    );
+    await openAdvanced();
+    expect(screen.getByRole('combobox', { name: 'Previously calls at (in order)' })).toBeInTheDocument();
+    expect(screen.getByText(/On the arrivals board this is the same as "Call at"/)).toBeInTheDocument();
+  });
+
+  it('refuses a Previously entry that is the station searched, and says why', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <TrainSearchForm initialStation="MAN" initialStopFilters={{ ...noFilters, previouslyStopsAt: ['MAN'] }} />,
+    );
+    openFiltersIfCompact();
+    expect(screen.getByRole('button', { name: 'Advanced options (1 set, 1 to fix)' })).toBeInTheDocument();
+    await openAdvanced();
+    expect(
+      screen.getByText('MAN is the station on this board: list a station elsewhere on the route.'),
+    ).toBeInTheDocument();
+    expect(searchCallUrls(fetchMock)).toHaveLength(0);
+  });
+
+  it('keeps Starts at in Advanced options, off the main form', async () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(<TrainSearchForm />);
+    expect(screen.queryByRole('combobox', { name: /Starts at/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^Advanced options/ }));
+    expect(await screen.findByRole('combobox', { name: 'Starts at' })).toBeInTheDocument();
+  });
+
+  it('sends Starts at as origin and Terminates at as terminates_at, and keeps them in the URL', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState(null, '', '/trains?station=MAN');
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+    await awaitMountSettled();
+    await openAdvanced();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Starts at' }), { target: { value: 'eus' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Terminates at' }), { target: { value: 'wat' } });
+    await waitFor(() =>
+      expect(searchCallUrl(fetchMock)).toBe(
+        '/api/trains/search?station=MAN&origin=EUS&terminates_at=WAT&across_midnight=true',
+      ),
+    );
+    await waitFor(() => expect(window.location.search).toBe('?station=MAN&origin=EUS&terminates_at=WAT'));
+  });
+
+  it('refuses a half-typed Starts at, and a Terminates at the departures board avoids', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <TrainSearchForm
+        initialStation="MAN"
+        initialStopFilters={{ ...noFilters, startsAt: ['EU'], terminatesAt: ['WAT'], avoidStop: ['WAT'] }}
+      />,
+    );
+    openFiltersIfCompact();
+    expect(screen.getByRole('button', { name: 'Advanced options (3 set, 2 to fix)' })).toBeInTheDocument();
+    await openAdvanced();
+    expect(screen.getByText('Must be a 3-letter station code')).toBeInTheDocument();
+    expect(
+      screen.getByText('WAT is also in "Avoid completely" or "Don\'t stop at": a train can\'t both end there and not.'),
+    ).toBeInTheDocument();
+    expect(searchCallUrls(fetchMock)).toHaveLength(0);
+  });
+
+  it('keeps Starts at and Terminates at on the arrivals board', async () => {
+    const base = mockFetchByUrl();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/trains/arrivals'))
+        return Promise.resolve(new Response(JSON.stringify({ results: [], nextCursor: null }), { status: 200 }));
+      return base(input);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <TrainSearchForm
+        initialStation="MAN"
+        initialBoard="arrivals"
+        initialStopFilters={{ ...noFilters, startsAt: ['EUS'], terminatesAt: ['MAN'] }}
+      />,
+    );
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map((args) => String(args[0]))).toContain(
+        '/api/trains/arrivals?station=MAN&origin=EUS&terminates_at=MAN',
+      ),
+    );
+    await openAdvanced();
+    expect(screen.getByRole('combobox', { name: 'Starts at' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Terminates at' })).toBeInTheDocument();
   });
 
   it('refuses to search on a list that cannot be met, and says why on the field', async () => {
@@ -1931,4 +2113,13 @@ describe('TrainSearchForm advanced options', () => {
   });
 });
 
-const noFilters = { callsAt: [], via: [], avoid: [], avoidStop: [] };
+const noFilters = {
+  callsAt: [],
+  via: [],
+  avoid: [],
+  avoidStop: [],
+  previouslyCallsAt: [],
+  previouslyStopsAt: [],
+  startsAt: [],
+  terminatesAt: [],
+};

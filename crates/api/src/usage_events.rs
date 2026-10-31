@@ -311,7 +311,16 @@ pub const FEATURE_STEPS: &[(&str, &[&str])] = &[
     // never the stations.
     (
         "trains_filters",
-        &["calls_at", "via", "avoid", "avoid_stop"],
+        &[
+            "calls_at",
+            "via",
+            "avoid",
+            "avoid_stop",
+            "previously_calls_at",
+            "previously_stops_at",
+            "origin",
+            "terminates_at",
+        ],
     ),
     // The planner's "Compare options": a search with it on, and an option
     // other than the fastest chosen, then saved as a journey.

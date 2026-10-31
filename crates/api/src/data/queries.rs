@@ -1047,6 +1047,9 @@ pub struct CallingPointSearch<'a> {
     /// Inclusive upper bound on that departure, in train-day minutes.
     pub depart_to: Option<i32>,
     pub true_origin_crs: Option<&'a str>,
+    /// The train's true terminus (`destination_crs`), exactly
+    /// (2026-10-30, DS-213: the `/trains` search's `terminates_at`).
+    pub terminates_at: Option<&'a str>,
     pub stops_at: Option<&'a str>,
     /// Inclusive bounds on the arrival at `stops_at`, in train-day minutes.
     pub arrive_from: Option<i32>,
@@ -1205,6 +1208,7 @@ fn calling_point_search_sql(later_days: bool) -> String {
               AND {main_departure} >= $3::int4
               AND ($6::int4 IS NULL OR {main_departure} <= $6)
               AND ($4::text IS NULL OR main.true_origin_crs = $4)
+              AND ($16::text IS NULL OR main.destination_crs = $16)
               AND ($15::text[] IS NULL OR main.operator_atoc = ANY($15))
               AND (
                     $5::text IS NULL
@@ -1375,6 +1379,7 @@ struct DateSearch<'a> {
     station_crs: &'a str,
     service_date: chrono::NaiveDate,
     true_origin_crs: Option<&'a str>,
+    terminates_at: Option<&'a str>,
     stops_at: Option<&'a str>,
     operators: Option<&'a [String]>,
     stop_filter: Option<&'a crate::data::stop_filters::SearchStopFilter>,
@@ -1465,6 +1470,7 @@ async fn search_one_service_date(
                 .bind(range_start)
                 .bind(range_end)
                 .bind(search.operators)
+                .bind(search.terminates_at)
                 .fetch_all(pool)
                 .await?;
             let Some(filter) = search.stop_filter else {
@@ -1733,6 +1739,7 @@ pub async fn search_schedule_calling_point_departures(
         depart_from,
         depart_to,
         true_origin_crs,
+        terminates_at,
         stops_at,
         arrive_from,
         arrive_to,
@@ -1763,6 +1770,7 @@ pub async fn search_schedule_calling_point_departures(
                 station_crs,
                 service_date: date,
                 true_origin_crs,
+                terminates_at,
                 stops_at,
                 operators,
                 stop_filter,
@@ -6355,6 +6363,7 @@ mod schedule_destination_departures_query_tests {
                 depart_from: minutes(depart_from),
                 depart_to: depart_to.map(minutes),
                 true_origin_crs,
+                terminates_at: None,
                 stops_at,
                 arrive_from: arrive_from.map(minutes),
                 arrive_to: arrive_to.map(minutes),

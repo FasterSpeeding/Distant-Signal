@@ -25,6 +25,19 @@
 //! - `avoid_stop` ("Don't stop at"): no timed call there (a passenger call
 //!   or a working-only one); running through is fine.
 //!
+//! Two more (2026-10-30, DS-213) look at the part of the run BEFORE the
+//! searched station (before the first station between two stations), the
+//! part a passenger does not ride, for finding one specific train:
+//!
+//! - `previously_calls_at`: the train made a passenger call at each entry,
+//!   in order, before reaching the station; its origin counts.
+//! - `previously_stops_at`: the same, but its origin does not count: the
+//!   train was already running when it stopped there. The origin is the
+//!   schedule's first location (where `originCrs` says it starts).
+//!
+//! On the arrivals board the part ridden and the part before are the same
+//! rows, so there `previously_calls_at` means what `calls_at` does.
+//!
 //! Every CRS covers all of its TIPLOCs (`tiploc_crs` and `stanox_crs`); a
 //! `tiploc:` code names one location of `tiploc_locations`.
 
@@ -44,19 +57,53 @@ pub struct StopFilters {
     pub via: Vec<HashSet<String>>,
     pub avoid: HashSet<String>,
     pub avoid_stop: HashSet<String>,
+    /// In order; each entry is satisfied by a passenger call at ANY of its
+    /// TIPLOCs before the station, the train's origin included.
+    pub previously_calls_at: Vec<HashSet<String>>,
+    /// As `previously_calls_at`, the train's origin excluded.
+    pub previously_stops_at: Vec<HashSet<String>>,
 }
 
 impl StopFilters {
     pub fn is_empty(&self) -> bool {
-        self.calls_at.is_empty()
+        !self.has_ridden() && !self.has_earlier()
+    }
+
+    /// Whether any filter on the part ridden is set.
+    pub fn has_ridden(&self) -> bool {
+        !(self.calls_at.is_empty()
             && self.via.is_empty()
             && self.avoid.is_empty()
-            && self.avoid_stop.is_empty()
+            && self.avoid_stop.is_empty())
+    }
+
+    /// Whether `previously_calls_at` or `previously_stops_at` is set.
+    pub fn has_earlier(&self) -> bool {
+        !(self.previously_calls_at.is_empty() && self.previously_stops_at.is_empty())
+    }
+
+    /// Whether the part of a train's run in `before` (every row before the
+    /// searched station's call, from the train's origin on) passes
+    /// `previously_calls_at` and `previously_stops_at`.
+    pub fn accepts_earlier(&self, before: &[ScheduleCall]) -> bool {
+        let public = |calls: &[ScheduleCall]| -> Vec<String> {
+            calls
+                .iter()
+                .filter(|call| call.is_public_call())
+                .map(|call| schedule_query::normalize_tiploc(&call.tiploc).to_string())
+                .collect()
+        };
+        in_order(&self.previously_calls_at, public(before).into_iter())
+            && in_order(
+                &self.previously_stops_at,
+                public(before.get(1..).unwrap_or_default()).into_iter(),
+            )
     }
 
     /// Whether the part of a train's run in `span` (the rows a passenger
     /// rides past, the boarding and alighting calls themselves excluded)
-    /// passes every filter.
+    /// passes every filter on it (all but the `previously_*` ones: see
+    /// [`Self::accepts_earlier`]).
     pub fn accepts(&self, span: &[ScheduleCall]) -> bool {
         let tiploc =
             |call: &ScheduleCall| schedule_query::normalize_tiploc(&call.tiploc).to_string();
@@ -182,7 +229,8 @@ impl SearchStopFilter {
     /// Whether the train boarded at its departure at `scheduled` on day
     /// `day_offset` passes, riding on to the end, or with `stops_at` to
     /// the call the search matched: its departure `(time, day offset)`, or
-    /// `None` for the terminus.
+    /// `None` for the terminus. The `previously_*` filters look at the
+    /// rows before the boarding call instead.
     pub fn accepts(
         &self,
         calls: &[ScheduleCall],
@@ -199,8 +247,16 @@ impl SearchStopFilter {
             },
             (Some(_), None) => RideEnd::Terminus,
         };
-        departure_span(calls, &self.station_tiplocs, scheduled, day_offset, end)
-            .is_some_and(|span| self.filters.accepts(span))
+        if self.filters.has_earlier() {
+            let before = find_departure(calls, &self.station_tiplocs, scheduled, day_offset, None)
+                .and_then(|from| calls.get(..from));
+            if !before.is_some_and(|before| self.filters.accepts_earlier(before)) {
+                return false;
+            }
+        }
+        !self.filters.has_ridden()
+            || departure_span(calls, &self.station_tiplocs, scheduled, day_offset, end)
+                .is_some_and(|span| self.filters.accepts(span))
     }
 }
 
@@ -544,6 +600,75 @@ mod tests {
         let span = arrival_span(&calls, &set(&["CCC"]), None);
         assert_eq!(tiplocs_of(span), Some(vec!["ORIG", "AAA", "JCT", "BBB"]));
         assert_eq!(arrival_span(&[], &set(&["CCC"]), None), None);
+    }
+
+    fn earlier(calls_at: &[&[&str]], stops_at: &[&[&str]]) -> StopFilters {
+        StopFilters {
+            previously_calls_at: calls_at.iter().map(|entry| set(entry)).collect(),
+            previously_stops_at: stops_at.iter().map(|entry| set(entry)).collect(),
+            ..StopFilters::default()
+        }
+    }
+
+    #[test]
+    fn previously_calls_at_counts_the_origin_and_previously_stops_at_does_not() {
+        // Everything before CCC: ORIG (origin), AAA, JCT (pass), BBB
+        // (working-only).
+        let calls = train();
+        let before = &calls[..4];
+        assert!(earlier(&[&["ORIG"]], &[]).accepts_earlier(before));
+        assert!(
+            !earlier(&[], &[&["ORIG"]]).accepts_earlier(before),
+            "origin"
+        );
+        assert!(earlier(&[], &[&["AAA"]]).accepts_earlier(before));
+        assert!(earlier(&[&["AAA"]], &[]).accepts_earlier(before));
+        assert!(earlier(&[&["ORIG"], &["AAA"]], &[]).accepts_earlier(before));
+        assert!(
+            !earlier(&[&["AAA"], &["ORIG"]], &[]).accepts_earlier(before),
+            "order"
+        );
+        assert!(!earlier(&[&["JCT"]], &[]).accepts_earlier(before), "a pass");
+        assert!(
+            !earlier(&[&["BBB"]], &[]).accepts_earlier(before),
+            "a working-only call"
+        );
+        assert!(!earlier(&[], &[&["BBB"]]).accepts_earlier(before));
+        assert!(
+            earlier(&[], &[&["ZZZ", "AAA"]]).accepts_earlier(before),
+            "OR"
+        );
+        // Nothing before the origin itself.
+        assert!(!earlier(&[&["ORIG"]], &[]).accepts_earlier(&[]));
+        assert!(StopFilters::default().accepts_earlier(&[]));
+    }
+
+    #[test]
+    fn a_search_checks_the_previously_filters_before_the_boarding_call_only() {
+        let calls = train();
+        let filter = |filters: StopFilters| SearchStopFilter {
+            filters,
+            station_tiplocs: set(&["BBB"]),
+            stops_at_tiplocs: None,
+        };
+        // Boarding at BBB (09:10): ORIG and AAA came before it.
+        assert!(filter(earlier(&[&["ORIG"]], &[])).accepts(&calls, hm(9, 10), 0, None));
+        assert!(filter(earlier(&[], &[&["AAA"]])).accepts(&calls, hm(9, 10), 0, None));
+        // CCC comes after it.
+        assert!(!filter(earlier(&[&["CCC"]], &[])).accepts(&calls, hm(9, 10), 0, None));
+        // Boarding at the origin: nothing before.
+        let at_origin = SearchStopFilter {
+            filters: earlier(&[&["ORIG"]], &[]),
+            station_tiplocs: set(&["ORIG"]),
+            stops_at_tiplocs: None,
+        };
+        assert!(!at_origin.accepts(&calls, hm(8, 50), 0, None));
+        // Both kinds together: the earlier part, and the ride.
+        let mut both = earlier(&[], &[&["AAA"]]);
+        both.calls_at = vec![set(&["CCC"])];
+        assert!(filter(both.clone()).accepts(&calls, hm(9, 10), 0, None));
+        both.calls_at = vec![set(&["AAA"])];
+        assert!(!filter(both).accepts(&calls, hm(9, 10), 0, None));
     }
 
     #[test]
