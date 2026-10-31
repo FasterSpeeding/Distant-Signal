@@ -3,6 +3,21 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-31: `transfer`, a twelfth untracked-leg `transitMode`
+
+Additive: an untracked leg's `transitMode` may now be `transfer`
+(everywhere one is accepted or served: `POST /Journeys/itinerary`, the
+leg add and edit routes, the replan suggestions; DS-216). It is a
+timetable `TRANSFER` link between two different stations, such as Euston
+to Victoria in 19 minutes: often a Tube hop, but the link does not say
+which way it goes. The planner's save and the mid-journey alternatives
+used to drop every `TRANSFER` transfer leg as a change within one
+station, so a saved journey lost the hop. They now send a `TRANSFER`
+between different station codes as a `transfer` leg on its planned times;
+one with the same code at both ends is still left out. A client that
+does not know the mode should show it as it shows `other`. The `400`
+message for an unknown mode lists the new one.
+
 ## 2026-10-30: `previously_calls_at`, `previously_stops_at` and `terminates_at` on the `/trains` boards
 
 Additive: three optional query parameters on `GET /public/trains/search`
