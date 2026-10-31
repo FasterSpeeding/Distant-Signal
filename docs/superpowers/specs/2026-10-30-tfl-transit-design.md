@@ -650,3 +650,12 @@ TfL's override files with their base files. Measured again on 2026-10-30
   paged by `?cursor=`. `/transit/tfl/stops/{id}` redirects there (308),
   and every TfL station link points there directly.
 
+### 17.3 P3
+
+- **The DLR and the trams** were in the feed from P1 (one network file,
+  their operators `DLR` and `TCL`); P3 adds an adapter test with a DLR
+  document, a tram base and part-closure pair, and the cable car and a
+  river bus left out by operator; an e2e test of the DLR line page; and
+  the runbook's DLR and tram checks. The DLR's branches (Bank to Lewisham,
+  Stratford to Canary Wharf and the rest) come from P2 unchanged.
+
