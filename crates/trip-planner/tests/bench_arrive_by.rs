@@ -1532,9 +1532,10 @@ fn bench_options_cpu() {
 /// RAPTOR over 6 rounds), the CPU time of all 20 (median over
 /// `DS_BENCH_REPS`, default 9, the cases interleaved) against no rule. The
 /// budget, asserted with 10% for CPU-time noise:
-/// avoid at most +5% on every search, and only-five on arrive-by and
-/// RAPTOR (the rule is one array read, and blocking trains only removes
-/// work). A Connection Scan with no answer can't stop early and runs to the
+/// avoid at most +5% on every search, and only-five on arrive-by (the rule
+/// is one array read, and blocking trains only removes work); on RAPTOR,
+/// since DS-225 made its sweeps about 13x cheaper, avoid +25% and
+/// only-five +30% (the extra rounds a filtered search runs now show). A Connection Scan with no answer can't stop early and runs to the
 /// end of the day, so an "only" rule that leaves a pair with no route costs
 /// more there: only-five at most 1.5x (one of the 20 pairs loses its route;
 /// callgrind: +17%), only-one at most 3x (15 of 20; callgrind: 2.2x). For
@@ -1852,7 +1853,8 @@ fn bench_operator_filter_links_cpu() {
 /// work (RAPTOR's Pareto set at the default cap, then the alternatives)
 /// against the same plus Prefer's one extra search, a Connection Scan for
 /// only one of ten operators, over 20 pairs, interleaved, CPU time.
-/// Asserted: at most +10% (with 10% for CPU-time noise).
+/// Asserted: at most +30% since DS-225 (+10% before; see the assertion),
+/// with 10% for CPU-time noise.
 #[test]
 #[ignore = "benchmark; see the module doc"]
 #[expect(
@@ -1962,5 +1964,10 @@ fn bench_prefer_cpu() {
         "options {plain:>9.2?} ({}), with prefer {preferred:>9.2?} ({}): {ratio:.3}x",
         found[0], found[1]
     );
-    assert!(ratio <= 1.10 * 1.10, "prefer {ratio:.3}x");
+    // DS-225: the options search got about 9x cheaper (RAPTOR about 13x),
+    // while the preferred search is one Connection Scan that, finding no
+    // route on one operator, runs to the end of the day (about 3x cheaper).
+    // Its share rose from 1.06x to 1.15x-1.27x; the whole is still about a
+    // seventh of what options alone took before.
+    assert!(ratio <= 1.30 * 1.10, "prefer {ratio:.3}x");
 }
