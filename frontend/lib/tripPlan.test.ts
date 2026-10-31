@@ -17,7 +17,7 @@ import {
   waypointSatisfiedLabel,
 } from './tripPlan';
 import type { TripPlanItinerary, TripPlanLeg, TripPlanResponse } from './types';
-import { RAIL_TRAM_RAIL } from '@/test/transitPlanFixtures';
+import { RAIL_TRAM_RAIL, TUBE_LEG, WALK_TO_TUBE } from '@/test/transitPlanFixtures';
 
 describe('buildTripPlanQuery', () => {
   it('builds a minimal query with no waypoints or departAfter', () => {
@@ -655,6 +655,23 @@ describe('tram legs in the plan', () => {
     const names = tripPlanStopNames(plan);
     expect(names.get('9400ZZMAPIC')).toBe('Piccadilly (Metrolink)');
     expect(names.get('9400ZZMAVIC')).toBe('Victoria (Metrolink)');
+  });
+
+  it("names a TfL ride's stations by its mode, and a walk's TfL station as TfL's", () => {
+    const plan: TripPlanResponse = {
+      results: 'fastest',
+      segments: [
+        {
+          originCrs: 'KGX',
+          destinationCrs: '940GZZLUBXN',
+          cappedByMaxChanges: false,
+          itineraries: [{ ...RAIL_TRAM_RAIL, legs: [WALK_TO_TUBE, TUBE_LEG] }],
+        },
+      ],
+    };
+    const names = tripPlanStopNames(plan);
+    expect(names.get('940GZZLUBXN')).toBe('Brixton (Tube)');
+    expect(names.get('940GZZLUKSX')).toBe("King's Cross St. Pancras (Tube)");
   });
 });
 

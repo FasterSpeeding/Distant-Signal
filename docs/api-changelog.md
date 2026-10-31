@@ -198,6 +198,32 @@ that operator's own buses and ferries (planner operator filtering spec,
 docs/superpowers/specs/2026-10-31-planner-operator-filtering-design.md,
 phase P0).
 
+## 2026-10-31: `/Trips/plan` rides the Underground, the DLR and the trams by their timetable
+
+Additive, and off until `API_TRIP_PLAN_TRANSIT_NETWORKS` lists `tfl`
+(DS-212, the TfL transit design's P4; `crates/api/src/data/transit_planning.rs`).
+
+- **`tfl` may be listed** in `API_TRIP_PLAN_TRANSIT_NETWORKS` (with
+  `API_TRANSIT_NETWORKS`). Its trips then join the day graph like
+  Metrolink's: a plan that sends `transit=true` may ride the Underground,
+  the DLR and London Trams anywhere in a journey, on their timetable,
+  changing between lines.
+- **A `TfL` stop end** (`940GZZLUKSX`) is planned on the timetable only
+  when the request sends `transit=true` and the timetable covers its
+  date. Otherwise, as before, it stays a `TfL` stop and gets the
+  estimated access legs (`access`): a client that doesn't opt in sees no
+  change.
+- **`kind: "transit"` legs gain two `serviceMode` values:** `tube` and
+  `dlr` (a tram is still `tram`). Their stops are `TfL`'s stop-area ids
+  (`940GZZLUKSX`), and `line.id` is `tfl:victoria`. Their `notices` are
+  `TfL`'s own line status (every status that isn't good service).
+- **Walks between two stations of one `TfL` hub** (Bank's Underground and
+  DLR stations) are `kind: "transfer"`, `mode: "WALK"` legs with both
+  `*Crs` `null` and `originStop`/`destinationStop` set, as an access leg's
+  are (`{id, name, modes, lines}`, `lines` empty).
+- A walk between a National Rail station and a `TfL` station is a
+  `transitWalk` as for a tram stop, with `network: "tfl"`.
+
 ## 2026-10-30: `previously_calls_at`, `previously_stops_at` and `terminates_at` on the `/trains` boards
 
 Additive: three optional query parameters on `GET /public/trains/search`
@@ -265,7 +291,6 @@ Additive (DS-212, the TfL transit design's P2;
   (`/public/transit/tfl/stops/940GZZLUKSX` and its `/departures` are
   `9400ZZLUKSX`'s), so a client holding TfL's stop id can ask for its
   timetable directly.
-
 
 ## 2026-10-31: the `tfl` transit network, line modes and frequencies
 

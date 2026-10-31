@@ -336,9 +336,9 @@ fn chain_from_stops(uid: &str, date: NaiveDate, stops: &[JourneyStop]) -> Vec<Co
             let (from, to) = (&pair[0], &pair[1]);
             Some(Connection {
                 operator: schedule_query::OperatorId::UNKNOWN,
-                uid: uid.to_string(),
-                from_tiploc: from.tiploc.clone(),
-                to_tiploc: to.tiploc.clone(),
+                uid: uid.to_string().into(),
+                from_tiploc: from.tiploc.clone().into(),
+                to_tiploc: to.tiploc.clone().into(),
                 departure_min: from.sched_dep?,
                 arrival_min: to.sched_arr?,
                 working_departure_min: from.work_dep?,

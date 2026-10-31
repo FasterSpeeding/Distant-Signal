@@ -27,9 +27,9 @@ use trip_planner::{
 fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
     Connection {
         operator: schedule_query::OperatorId::UNKNOWN,
-        uid: uid.to_string(),
-        from_tiploc: from.to_string(),
-        to_tiploc: to.to_string(),
+        uid: uid.to_string().into(),
+        from_tiploc: from.to_string().into(),
+        to_tiploc: to.to_string().into(),
         departure_min: dep,
         arrival_min: arr,
         working_departure_min: dep,

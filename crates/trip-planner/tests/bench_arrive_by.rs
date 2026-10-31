@@ -77,9 +77,9 @@ fn network() -> (Vec<Connection>, InterchangeData) {
                     let run = runs[if direction == 0 { hop } else { stops - 2 - hop }];
                     connections.push(Connection {
                         operator: schedule_query::OperatorId::UNKNOWN,
-                        uid: uid.clone(),
-                        from_tiploc: tiploc(pair[0]),
-                        to_tiploc: tiploc(pair[1]),
+                        uid: uid.clone().into(),
+                        from_tiploc: tiploc(pair[0]).into(),
+                        to_tiploc: tiploc(pair[1]).into(),
                         departure_min: time,
                         arrival_min: time + run,
                         working_departure_min: time,
@@ -373,9 +373,9 @@ fn bench_vias(connections: &[Connection], count: usize) -> trip_planner::Vias {
         if count == 0 || !line.is_multiple_of(7) {
             continue;
         }
-        spans.entry(c.uid.clone()).or_default().push(PassSpan {
-            from_tiploc: c.from_tiploc.clone(),
-            to_tiploc: c.to_tiploc.clone(),
+        spans.entry(c.uid.to_string()).or_default().push(PassSpan {
+            from_tiploc: c.from_tiploc.to_string(),
+            to_tiploc: c.to_tiploc.to_string(),
             departure_min: c.departure_min,
             passed: vec![tiploc(1 + line % count as u64)],
         });
@@ -534,9 +534,9 @@ fn bench_group_vias(connections: &[Connection], count: usize, members: u64) -> t
         } else {
             Vec::new()
         };
-        spans.entry(c.uid.clone()).or_default().push(PassSpan {
-            from_tiploc: c.from_tiploc.clone(),
-            to_tiploc: c.to_tiploc.clone(),
+        spans.entry(c.uid.to_string()).or_default().push(PassSpan {
+            from_tiploc: c.from_tiploc.to_string(),
+            to_tiploc: c.to_tiploc.to_string(),
             departure_min: c.departure_min,
             passed,
         });

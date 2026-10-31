@@ -807,9 +807,9 @@ fn reconstruct_legs(end: usize, scan: &Scan<'_>) -> Vec<JourneyLeg> {
                 let ride = &scan.rides[ride];
                 let boarded = ride.boarded;
                 legs.push(JourneyLeg::Train(TrainLeg {
-                    uid: boarded.uid.clone(),
-                    from_tiploc: boarded.from_tiploc.clone(),
-                    to_tiploc: connection.to_tiploc.clone(),
+                    uid: boarded.uid.to_string(),
+                    from_tiploc: boarded.from_tiploc.to_string(),
+                    to_tiploc: connection.to_tiploc.to_string(),
                     departure_min: boarded.departure_min,
                     arrival_min: connection.arrival_min,
                     working_departure_min: boarded.working_departure_min,
@@ -832,9 +832,9 @@ mod tests {
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         Connection {
             operator: schedule_query::OperatorId::UNKNOWN,
-            uid: uid.to_string(),
-            from_tiploc: from.to_string(),
-            to_tiploc: to.to_string(),
+            uid: uid.to_string().into(),
+            from_tiploc: from.to_string().into(),
+            to_tiploc: to.to_string().into(),
             departure_min: dep,
             arrival_min: arr,
             working_departure_min: dep,

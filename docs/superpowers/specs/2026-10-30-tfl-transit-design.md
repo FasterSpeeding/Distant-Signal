@@ -659,3 +659,37 @@ TfL's override files with their base files. Measured again on 2026-10-30
   the runbook's DLR and tram checks. The DLR's branches (Bank to Lewisham,
   Stratford to Canary Wharf and the rest) come from P2 unchanged.
 
+### 17.4 P4
+
+- **`tfl` is a planner network** (`PLANNER_NETWORKS`, `tfl_stops: true`):
+  stop-area spelling, rail links from `tfl_stop_crs`, walks between the
+  stations of one `tfl_stops.hub_code` (timed as interchange walks from
+  their coordinates), and its legs' `serviceMode` from the line's mode
+  (`tube`, `dlr`, else `tram`). Notices are every non-good `tfl-<line>`
+  status.
+- **A `TfL` stop end** resolves to its node only with `transit=true` and
+  a timetable for the date (`network_covers`); otherwise `tfl_access`
+  plans it, unchanged. So a client that doesn't opt in (DS-MCP) gets
+  exactly today's answers.
+- **Memory.** Measured with `transit_planning_budget` on TfL-scale
+  hand-made data (222,158 connections): with `String` codes, +48 MB a
+  date, 96 MB for the two cached dates, over the 60 MB budget. §11.2's
+  fix was made, more simply than interning: `schedule_query::Connection`
+  holds its three codes as `compact_str::CompactString` (inline up to 24
+  bytes), 96 bytes a connection with no allocation, against 192. Now: the
+  rail day 64 MB (from 104), TfL +28 MB a date, 56 MB for two (within
+  budget). The operator filtering P0 (#98) put its 2-byte `OperatorId`
+  in the struct's padding: still 96 bytes, and the same figures after
+  merging it and P1 (#99).
+- **Operators** (operator filtering spec §6.2): a `tfl` trip's
+  connections take its line's mode's operator once the transit graph is
+  built (`TransitGraph::trip_mode`, `planner_operators::transit_operator`):
+  `tube` is London Underground (`LT`), `dlr` `ds:DLR`, `tram`
+  `ds:LONDON_TRAMS`. A trip with no line (a replacement bus; the export
+  has none) stays unknown and passes every filter. Hub walks are walks:
+  unknown too.
+- **Latency** (same bench): searches with Metrolink and `TfL` against
+  Metrolink alone, `fastest` +8%, `options` -1%; re-run after merging
+  #98 and then #99, `fastest` +6% and +5%, `options` +15% and -3% (the
+  `options` figure swings between runs; budget 1.60).
+

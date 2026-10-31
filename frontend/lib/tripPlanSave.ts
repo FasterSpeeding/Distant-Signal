@@ -130,6 +130,15 @@ function timedInstant(leg: TimedLeg, end: 'departure' | 'arrival'): dayjs.Dayjs 
   return leg.kind === 'train' ? trainInstant(leg, end) : transitInstant(leg, end);
 }
 
+/** A transit leg's mode as an untracked leg's: a replacement bus is a bus,
+ * the TfL network's Tube and DLR rides are themselves. */
+const TRANSIT_LEG_MODES: Partial<Record<string, TransitMode>> = {
+  replacementBus: 'bus',
+  tube: 'tube',
+  dlr: 'dlr',
+  tram: 'tram',
+};
+
 /** A tram ride (transit trip planning §11.2) as an untracked leg: a tram,
  * or a bus for a replacement bus, its line, its stations by name and id,
  * and its own scheduled times. */
@@ -140,7 +149,7 @@ function transitAsUntracked(leg: TripPlanTransitLeg): ItineraryLegBody | null {
   const lineName = leg.line?.name;
   return {
     kind: 'untracked',
-    transitMode: leg.serviceMode === 'replacementBus' ? 'bus' : 'tram',
+    transitMode: TRANSIT_LEG_MODES[leg.serviceMode] ?? 'tram',
     originName: leg.originStop.name,
     destinationName: leg.destinationStop.name,
     ...(lineName ? { lineName } : {}),

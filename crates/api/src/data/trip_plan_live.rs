@@ -548,7 +548,7 @@ fn chain_calls(chain: &[&Connection]) -> Vec<ChainCall> {
                 last.can_board = connection.can_board;
             }
             _ => calls.push(ChainCall {
-                tiploc: connection.from_tiploc.clone(),
+                tiploc: connection.from_tiploc.to_string(),
                 sched_arr: None,
                 sched_dep: Some(connection.departure_min),
                 work_arr: None,
@@ -558,7 +558,7 @@ fn chain_calls(chain: &[&Connection]) -> Vec<ChainCall> {
             }),
         }
         calls.push(ChainCall {
-            tiploc: connection.to_tiploc.clone(),
+            tiploc: connection.to_tiploc.to_string(),
             sched_arr: Some(connection.arrival_min),
             sched_dep: None,
             work_arr: Some(connection.working_arrival_min),
@@ -652,9 +652,9 @@ pub fn adjusted_connections(uid: &str, points: &[ChainPoint]) -> Option<Vec<Conn
                 let (from, to) = (pair[0], pair[1]);
                 Some(Connection {
                     operator: schedule_query::OperatorId::UNKNOWN,
-                    uid: uid.to_string(),
-                    from_tiploc: from.tiploc.clone(),
-                    to_tiploc: to.tiploc.clone(),
+                    uid: uid.to_string().into(),
+                    from_tiploc: from.tiploc.clone().into(),
+                    to_tiploc: to.tiploc.clone().into(),
                     departure_min: from.live_dep?,
                     arrival_min: to.live_arr?,
                     working_departure_min: from.work_dep?,
@@ -686,9 +686,9 @@ pub fn chains_for(
         return chains;
     }
     for connection in connections {
-        if uids.contains(&connection.uid) {
+        if uids.contains(connection.uid.as_str()) {
             chains
-                .entry(connection.uid.clone())
+                .entry(connection.uid.to_string())
                 .or_default()
                 .push(connection.clone());
         }
@@ -1130,9 +1130,9 @@ pub fn origin_lookback_uids(
     let mut uids: Vec<String> = Vec::new();
     for connection in connections[start..end].iter().rev() {
         if origins.contains(normalize_tiploc(&connection.from_tiploc))
-            && !uids.contains(&connection.uid)
+            && !uids.iter().any(|uid| uid == connection.uid.as_str())
         {
-            uids.push(connection.uid.clone());
+            uids.push(connection.uid.to_string());
             if uids.len() == ORIGIN_LOOKBACK_TRAINS {
                 break;
             }
@@ -1708,9 +1708,9 @@ mod tests {
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         Connection {
             operator: schedule_query::OperatorId::UNKNOWN,
-            uid: uid.to_string(),
-            from_tiploc: from.to_string(),
-            to_tiploc: to.to_string(),
+            uid: uid.to_string().into(),
+            from_tiploc: from.to_string().into(),
+            to_tiploc: to.to_string().into(),
             departure_min: dep,
             arrival_min: arr,
             working_departure_min: dep,

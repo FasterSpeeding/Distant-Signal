@@ -606,12 +606,12 @@ impl<'a> Forward<'a> {
                 break;
             }
             if restrictions::blocks(self.restrictions, connection) {
-                aboard.remove(&connection.uid);
+                aboard.remove(connection.uid.as_str());
                 continue;
             }
             candidates.clear();
             aboard_states.clear();
-            if let Some(rides) = aboard.get(&connection.uid) {
+            if let Some(rides) = aboard.get(connection.uid.as_str()) {
                 candidates.extend(
                     rides
                         .iter()
@@ -664,7 +664,7 @@ impl<'a> Forward<'a> {
                             state,
                         });
                         aboard
-                            .entry(connection.uid.clone())
+                            .entry(connection.uid.to_string())
                             .or_default()
                             .push((state, arena.len() - 1));
                         arena.len() - 1
@@ -705,7 +705,7 @@ impl<'a> Forward<'a> {
             // Staying aboard through the waypoint (a new part) or past a via
             // (the same leg), from the NEXT connection on.
             for &(state, previous, new_part) in &continuations {
-                let rides = aboard.entry(connection.uid.clone()).or_default();
+                let rides = aboard.entry(connection.uid.to_string()).or_default();
                 if rides.iter().any(|&(known, _)| grid.covers(known, state)) {
                     continue;
                 }
@@ -830,9 +830,9 @@ impl<'a> Forward<'a> {
                             via_hits[via] = Some((part, parts[part].len(), how, tiploc));
                         }
                         parts[part].push(JourneyLeg::Train(TrainLeg {
-                            uid: first.uid.clone(),
-                            from_tiploc: first.from_tiploc.clone(),
-                            to_tiploc: last.to_tiploc.clone(),
+                            uid: first.uid.to_string(),
+                            from_tiploc: first.from_tiploc.to_string(),
+                            to_tiploc: last.to_tiploc.to_string(),
                             departure_min: first.departure_min,
                             arrival_min: last.arrival_min,
                             working_departure_min: first.working_departure_min,
@@ -1020,9 +1020,9 @@ mod tests {
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         Connection {
             operator: schedule_query::OperatorId::UNKNOWN,
-            uid: uid.to_string(),
-            from_tiploc: from.to_string(),
-            to_tiploc: to.to_string(),
+            uid: uid.to_string().into(),
+            from_tiploc: from.to_string().into(),
+            to_tiploc: to.to_string().into(),
             departure_min: dep,
             arrival_min: arr,
             working_departure_min: dep,
@@ -1581,7 +1581,7 @@ mod tests {
                         let ready = if stage == 0 && c.from_tiploc == origin {
                             Some(departure)
                         } else {
-                            best.get(&(c.from_tiploc.clone(), stage))
+                            best.get(&(c.from_tiploc.to_string(), stage))
                                 .and_then(|&arrival| {
                                     change(&c.from_tiploc, stage).map(|m| arrival + m)
                                 })
@@ -1593,7 +1593,7 @@ mod tests {
                         for later in &ride[board..] {
                             let reached = advance(on, &later.to_tiploc);
                             on = reached;
-                            let key = (later.to_tiploc.clone(), reached);
+                            let key = (later.to_tiploc.to_string(), reached);
                             if best
                                 .get(&key)
                                 .is_none_or(|&known| later.arrival_min < known)
@@ -1702,8 +1702,8 @@ mod tests {
                 .iter()
                 .filter(|c| c.uid == *uid)
                 .map(|c| PassSpan {
-                    from_tiploc: c.from_tiploc.clone(),
-                    to_tiploc: c.to_tiploc.clone(),
+                    from_tiploc: c.from_tiploc.to_string(),
+                    to_tiploc: c.to_tiploc.to_string(),
                     departure_min: c.departure_min,
                     passed: passes
                         .iter()
@@ -2392,7 +2392,7 @@ mod tests {
                             let ready = if stage == 0 && progress == 0 && c.from_tiploc == "A" {
                                 Some(departure)
                             } else {
-                                best.get(&(c.from_tiploc.clone(), stage, progress))
+                                best.get(&(c.from_tiploc.to_string(), stage, progress))
                                     .and_then(|&arrival| {
                                         change(&c.from_tiploc, stage).map(|m| arrival + m)
                                     })
@@ -2404,7 +2404,7 @@ mod tests {
                             for later in &ride[board..] {
                                 passed = vias.advance(passed, later);
                                 on = next_stage(on, &later.to_tiploc);
-                                let key = (later.to_tiploc.clone(), on, passed);
+                                let key = (later.to_tiploc.to_string(), on, passed);
                                 if best
                                     .get(&key)
                                     .is_none_or(|&known| later.arrival_min < known)
@@ -2643,7 +2643,7 @@ mod tests {
                             let before = on;
                             on = next_stage(on, &later.to_tiploc);
                             let owed = if on == before { extra(&later.uid) } else { 0 };
-                            let key = (later.to_tiploc.clone(), on, passed, owed);
+                            let key = (later.to_tiploc.to_string(), on, passed, owed);
                             if best
                                 .get(&key)
                                 .is_none_or(|&known| later.arrival_min < known)

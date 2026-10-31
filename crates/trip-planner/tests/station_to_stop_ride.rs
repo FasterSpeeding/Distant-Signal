@@ -30,9 +30,9 @@ fn hhmm(h: u32, m: u32) -> u32 {
 fn connections() -> Vec<Connection> {
     vec![Connection {
         operator: schedule_query::OperatorId::UNKNOWN,
-        uid: "C10117".to_string(),
-        from_tiploc: "MRGT".to_string(),
-        to_tiploc: "OLDST".to_string(),
+        uid: "C10117".to_string().into(),
+        from_tiploc: "MRGT".to_string().into(),
+        to_tiploc: "OLDST".to_string().into(),
         departure_min: hhmm(6, 31),
         arrival_min: hhmm(6, 33),
         working_departure_min: hhmm(6, 31),

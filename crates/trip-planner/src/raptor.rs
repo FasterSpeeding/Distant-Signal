@@ -330,10 +330,10 @@ fn run_one_round<'c>(
         // Unusable, and ends any ride on its train -- see
         // `crate::restrictions`'s module doc.
         if restrictions::blocks(restrictions, connection) {
-            reachable_trip.remove(&connection.uid);
+            reachable_trip.remove(connection.uid.as_str());
             continue;
         }
-        let ride = if let Some(&ride) = reachable_trip.get(&connection.uid) {
+        let ride = if let Some(&ride) = reachable_trip.get(connection.uid.as_str()) {
             ride
         } else {
             // No fresh boarding at a set-down-only stop.
@@ -357,7 +357,7 @@ fn run_one_round<'c>(
             }
             current.boardings.push((connection.clone(), source.from));
             let ride = current.boardings.len() - 1;
-            reachable_trip.insert(connection.uid.clone(), ride);
+            reachable_trip.insert(connection.uid.to_string(), ride);
             ride
         };
         // No arrival at a pick-up-only stop; the ride carries on.
@@ -575,9 +575,9 @@ fn reconstruct_legs(
             ArrivalSource::Train(connection, ridden_round, ride) => {
                 let (boarded, source) = &rounds[*ridden_round].boardings[*ride];
                 legs.push(JourneyLeg::Train(TrainLeg {
-                    uid: boarded.uid.clone(),
-                    from_tiploc: boarded.from_tiploc.clone(),
-                    to_tiploc: connection.to_tiploc.clone(),
+                    uid: boarded.uid.to_string(),
+                    from_tiploc: boarded.from_tiploc.to_string(),
+                    to_tiploc: connection.to_tiploc.to_string(),
                     departure_min: boarded.departure_min,
                     arrival_min: connection.arrival_min,
                     working_departure_min: boarded.working_departure_min,
@@ -603,9 +603,9 @@ mod tests {
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         Connection {
             operator: schedule_query::OperatorId::UNKNOWN,
-            uid: uid.to_string(),
-            from_tiploc: from.to_string(),
-            to_tiploc: to.to_string(),
+            uid: uid.to_string().into(),
+            from_tiploc: from.to_string().into(),
+            to_tiploc: to.to_string().into(),
             departure_min: dep,
             arrival_min: arr,
             working_departure_min: dep,

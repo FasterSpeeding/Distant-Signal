@@ -183,7 +183,7 @@ impl Vias {
         let to = normalize_tiploc(&connection.to_tiploc);
         at(&mut v, from, ViaHow::Call);
         if v < n
-            && let Some(spans) = self.spans.get(&connection.uid)
+            && let Some(spans) = self.spans.get(connection.uid.as_str())
             && let Some(covered) = covered_spans(spans, connection, from, to)
         {
             for (index, span) in covered.iter().enumerate() {
@@ -239,9 +239,9 @@ mod tests {
     fn conn(uid: &str, from: &str, to: &str) -> Connection {
         Connection {
             operator: schedule_query::OperatorId::UNKNOWN,
-            uid: uid.to_string(),
-            from_tiploc: from.to_string(),
-            to_tiploc: to.to_string(),
+            uid: uid.to_string().into(),
+            from_tiploc: from.to_string().into(),
+            to_tiploc: to.to_string().into(),
             departure_min: 0,
             arrival_min: 1,
             working_departure_min: 0,
