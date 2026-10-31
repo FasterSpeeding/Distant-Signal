@@ -107,9 +107,11 @@ test.describe('transit pages', () => {
   });
 
   test('a TfL line says how often it runs and links its status page', async ({ page }) => {
-    await page.goto('/transit/tfl/lines/victoria');
+    // Dated: the seed's trains run on 2026-09-17 and the day it ran, so
+    // "today" alone would fail a run that crosses midnight.
+    await page.goto('/transit/tfl/lines/victoria?date=2026-09-17');
     await expect(page.getByRole('heading', { level: 1, name: 'Victoria' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'How often it runs today' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^How often it runs on / })).toBeVisible();
     await expect(page.getByText('From Brixton: first 07:00, last 07:10')).toBeVisible();
     await expect(page.getByText('Every 3 to 4 minutes')).toBeVisible();
     await expect(page.getByRole('link', { name: 'Status details' })).toHaveAttribute('href', '/lines/tfl-victoria');

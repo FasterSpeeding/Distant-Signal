@@ -10,6 +10,7 @@ import { TransitDisruptions } from '@/components/TransitDisruptions';
 import { TransitFrequency } from '@/components/TransitFrequency';
 import { TransitStatusBadge } from '@/components/TransitStatusBadge';
 import { getPreferences, getTransitLine, getTransitNetwork } from '@/lib/api';
+import { formatDate } from '@/lib/dateFormat';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { lineColour, orNotFound, TRANSIT_ID, transitStopHref } from '@/lib/transit';
 import { directionHeading } from '@/lib/transitModes';
@@ -19,13 +20,20 @@ interface Params {
   params: Promise<{ network: string; line: string }>;
 }
 
+interface Search {
+  /** `?date=` (`YYYY-MM-DD`): the day "How often it runs" describes. */
+  searchParams?: Promise<{ date?: string | string[] }>;
+}
+
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
 // Per-user data fails closed, as on the station page: an outage or no
 // session reads as nothing pinned.
 const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [], pinnedOperators: [] };
 
-async function load(network: string, line: string) {
+async function load(network: string, line: string, date?: string) {
   if (!TRANSIT_ID.test(network) || !TRANSIT_ID.test(line)) notFound();
-  return Promise.all([orNotFound(getTransitNetwork(network)), orNotFound(getTransitLine(network, line))]);
+  return Promise.all([orNotFound(getTransitNetwork(network)), orNotFound(getTransitLine(network, line, date))]);
 }
 
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
@@ -45,10 +53,12 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
  * timetable. The star pins it (`statusLineId`: its public id,
  * `metrolink:blue`, or TfL's line, `tfl-victoria`), as for a National
  * Rail line. */
-export default async function TransitLinePage({ params }: Params) {
+export default async function TransitLinePage({ params, searchParams }: Params & Search) {
   const { network, line } = await params;
+  const dateParam = (await searchParams)?.date;
+  const date = typeof dateParam === 'string' && DATE.test(dateParam) ? dateParam : undefined;
   const [[detail, lineDetail], preferences] = await Promise.all([
-    load(network, line),
+    load(network, line, date),
     getPreferences().catch(() => NO_PREFERENCES),
   ]);
   const fromTfl = lineDetail.statusSource === 'tfl';
@@ -96,6 +106,7 @@ export default async function TransitLinePage({ params }: Params) {
       {lineDetail.frequency && (
         <TransitFrequency
           frequency={lineDetail.frequency}
+          title={date ? `How often it runs on ${formatDate(date)}` : undefined}
           headings={Object.fromEntries(
             lineDetail.directions.map((direction) => [direction.direction, directionHeading(direction)]),
           )}

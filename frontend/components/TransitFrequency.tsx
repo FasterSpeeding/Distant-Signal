@@ -12,14 +12,17 @@ import type { TransitDirection, TransitLineFrequency } from '@/lib/types';
 export function TransitFrequency({
   frequency,
   headings,
+  title = 'How often it runs today',
 }: {
   frequency: TransitLineFrequency;
   headings: Partial<Record<TransitDirection, string>>;
+  /** The section's heading: today's, or the chosen day's. */
+  title?: string | undefined;
 }) {
   if (frequency.outsideHorizon || frequency.directions.length === 0) return null;
   return (
     <Stack gap="sm">
-      <SectionTitle>How often it runs today</SectionTitle>
+      <SectionTitle>{title}</SectionTitle>
       <Text size="sm" c="dimmed">
         {SCHEDULED_CAPTION}
       </Text>
