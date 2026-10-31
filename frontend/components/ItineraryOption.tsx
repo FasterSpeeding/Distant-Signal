@@ -129,6 +129,7 @@ export function ItineraryOption({
   waypointStops = [],
   groups = [],
   stopAccess,
+  operatorName,
 }: {
   itinerary: TripPlanItinerary;
   selected: boolean;
@@ -149,6 +150,9 @@ export function ItineraryOption({
   /** The plan's TfL stop ends and their candidates (`TripPlanResponse`'s
    * `access`), for how many stops an access ride rides. */
   stopAccess?: TripPlanResponse['access'];
+  /** Names a train, bus or ferry leg's operator (`leg.operator`, an ATOC
+   * code) under it (2026-10-31); without it, no operator is shown. */
+  operatorName?: ((code: string) => string) | undefined;
 }) {
   const hasTrainLeg = itinerary.legs.some((leg) => leg.kind === 'train');
   const changes = changesBadge(itinerary);
@@ -189,6 +193,16 @@ export function ItineraryOption({
                   {leg.kind === 'transfer' && leg.access && accessStopsNote(leg.access) && (
                     <Text size="xs" c="dimmed" pl="sm">
                       {accessStopsNote(leg.access)}
+                    </Text>
+                  )}
+                  {leg.kind === 'train' && leg.operator && operatorName && (
+                    <Text size="xs" c="dimmed" pl="sm" data-leg-operator>
+                      {operatorName(leg.operator)}
+                    </Text>
+                  )}
+                  {leg.kind === 'transfer' && leg.estimatedWalk && (
+                    <Text size="xs" c="dimmed" pl="sm">
+                      Estimated walk, instead of the Tube
                     </Text>
                   )}
                   {leg.kind === 'transfer' && leg.transitWalk && (

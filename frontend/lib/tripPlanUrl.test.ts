@@ -6,6 +6,39 @@ function toRaw(search: string): Record<string, string> {
   return Object.fromEntries(new URLSearchParams(search));
 }
 
+describe('the operator filter in the /plan URL', () => {
+  const base: TripPlanQuery = {
+    originCrs: 'EUS',
+    destinationCrs: 'GLA',
+    waypointCrs: [],
+    date: '2026-10-08',
+    results: 'fastest',
+  };
+
+  it('round-trips "only these" and "avoid these"', () => {
+    const only = planPageSearch({ ...base, operatorMode: 'only', operators: ['VT', 'group:GTR', 'ds:DLR'] });
+    expect(new URLSearchParams(only).get('operator')).toBe('VT,group:GTR,ds:DLR');
+    expect(parsePlanSearchParams(toRaw(only))).toMatchObject({
+      operatorMode: 'only',
+      operators: ['VT', 'group:GTR', 'ds:DLR'],
+    });
+    const avoid = planPageSearch({ ...base, operatorMode: 'avoid', operators: ['LT'] });
+    expect(parsePlanSearchParams(toRaw(avoid))).toMatchObject({ operatorMode: 'avoid', operators: ['LT'] });
+  });
+
+  it('normalizes entries, drops malformed ones, and prefers operator over avoidOperator', () => {
+    const initial = parsePlanSearchParams({ operator: 'vt,bad!,GROUP:gtr', avoidOperator: 'LT' });
+    expect(initial).toMatchObject({ operatorMode: 'only', operators: ['VT', 'group:GTR'] });
+    expect(parsePlanSearchParams({ operator: 'bad!', avoidOperator: 'lt' })).toMatchObject({
+      operatorMode: 'avoid',
+      operators: ['LT'],
+    });
+    const none = parsePlanSearchParams({ operator: '' });
+    expect(none.operatorMode).toBeUndefined();
+    expect(none.operators).toBeUndefined();
+  });
+});
+
 describe('planPageSearch / parsePlanSearchParams', () => {
   it('round-trips a full search, advanced options included', () => {
     const query: TripPlanQuery = {

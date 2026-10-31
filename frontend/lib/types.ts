@@ -1919,6 +1919,13 @@ export type TripPlanLeg =
        * `walkMinutes` is the walk alone, an estimate; `minutes` adds the
        * change allowance on the tram side. */
       transitWalk?: TripPlanTransitWalk;
+      /** Who runs the link (2026-10-31): `LT` for a Tube link or ride,
+       * `ds:DLR` and so on. Absent for a walk or when unknown. */
+      operator?: string | null;
+      /** `true` for an estimated walk standing in for the Tube, which
+       * only a plan whose operator filter leaves out the Tube uses
+       * (2026-10-31). */
+      estimatedWalk?: boolean;
     }
   | TripPlanTransitLeg;
 
@@ -2178,9 +2185,15 @@ export interface TripPlanNoResultReason {
     | 'arriveBy'
     | 'noRoute'
     | 'previousSegment'
-    | 'nextSegment';
+    | 'nextSegment'
+    | 'operator'
+    | 'avoidOperator';
   values: string[];
   message: string;
+  /** `operator` / `avoidOperator` only (2026-10-31): the operators whose
+   * links or connecting rides, not trains, the route needs (`['LT']`:
+   * crossing London needs the Tube). */
+  linkOperators?: string[];
 }
 
 /** Response-level timetable certainty (2026-10-08), on
@@ -2213,6 +2226,14 @@ export interface TripPlanResponse extends TimetableCertaintyFields {
   via?: string[];
   /** Each station group the request named -> its member CRS codes. */
   stationGroups?: Record<string, string[]>;
+  /** The operator filter as applied (2026-10-31): "only these" and
+   * "avoid these", groups expanded (`[]` when unused). */
+  operator?: string[];
+  avoidOperator?: string[];
+  /** Each operator group the request named -> its members. */
+  operatorGroups?: Record<string, string[]>;
+  /** The listed operators that run nothing on the date. */
+  operatorsNotRunning?: string[];
   /** The effective `maxChanges` (the API's default when none was sent). */
   maxChanges?: number;
   /** Present when live data was requested (the default). */
@@ -3682,4 +3703,15 @@ export interface ConnectAppConsent {
   confirmationToken: string;
   expiresAt: string;
   existingGrant: ConnectedAppGrant | null;
+}
+
+/** `GET /Trips/operators` (2026-10-31): what the planner's operator picker
+ * offers. `operators` are the ATOC codes the published timetable runs
+ * from today on (`name` `null` when nobody names the code); `groups` the
+ * named groups (`group:GTR`); `dsOperators` the operators with no ATOC
+ * code (`ds:DLR`). */
+export interface PlannerOperatorCatalogue {
+  operators: { code: string; name: string | null }[];
+  groups: { code: string; name: string; members: string[] }[];
+  dsOperators: { code: string; name: string }[];
 }

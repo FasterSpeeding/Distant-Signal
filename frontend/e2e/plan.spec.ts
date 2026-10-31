@@ -120,6 +120,86 @@ test('compare options lists another route besides the fastest, labelled', async 
   await expect(cards.nth(1).getByText(/^Via /)).toBeVisible();
 });
 
+// The operator filter (2026-10-31): the seed's Compare options routes are
+// run by VT and GR (`schedule_services`). The filter is restored from the
+// URL into Advanced options and sent; the plan is answered here, as the api
+// would answer it (its DB tests cover the search), so this file stays
+// within `/Trips/plan`'s rate limit.
+test('an operator filter from the URL avoids an operator, and says so', async ({ page }) => {
+  let sent: URLSearchParams | null = null;
+  await page.route('**/api/Trips/plan?*', async (route) => {
+    sent = new URL(route.request().url()).searchParams;
+    await route.fulfill({ json: avoidVtPlan });
+  });
+  await openPlan(page, 'origin=ZOA&destination=ZOD&date=2026-09-17&departAfter=07:30&avoidOperator=VT');
+  await expect(page.getByRole('button', { name: /Advanced options ?\(1 set\)/ })).toBeVisible();
+  await expect(page.getByText('Avoid VT', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Find routes' }).click();
+
+  await expect(page.getByText('Showing routes that avoid VT.')).toBeVisible();
+  expect(sent!.get('avoidOperator')).toBe('VT');
+  const cards = page.locator('[data-plan-entry]');
+  await expect(cards).toHaveCount(1);
+  await expect(cards.nth(0).getByText(/^08:05 .*09:20$/)).toBeVisible();
+  await expect(cards.nth(0).locator('[data-leg-operator]')).toHaveText('GR');
+
+  // "Change" opens Advanced options at the operator field.
+  await page.getByRole('button', { name: 'Change' }).click();
+  await expect(page.getByRole('radio', { name: 'Avoid these' })).toBeChecked();
+  await expect(page.getByRole('radio', { name: 'Avoid these' })).toBeFocused();
+});
+
+/** `/Trips/plan`'s answer for ZOA to ZOD from 07:30 avoiding VT: only GR's
+ * 08:05 via ZOC (the api's own shape, trimmed to what the page reads). */
+const avoidVtPlan = {
+  results: 'fastest',
+  maxChanges: 4,
+  operator: [],
+  avoidOperator: ['VT'],
+  operatorGroups: {},
+  operatorsNotRunning: [],
+  serviceDates: ['2026-09-17'],
+  segments: [
+    {
+      originCrs: 'ZOA',
+      destinationCrs: 'ZOD',
+      cappedByMaxChanges: false,
+      noResultReason: null,
+      itineraries: [
+        {
+          legs: [
+            {
+              kind: 'train',
+              trainUid: 'E2EOP2',
+              serviceDate: '2026-09-17',
+              serviceMode: 'train',
+              originCrs: 'ZOA',
+              destinationCrs: 'ZOD',
+              scheduledDeparture: '08:05:00',
+              scheduledArrival: '09:20:00',
+              publicDeparture: '08:05:00',
+              publicArrival: '09:20:00',
+              departureDayOffset: 0,
+              arrivalDayOffset: 0,
+              operator: 'GR',
+            },
+          ],
+          changeCount: 0,
+          totalDurationMinutes: 75,
+        },
+      ],
+    },
+  ],
+  journeys: [
+    {
+      changeCount: 0,
+      departure: { time: '08:05:00', dayOffset: 0 },
+      arrival: { time: '09:20:00', dayOffset: 0 },
+      totalDurationMinutes: 75,
+    },
+  ],
+};
+
 // Rail, tram, rail (transit trip planning §11): the seed's "A rail, tram,
 // rail route for /plan": ZTA 06:20 to MAN 06:50 (E2ETR1), the Blue Line
 // from Piccadilly (9400ZZMAPIC) 07:02 to Eccles (9400ZZMAECC) 07:27,

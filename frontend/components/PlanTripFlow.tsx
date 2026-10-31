@@ -1,7 +1,7 @@
 'use client';
 
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, List, ListItem, Stack, Text } from '@mantine/core';
+import { Alert, Anchor, Button, List, ListItem, Stack, Text } from '@mantine/core';
 import { PlanTripForm } from './PlanTripForm';
 import { ItineraryOption } from './ItineraryOption';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -25,7 +25,15 @@ import { itineraryLegsForSaving } from '@/lib/tripPlanSave';
 import { groupLabels, useStationGroups } from '@/lib/stationGroups';
 import { codeRouteLabel, codeStationLabel, isGroupCode } from '@/lib/stationLabel';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
-import type { CreateJourneyResponse, TrainSearchDates, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
+import type {
+  CreateJourneyResponse,
+  PlannerOperatorCatalogue,
+  TrainSearchDates,
+  TripPlanItinerary,
+  TripPlanNoResultReason,
+  TripPlanResponse,
+} from '@/lib/types';
+import { UNDERGROUND, operatorFilterBanner, operatorName, type OperatorMode } from '@/lib/plannerOperators';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { trackFeature } from '@/lib/usageAnalytics';
 
@@ -77,6 +85,7 @@ export function PlanTripFlow({
   initialQuery,
   syncUrl = false,
   searchDates,
+  operatorCatalogue,
 }: {
   onCreated: (result: CreateJourneyResponse) => void;
   /** Pre-fills the From field (`/plan?from=CRS`). */
@@ -90,7 +99,20 @@ export function PlanTripFlow({
   syncUrl?: boolean;
   /** The date picker's range -- see `PlanTripForm`. */
   searchDates?: TrainSearchDates | null | undefined;
+  /** `GET /Trips/operators`, for the operator filter and the legs'
+   * operator names; `null` when the read failed. */
+  operatorCatalogue?: PlannerOperatorCatalogue | null | undefined;
 }) {
+  const nameOfOperator = useMemo(() => (entry: string) => operatorName(entry, operatorCatalogue), [operatorCatalogue]);
+  // The results' "Add London Underground" (a no-route hint), handed to the
+  // form's fields as well as searched.
+  const [operatorPatch, setOperatorPatch] = useState<
+    { id: number; mode: OperatorMode; operators: string[] } | undefined
+  >(undefined);
+  // The banner's "Change": opens the form's Advanced options at the
+  // operator field.
+  const [advancedOpenRequest, setAdvancedOpenRequest] = useState(0);
+  const openAdvancedOptions = () => setAdvancedOpenRequest((n) => n + 1);
   // The visitor's search's own response; `list` is it with every earlier
   // and later page merged in (`lib/tripPlanPaging.ts`), `null` when it has
   // no journey to page from. The results show `list` when there is one.
@@ -184,6 +206,9 @@ export function PlanTripFlow({
     setStationNames(new Map());
     trackFeature('plan', 'searched');
     if (query.results === 'options') trackFeature('compare_options', 'searched');
+    if (query.operatorMode && query.operators?.length) {
+      trackFeature('plan_filters', query.operatorMode === 'only' ? 'operator_only' : 'operator_avoid');
+    }
     try {
       const sent = apiQuery(query);
       const result = await fetchTripPlan(sent);
@@ -349,7 +374,25 @@ export function PlanTripFlow({
   }, [list]);
 
   const hintFor = (reason: Parameters<typeof noResultHint>[0]) =>
-    noResultHint(reason, (code) => codeStationLabel(code, stationNames.get(code)));
+    noResultHint(reason, (code) => codeStationLabel(code, stationNames.get(code)), nameOfOperator);
+
+  /** "Add London Underground" under a no-route that needs the Tube, for a
+   * search with "Only these" that leaves it out. */
+  const canAddUnderground = (reason: TripPlanNoResultReason): boolean =>
+    reason.constraint === 'operator' &&
+    (reason.linkOperators ?? []).includes(UNDERGROUND) &&
+    answeredQuery?.operatorMode === 'only' &&
+    !(answeredQuery.operators ?? []).includes(UNDERGROUND);
+
+  function addUnderground() {
+    if (!answeredQuery || searching) return;
+    const operators = [...(answeredQuery.operators ?? []), UNDERGROUND];
+    trackFeature('plan_filters', 'operator_add_underground');
+    setOperatorPatch((current) => ({ id: (current?.id ?? 0) + 1, mode: 'only', operators }));
+    void handleSearch({ ...answeredQuery, operatorMode: 'only', operators });
+  }
+
+  const banner = plan ? operatorFilterBanner(plan, nameOfOperator, answeredQuery?.operators) : null;
 
   return (
     <Stack gap="md">
@@ -359,6 +402,9 @@ export function PlanTripFlow({
         initialOriginCrs={initialOriginCrs}
         initial={initialQuery}
         searchDates={searchDates}
+        operatorCatalogue={operatorCatalogue}
+        operatorPatch={operatorPatch}
+        advancedOpenRequest={advancedOpenRequest}
       />
       {planError && (
         <Alert color="red" title="Couldn't plan this trip">
@@ -384,6 +430,21 @@ export function PlanTripFlow({
         </Text>
       )}
       {plan && <ProvisionalTimetableNote provisional={plan.provisional} />}
+      {/* The operator filter the plan applied, from the response, not the
+          form (§4.4 of the operator filtering spec). */}
+      {banner && (
+        <Text size="sm" data-operator-filter-banner>
+          {banner}{' '}
+          {plan?.operatorsNotRunning?.length
+            ? `${plan.operatorsNotRunning.map(nameOfOperator).join(', ')} ${
+                plan.operatorsNotRunning.length === 1 ? 'runs' : 'run'
+              } nothing on this day. `
+            : ''}
+          <Anchor component="button" type="button" size="sm" onClick={() => openAdvancedOptions()}>
+            Change
+          </Anchor>
+        </Text>
+      )}
       {/* A network the plan could not use, such as no tram times for the
           date: said as the api words it, never as "no trams". */}
       {plan?.transitNotices?.map((notice) => (
@@ -429,6 +490,11 @@ export function PlanTripFlow({
                         {hintFor(segment.noResultReason)}
                       </Text>
                     )}
+                    {segment.noResultReason && canAddUnderground(segment.noResultReason) && (
+                      <Button mt="xs" size="compact-sm" variant="default" disabled={searching} onClick={addUnderground}>
+                        Add London Underground
+                      </Button>
+                    )}
                   </Alert>
                 )}
                 {segment.cappedByMaxChanges && (
@@ -456,6 +522,7 @@ export function PlanTripFlow({
                       )}
                       groups={groups}
                       stopAccess={plan.access}
+                      operatorName={operatorCatalogue ? nameOfOperator : undefined}
                     />
                   </div>
                 ))}

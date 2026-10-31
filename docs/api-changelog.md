@@ -3,6 +3,19 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-31: `GET /Trips/operators`, the planner's operator choices
+
+New, unauthenticated, `Cache-Control: public, max-age=300`. It returns
+what the `/plan` operator picker offers (planner operator filtering spec,
+phase P2):
+
+- `operators`: `[{code, name}]`, every ATOC code the published timetable
+  runs from today on, sorted by code. `name` is the `tocs` name, else DS's
+  own (`TW` "Tyne and Wear Metro"), else `null`. A `tocs` code with no
+  train in the window is left out, unlike `GET
+  /public/trains/search/operators`.
+- `groups` and `dsOperators`: as `GET /Trips/operator-groups`.
+
 ## 2026-10-31: operator filters on `/Trips/plan` (`operator`, `avoidOperator`)
 
 Additive. A request without these parameters is answered as before,

@@ -189,6 +189,40 @@ pub fn router() -> crate::app::Router {
             "/Trips/operator-groups",
             axum::routing::get(get_operator_groups),
         )
+        .route(
+            "/Trips/operators",
+            axum::routing::get(get_planner_operators),
+        )
+}
+
+/// `Cache-Control` for [`get_planner_operators`]: the published window
+/// changes daily, so five minutes, as the train search's dates.
+const PLANNER_OPERATORS_CACHE_CONTROL: &str = "public, max-age=300";
+
+/// `GET /Trips/operators` (2026-10-31, planner operator filtering P2): what
+/// the `/plan` operator picker offers. `operators`, every ATOC code the
+/// published timetable runs from today on, named (`tocs`, else DS's own
+/// names, else `null`); `groups` and `dsOperators` as
+/// `GET /Trips/operator-groups`. Unauthenticated; one small read.
+async fn get_planner_operators(
+    State(app): State<App>,
+) -> Result<
+    (
+        [(axum::http::header::HeaderName, &'static str); 1],
+        Json<serde_json::Value>,
+    ),
+    (StatusCode, String),
+> {
+    let running = operator_groups::running_operators(&app.database)
+        .await
+        .map_err(internal_error("read the planner's operators"))?;
+    Ok((
+        [(
+            axum::http::header::CACHE_CONTROL,
+            PLANNER_OPERATORS_CACHE_CONTROL,
+        )],
+        Json(operator_groups::planner_catalogue(&running)),
+    ))
 }
 
 /// `GET /Trips/operator-groups` (2026-10-31, planner operator filtering

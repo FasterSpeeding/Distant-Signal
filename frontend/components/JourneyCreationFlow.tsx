@@ -16,7 +16,7 @@ import {
 } from '@/lib/journeyLegChaining';
 import { isUntrackedLeg, untrackedLegPlaces, untrackedLegTitle } from '@/lib/untrackedLeg';
 import { routeLabel } from '@/lib/stationLabel';
-import type { CreateJourneyResponse, JourneyDetail, TrainSearchDates } from '@/lib/types';
+import type { CreateJourneyResponse, JourneyDetail, PlannerOperatorCatalogue, TrainSearchDates } from '@/lib/types';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
 import {
   DEFAULT_JOURNEY_ENTRY_MODE,
@@ -87,6 +87,7 @@ export function JourneyCreationFlow({
   planOrigin,
   planQuery,
   planSearchDates,
+  planOperators,
   untrackedOrigin,
 }: {
   initialEntryMode?: JourneyEntryMode;
@@ -97,6 +98,9 @@ export function JourneyCreationFlow({
   /** The planner's date range (`GET /public/trains/search/dates`), read by
    * the page on the server. */
   planSearchDates?: TrainSearchDates | null | undefined;
+  /** The planner's operator choices (`GET /Trips/operators`), read by the
+   * page on the server; `null` when the read failed. */
+  planOperators?: PlannerOperatorCatalogue | null | undefined;
   /** `/plan?fromTflStop=...` (a TfL stop page's "Add as a journey leg"):
    * opens on the "Tube, bus or walk" form, starting at that stop. */
   untrackedOrigin?: UntrackedLegOrigin | null | undefined;
@@ -206,6 +210,7 @@ export function JourneyCreationFlow({
             initialOriginCrs={planOrigin}
             initialQuery={planQuery}
             searchDates={planSearchDates}
+            operatorCatalogue={planOperators}
             syncUrl
           />
         )}

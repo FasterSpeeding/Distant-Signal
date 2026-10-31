@@ -114,6 +114,46 @@ pub fn catalogue() -> serde_json::Value {
     })
 }
 
+/// Every ATOC code the published timetable runs from today on, with its
+/// `tocs` name, else its DS name ([`names`]), else none: what the planner's
+/// operator picker offers (a `tocs` code with no train in the window, such
+/// as `ES`, would match nothing). Sorted by code. Backs
+/// `GET /Trips/operators`.
+pub async fn running_operators(
+    pool: &sqlx::PgPool,
+) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT s.code, t.name FROM \
+           (SELECT DISTINCT operator_atoc AS code FROM schedule_services \
+             WHERE service_date >= current_date AND operator_atoc IS NOT NULL) s \
+         LEFT JOIN tocs t ON t.atoc_code::text = s.code \
+         ORDER BY s.code",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(code, name)| {
+            let name = name.or_else(|| names().get(&code).cloned());
+            (code, name)
+        })
+        .collect())
+}
+
+/// `GET /Trips/operators`'s body: [`running_operators`] as `operators`,
+/// with [`catalogue`]'s groups and `ds:` operators.
+pub fn planner_catalogue(running: &[(String, Option<String>)]) -> serde_json::Value {
+    let mut body = catalogue();
+    body["operators"] = running
+        .iter()
+        .map(|(code, name)| serde_json::json!({ "code": code, "name": name }))
+        .collect();
+    if let Some(object) = body.as_object_mut() {
+        object.remove("names");
+    }
+    body
+}
+
 /// A request's operator list, parsed: the entries as given (normalised),
 /// the operators they expand to (deduplicated, in order), and each group
 /// named -> its members' codes.
@@ -269,6 +309,19 @@ mod tests {
         let nine = "A1,A2,A3,A4,A5,A6,A7,A8,A9";
         assert!(parse_operator_list("operator", Some(nine)).is_err());
         assert!(parse_operator_list("operator", Some(&nine[..23])).is_ok());
+    }
+
+    #[test]
+    fn the_planner_catalogue_adds_the_running_operators() {
+        let body = planner_catalogue(&[
+            ("TW".to_owned(), Some("Tyne and Wear Metro".to_owned())),
+            ("VT".to_owned(), Some("Avanti West Coast".to_owned())),
+        ]);
+        assert_eq!(body["operators"][0]["code"], "TW");
+        assert_eq!(body["operators"][1]["name"], "Avanti West Coast");
+        assert_eq!(body["groups"][0]["code"], "GTR");
+        assert_eq!(body["dsOperators"][1]["name"], "London Trams");
+        assert!(body.get("names").is_none());
     }
 
     #[test]

@@ -1,11 +1,19 @@
 import { isTiplocCode, normalizeLocationCode, parseGroupCode } from './stationLabel';
-import { MAX_AVOIDED, MAX_CHANGES_LIMIT, MAX_VIAS, setListParams, type TripPlanQuery } from './tripPlan';
+import { operatorList } from './plannerOperators';
+import {
+  MAX_AVOIDED,
+  MAX_CHANGES_LIMIT,
+  MAX_VIAS,
+  operatorFilterParam,
+  setListParams,
+  type TripPlanQuery,
+} from './tripPlan';
 
 /** The `/plan` page's own query string: the last search, so the address bar
  * can be shared or bookmarked and reopens the same form. It uses the same
  * parameter names as `GET /Trips/plan` (`origin`, `destination`, `date`,
  * `departAfter` or `arriveBy`, `results`, `waypoints`, `via`, `avoid`, `avoidStop`,
- * `avoidChange`, `maxChanges`), but times stay `HH:MM`, as the form shows
+ * `avoidChange`, `maxChanges`, and `operator` or `avoidOperator`), but times stay `HH:MM`, as the form shows
  * them. `origin` alone is what a station page's "Plan a journey from here"
  * link sends. */
 export function planPageSearch(query: TripPlanQuery): string {
@@ -19,6 +27,8 @@ export function planPageSearch(query: TripPlanQuery): string {
   if (query.results !== 'fastest') params.set('results', query.results);
   setListParams(params, query);
   if (query.maxChanges !== undefined) params.set('maxChanges', String(query.maxChanges));
+  const operatorFilter = operatorFilterParam(query);
+  if (operatorFilter) params.set(...operatorFilter);
   return params.toString();
 }
 
@@ -115,6 +125,17 @@ export function parsePlanSearchParams(raw: RawSearchParams): PlanFormInitial {
   const maxChanges = first(raw.maxChanges);
   if (maxChanges && /^\d{1,2}$/.test(maxChanges) && Number(maxChanges) <= MAX_CHANGES_LIMIT) {
     initial.maxChanges = Number(maxChanges);
+  }
+  // One operator filter: `operator` (only these) wins over a hand-added
+  // `avoidOperator`, which the API would reject alongside it.
+  const only = operatorList(first(raw.operator));
+  const avoidOperators = operatorList(first(raw.avoidOperator));
+  if (only.length > 0) {
+    initial.operatorMode = 'only';
+    initial.operators = only;
+  } else if (avoidOperators.length > 0) {
+    initial.operatorMode = 'avoid';
+    initial.operators = avoidOperators;
   }
   return initial;
 }
