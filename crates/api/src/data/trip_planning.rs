@@ -964,9 +964,9 @@ mod parent_walk_tests {
 
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         Connection {
-            uid: uid.to_string(),
-            from_tiploc: from.to_string(),
-            to_tiploc: to.to_string(),
+            uid: uid.to_string().into(),
+            from_tiploc: from.to_string().into(),
+            to_tiploc: to.to_string().into(),
             departure_min: dep,
             arrival_min: arr,
             working_departure_min: dep,
@@ -1395,9 +1395,9 @@ mod supplementary_link_tests {
             ..InterchangeData::default()
         };
         let connections = vec![Connection {
-            uid: "LM1".to_string(),
-            from_tiploc: "MKNSCEN".to_string(),
-            to_tiploc: "EUSTON".to_string(),
+            uid: "LM1".to_string().into(),
+            from_tiploc: "MKNSCEN".to_string().into(),
+            to_tiploc: "EUSTON".to_string().into(),
             departure_min: arrival - 35,
             arrival_min: arrival,
             working_departure_min: arrival - 35,

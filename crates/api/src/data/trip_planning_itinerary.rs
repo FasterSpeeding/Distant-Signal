@@ -1270,13 +1270,14 @@ pub fn build_restrictions(
         if !uids.is_empty() {
             for (index, connection) in connections.iter().enumerate() {
                 if uids.contains(connection.uid.as_str()) {
-                    pass_legs.entry(connection.uid.clone()).or_default().push(
-                        trip_planner::PassLeg {
-                            from_tiploc: connection.from_tiploc.clone(),
-                            to_tiploc: connection.to_tiploc.clone(),
+                    pass_legs
+                        .entry(connection.uid.to_string())
+                        .or_default()
+                        .push(trip_planner::PassLeg {
+                            from_tiploc: connection.from_tiploc.to_string(),
+                            to_tiploc: connection.to_tiploc.to_string(),
                             blocked: blocked.contains(&index),
-                        },
-                    );
+                        });
                 }
             }
         }
@@ -1387,11 +1388,11 @@ pub fn build_vias(
         let mut ordered = passed_by.get(&index).cloned().unwrap_or_default();
         ordered.sort_unstable();
         spans
-            .entry(connection.uid.clone())
+            .entry(connection.uid.to_string())
             .or_default()
             .push(trip_planner::PassSpan {
-                from_tiploc: connection.from_tiploc.clone(),
-                to_tiploc: connection.to_tiploc.clone(),
+                from_tiploc: connection.from_tiploc.to_string(),
+                to_tiploc: connection.to_tiploc.to_string(),
                 departure_min: connection.departure_min,
                 passed: ordered.into_iter().map(|(_, t)| t.to_string()).collect(),
             });
@@ -2711,9 +2712,9 @@ mod tests {
 
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> schedule_query::Connection {
         schedule_query::Connection {
-            uid: uid.to_string(),
-            from_tiploc: from.to_string(),
-            to_tiploc: to.to_string(),
+            uid: uid.to_string().into(),
+            from_tiploc: from.to_string().into(),
+            to_tiploc: to.to_string().into(),
             departure_min: dep,
             arrival_min: arr,
             working_departure_min: dep,

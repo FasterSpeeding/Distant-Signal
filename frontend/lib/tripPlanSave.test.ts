@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { itineraryLegsForSaving, transferAsUntracked } from './tripPlanSave';
 import { trainLegsForTracking } from './tripPlan';
 import type { TripPlanItinerary, TripPlanLeg } from './types';
-import { RAIL_TRAM_RAIL, REPLACEMENT_BUS_LEG, TRAM_ONLY } from '@/test/transitPlanFixtures';
+import { RAIL_TRAM_RAIL, REPLACEMENT_BUS_LEG, TRAM_ONLY, TUBE_LEG } from '@/test/transitPlanFixtures';
 
 const NAMES = new Map([
   ['EUS', 'London Euston'],
@@ -375,6 +375,23 @@ describe('itineraryLegsForSaving with a tram leg', () => {
     ['MCV', 'Manchester Victoria'],
   ]);
   const mcrName = (code: string) => NAMES_MCR.get(code);
+
+  it('saves a TfL Tube ride as an untracked Tube leg between its TfL stops', () => {
+    const legs = itineraryLegsForSaving([{ ...TRAM_ONLY, legs: [TUBE_LEG] }], mcrName);
+    expect(legs).toEqual([
+      {
+        kind: 'untracked',
+        transitMode: 'tube',
+        originName: "King's Cross St. Pancras",
+        destinationName: 'Brixton',
+        lineName: 'Victoria',
+        originStopId: '940GZZLUKSX',
+        destinationStopId: '940GZZLUBXN',
+        plannedDeparture: '2026-11-04T08:14:00.000Z',
+        plannedArrival: '2026-11-04T08:22:00.000Z',
+      },
+    ]);
+  });
 
   it('saves the tram as an untracked tram leg on its own times, its stations by id', () => {
     const legs = itineraryLegsForSaving([RAIL_TRAM_RAIL], mcrName);

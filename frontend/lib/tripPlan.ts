@@ -1,4 +1,5 @@
 import { isGroupCode, isTflStopCode, normalizeLocationCode, tflStopPlaceName } from './stationLabel';
+import { transitServiceModeLabel } from './serviceMode';
 import { isTransitStopCode, transitNetworkName, transitStopPlaceName } from './transitStops';
 import type {
   TripPlanItinerary,
@@ -93,8 +94,13 @@ export function tripPlanStopNames(response: TripPlanResponse): Map<string, strin
     for (const itinerary of segment.itineraries) {
       for (const leg of itinerary.legs) {
         if (leg.kind === 'transit') {
-          addTransit(leg.network, leg.originStop);
-          addTransit(leg.network, leg.destinationStop);
+          // A TfL ride's stations are named by its mode, as a TfL stop end
+          // is (`Brixton (Tube)`); a tram's by its network.
+          const label = leg.network === 'tfl' ? transitServiceModeLabel(leg.serviceMode) : null;
+          for (const stop of [leg.originStop, leg.destinationStop]) {
+            if (label) names.set(stop.id, transitStopPlaceName(stop.name, label));
+            else addTransit(leg.network, stop);
+          }
         } else if (leg.kind === 'transfer' && leg.transitWalk) {
           addTransit(leg.transitWalk.network, leg.transitWalk.stop);
         }

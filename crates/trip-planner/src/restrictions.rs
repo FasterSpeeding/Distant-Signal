@@ -156,7 +156,7 @@ impl Restrictions {
         if self
             .allowed_uids
             .as_ref()
-            .is_some_and(|allowed| !allowed.contains(&connection.uid))
+            .is_some_and(|allowed| !allowed.contains(connection.uid.as_str()))
         {
             return true;
         }
@@ -165,7 +165,7 @@ impl Restrictions {
         if self.no_call.contains(from) || self.no_call.contains(to) {
             return true;
         }
-        let Some(legs) = self.pass_legs.get(&connection.uid) else {
+        let Some(legs) = self.pass_legs.get(connection.uid.as_str()) else {
             return false;
         };
         let Some(start) = legs.iter().position(|leg| leg.from_tiploc == from) else {
@@ -199,9 +199,9 @@ mod tests {
 
     fn conn(uid: &str, from: &str, to: &str) -> Connection {
         Connection {
-            uid: uid.to_string(),
-            from_tiploc: from.to_string(),
-            to_tiploc: to.to_string(),
+            uid: uid.to_string().into(),
+            from_tiploc: from.to_string().into(),
+            to_tiploc: to.to_string().into(),
             departure_min: 0,
             arrival_min: 1,
             working_departure_min: 0,

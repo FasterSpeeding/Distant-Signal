@@ -48,6 +48,7 @@ export function transitStopPlaceName(name: string, networkName: string): string 
  * "Manchester Metrolink". A network this bundle doesn't know is
  * `fallback`. */
 export function transitNetworkName(network: string, fallback = 'tram'): string {
+  if (network === 'tfl') return 'TfL';
   return TRANSIT_STOP_PREFIXES.find((entry) => entry.network === network)?.name ?? fallback;
 }
 

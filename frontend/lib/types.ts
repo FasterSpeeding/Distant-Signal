@@ -1952,7 +1952,8 @@ export interface TripPlanTransitLeg {
 }
 
 /** `tram` or `replacementBus`. */
-export type TripPlanTransitServiceMode = 'tram' | 'replacementBus';
+/** `tube` and `dlr` on the TfL network (the TfL transit design §11). */
+export type TripPlanTransitServiceMode = 'tram' | 'replacementBus' | 'tube' | 'dlr';
 
 /** A transit leg's end: the station in its network's public spelling
  * (`9400ZZMAPIC`). */

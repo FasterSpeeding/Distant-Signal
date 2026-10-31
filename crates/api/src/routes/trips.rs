@@ -636,6 +636,7 @@ async fn plan_trip_request(
         &app,
         &transit_networks,
         transit_requested,
+        params.date,
         &mut origin,
         &mut destination,
     )
@@ -1395,12 +1396,16 @@ fn parse_transit(raw: Option<&str>, switch_on: bool) -> Result<bool, (StatusCode
 /// spelling (`9400ZZMAPIC`, `940GZZMAPIC`) or a platform, any case. A
 /// `9400` code no switched-on network knows is a 400 when the request
 /// opted in (otherwise it is left to the station lookup, as before); a
-/// `940G` code no network knows stays a `TfL` stop. The same station at
-/// both ends is a 400.
+/// `940G` code no network knows stays a `TfL` stop. So does one of a
+/// `tfl_stops` network (the `TfL` transit design §11.1) unless the request
+/// opted in (`transit=true`) and its timetable covers `date`: then
+/// `tfl_access`'s model plans it, exactly as before the network. The same
+/// station at both ends is a 400.
 async fn resolve_transit_ends(
     app: &App,
     networks: &[String],
     transit_requested: bool,
+    date: NaiveDate,
     origin: &mut String,
     destination: &mut String,
 ) -> Result<[Option<String>; 2], (StatusCode, String)> {
@@ -1417,6 +1422,12 @@ async fn resolve_transit_ends(
             .await
             .map_err(internal_error("read the transit stops"))?
         {
+            Some((network, _))
+                if transit_planning::planner_network(&network).is_some_and(|n| n.tfl_stops)
+                    && !(transit_requested
+                        && transit_planning::network_covers(&app.database, &network, date)
+                            .await
+                            .map_err(internal_error("read the transit timetable"))?) => {}
             Some((network, station)) => {
                 *end = station;
                 *slot = Some(network);

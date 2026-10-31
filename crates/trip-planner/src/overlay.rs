@@ -96,7 +96,7 @@ impl ConnectionOverlay {
         let mut bits = vec![0u64; base.len().div_ceil(64)];
         if !self.replaced_uids.is_empty() {
             for (position, connection) in base.iter().enumerate() {
-                if self.replaced_uids.contains(&connection.uid) {
+                if self.replaced_uids.contains(connection.uid.as_str()) {
                     bits[position / 64] |= 1 << (position % 64);
                 }
             }
@@ -176,7 +176,9 @@ impl<'a> MergedConnections<'a> {
     fn pull_base(&mut self) -> Option<&'a Connection> {
         match self.withdrawn {
             None => self.base.next(),
-            Some(Withdrawn::Uids(replaced)) => self.base.find(|c| !replaced.contains(&c.uid)),
+            Some(Withdrawn::Uids(replaced)) => {
+                self.base.find(|c| !replaced.contains(c.uid.as_str()))
+            }
             Some(Withdrawn::Bits(index)) => loop {
                 let connection = self.base.next()?;
                 let position = self.position;
@@ -224,9 +226,9 @@ mod tests {
 
     fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         Connection {
-            uid: uid.to_string(),
-            from_tiploc: from.to_string(),
-            to_tiploc: to.to_string(),
+            uid: uid.to_string().into(),
+            from_tiploc: from.to_string().into(),
+            to_tiploc: to.to_string().into(),
             departure_min: dep,
             arrival_min: arr,
             working_departure_min: dep,
@@ -237,7 +239,7 @@ mod tests {
     }
 
     fn uids<'a>(it: impl Iterator<Item = &'a Connection>) -> Vec<(String, u32)> {
-        it.map(|c| (c.uid.clone(), c.departure_min)).collect()
+        it.map(|c| (c.uid.to_string(), c.departure_min)).collect()
     }
 
     #[test]

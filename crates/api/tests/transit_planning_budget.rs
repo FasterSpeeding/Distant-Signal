@@ -192,6 +192,7 @@ fn metrolink_day() -> NetworkDay {
             LineRow {
                 name: format!("Line {line}"),
                 colour: Some("#1f6fb5".to_owned()),
+                mode: None,
             },
         );
         let first = line * 12;
@@ -266,6 +267,151 @@ fn metrolink_day() -> NetworkDay {
         trips,
         lines,
         rail_links,
+        hub_walks: Vec::new(),
+        stop_modes: HashMap::new(),
+    }
+}
+
+/// A `TfL`-shaped weekday (the `TfL` transit design §2.3, §11.2): 13 lines
+/// of 18 to 55 stations (about 420 in all, the busiest shared), each with
+/// a trunk and two branches each way, trains every 2.5 minutes in the
+/// peaks and 4 otherwise from 05:30 to 00:30: about 11,000 trips and
+/// 230,000 connections. Its stations link 60 rail stations, and ten pairs
+/// are one hub.
+#[expect(clippy::too_many_lines, reason = "one hand-made network, part by part")]
+fn tfl_day() -> NetworkDay {
+    let station = |i: usize| format!("9400ZZLU{i:03}");
+    let mut stops = Vec::new();
+    for i in 0..420 {
+        let position = (
+            51.4 + (i % 21) as f64 * 0.01,
+            -0.3 + (i / 21) as f64 * 0.015,
+        );
+        stops.push(StopRow {
+            stop_id: station(i),
+            kind: "station".to_owned(),
+            parent_stop_id: None,
+            name: format!("Station {i}"),
+            indicator: None,
+            lat: Some(position.0),
+            lon: Some(position.1),
+        });
+        for platform in 1..=2 {
+            stops.push(StopRow {
+                stop_id: format!("{}{platform}", station(i)),
+                kind: "platform".to_owned(),
+                parent_stop_id: Some(station(i)),
+                name: format!("Station {i}"),
+                indicator: None,
+                lat: Some(position.0),
+                lon: Some(position.1),
+            });
+        }
+    }
+    let mut patterns = HashMap::new();
+    let mut lines = HashMap::new();
+    let mut trips = Vec::new();
+    for line in 0..13_usize {
+        lines.insert(
+            format!("l{line}"),
+            LineRow {
+                name: format!("Line {line}"),
+                colour: Some("#1c3a94".to_owned()),
+                mode: Some(if line < 11 { "tube" } else { "dlr" }.to_owned()),
+            },
+        );
+        let length = 18 + (line * 7) % 38;
+        // Each line's stations: a run through the shared middle (the
+        // first 60 stations are on several lines), then its own.
+        let route: Vec<usize> = (0..length)
+            .map(|k| {
+                if k % 3 == 0 {
+                    (line * 5 + k) % 60
+                } else {
+                    60 + (line * 29 + k) % 360
+                }
+            })
+            .collect();
+        // A trunk and two branches: the whole run, its first two thirds,
+        // and its last two thirds.
+        let variants = [
+            route.clone(),
+            route[..length * 2 / 3].to_vec(),
+            route[length / 3..].to_vec(),
+        ];
+        for (v, calls) in variants.iter().enumerate() {
+            for direction in 0..2_i16 {
+                let mut calls = calls.clone();
+                if direction == 1 {
+                    calls.reverse();
+                }
+                let last = calls.len() - 1;
+                patterns.insert(
+                    format!("l{line}v{v}d{direction}"),
+                    PatternRow {
+                        line_id: Some(format!("l{line}")),
+                        direction,
+                        headsign: None,
+                        stops: calls
+                            .iter()
+                            .enumerate()
+                            .map(|(k, s)| PatternStopRow {
+                                stop_id: format!("{}{}", station(*s), direction + 1),
+                                arr_offset_s: i32::try_from(k).unwrap() * 120,
+                                dep_offset_s: i32::try_from(k).unwrap() * 120 + 20,
+                                pickup: i16::from(k == last),
+                                drop_off: i16::from(k == 0),
+                            })
+                            .collect(),
+                    },
+                );
+            }
+        }
+        for direction in 0..2 {
+            let mut start = 5 * 3600 + 1800;
+            let mut n = 0;
+            while start < 24 * 3600 + 1800 {
+                trips.push(TripRow {
+                    trip_id: format!("t{line}-{direction}-{n:04}"),
+                    line_id: Some(format!("l{line}")),
+                    pattern_id: format!("l{line}v{}d{direction}", n % 3),
+                    start_s: start,
+                    headsign: None,
+                    replacement_bus: false,
+                });
+                n += 1;
+                let peak = (7 * 3600..10 * 3600).contains(&start)
+                    || (16 * 3600..19 * 3600).contains(&start);
+                start += if peak { 150 } else { 240 };
+            }
+        }
+    }
+    trips.sort_by(|a, b| (a.start_s, &a.trip_id).cmp(&(b.start_s, &b.trip_id)));
+    let rail_links = (0..60_u64)
+        .map(|n| RailLinkRow {
+            stop_id: station(n as usize),
+            crs: crs(n),
+            kind: "interchange".to_owned(),
+            station_position: None,
+        })
+        .collect();
+    let hub_walks = (0..10)
+        .map(|n| transit_planning::HubWalkRow {
+            from: station(100 + 2 * n),
+            to: station(101 + 2 * n),
+            minutes: 4,
+        })
+        .collect();
+    NetworkDay {
+        network: "tfl".to_owned(),
+        settings: transit_planning::PLANNER_NETWORKS[1],
+        stops,
+        patterns,
+        trips,
+        lines,
+        rail_links,
+        hub_walks,
+        stop_modes: HashMap::new(),
     }
 }
 
@@ -283,21 +429,27 @@ struct Graph {
 }
 
 fn build(with_trams: bool) -> Graph {
+    build_with(&if with_trams {
+        vec![metrolink_day()]
+    } else {
+        Vec::new()
+    })
+}
+
+/// One date's graph with `days`' networks (none: the rail graph).
+fn build_with(days: &[NetworkDay]) -> Graph {
     let mut calling_points = rail_calling_points();
     let interchange = rail_interchange();
-    let day = metrolink_day();
-    if with_trams {
-        calling_points.extend(transit_planning::calling_points(std::slice::from_ref(&day)));
-    }
+    calling_points.extend(transit_planning::calling_points(days));
     let schedules: Vec<(&str, &[CallingPointForConnections])> = calling_points
         .iter()
         .map(|(uid, points)| (uid.as_str(), points.as_slice()))
         .collect();
     let (connections, passes) = schedule_query::build_connections_with_passes(schedules);
-    let transit = with_trams.then(|| {
+    let transit = (!days.is_empty()).then(|| {
         transit_planning::build_transit_graph(
             &interchange,
-            std::slice::from_ref(&day),
+            days,
             &transit_planning::count_connections(&connections),
             Vec::new(),
             2,
@@ -377,6 +529,137 @@ fn memory_budget() {
     // No budget assertion: this prints the figure (and "OVER BUDGET") for
     // the PR and the card. The budget is checked on a copy of production
     // (phase M4), where the interchange table's real size applies.
+}
+
+/// The `TfL` network's memory (the `TfL` transit design §11.2): the rail
+/// graph, then the same with Metrolink and `TfL`, both held. Budget: at
+/// most 60 MB more for the two cached dates than Metrolink alone.
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn memory_budget_with_tfl() {
+    if !bench_requested() {
+        return;
+    }
+    common::heap::pin_mmap_threshold();
+    let (metrolink, metrolink_graph) = held(true);
+    let (both, graph) = held_with(&[metrolink_day(), tfl_day()]);
+    let transit = graph.transit.as_ref().unwrap();
+    let tfl = transit
+        .networks
+        .iter()
+        .find(|n| n.network == "tfl")
+        .unwrap()
+        .connections;
+    let delta = both.saturating_sub(metrolink);
+    let cached = 2 * delta;
+    println!(
+        "with Metrolink: {} connections, {:.1} MB; with TfL too: +{tfl} connections, {:.1} MB; \
+         per date +{:.1} MB, for 2 cached dates +{:.1} MB (budget 60 MB){}",
+        metrolink_graph.connections.len(),
+        mb(metrolink),
+        mb(both),
+        mb(delta),
+        mb(cached),
+        if cached <= 60 * 1_048_576 {
+            ""
+        } else {
+            ": OVER BUDGET"
+        }
+    );
+    assert!((200_000..260_000).contains(&tfl), "{tfl}");
+}
+
+/// What holding one more graph with `days` adds to the resident set.
+fn held_with(days: &[NetworkDay]) -> (usize, Graph) {
+    let before = settled_rss();
+    let graph = build_with(days);
+    (settled_rss().saturating_sub(before), graph)
+}
+
+/// The searches with `TfL` (the `TfL` transit design §11.2): the same rail
+/// queries on the Metrolink graph and on the graph with `TfL` too, both
+/// with the transit interchange (a request that opted in). Budget: at most
+/// 60% slower.
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn latency_budget_with_tfl() {
+    if !bench_requested() {
+        return;
+    }
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(measure_latency_with_tfl)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn measure_latency_with_tfl() {
+    let metrolink = build(true);
+    let tfl = build_with(&[metrolink_day(), tfl_day()]);
+    let date = NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+    let mut rng = Rng(99);
+    let queries: Vec<(Vec<String>, Vec<String>, u32)> = (0..12)
+        .map(|_| {
+            (
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+                420 + rng.next(300) as u32,
+            )
+        })
+        .collect();
+    let cases: [(&str, &Graph); 2] = [("Metrolink", &metrolink), ("Metrolink and TfL", &tfl)];
+    let mut fastest: Vec<Vec<Duration>> = vec![Vec::new(); 2];
+    let mut options: Vec<Vec<Duration>> = vec![Vec::new(); 2];
+    for round in 0..7 {
+        for (index, (_, graph)) in cases.iter().enumerate() {
+            let interchange = &graph.transit.as_ref().unwrap().interchange;
+            let started = Instant::now();
+            for (from, to, at) in &queries {
+                scan_connections(ScanOptions {
+                    connections: &graph.connections,
+                    interchange,
+                    from_tiplocs: from,
+                    to_tiplocs: to,
+                    departure_min: *at,
+                    date,
+                });
+            }
+            let csa = started.elapsed();
+            let started = Instant::now();
+            for (from, to, at) in queries.iter().take(4) {
+                raptor_search(RaptorOptions {
+                    connections: &graph.connections,
+                    interchange,
+                    from_tiplocs: from,
+                    to_tiplocs: to,
+                    departure_min: *at,
+                    date,
+                    max_rounds: 4,
+                });
+            }
+            let raptor = started.elapsed();
+            if round > 0 {
+                fastest[index].push(csa / queries.len() as u32);
+                options[index].push(raptor / 4);
+            }
+        }
+    }
+    let base_fastest = median(&mut fastest[0]);
+    let base_options = median(&mut options[0]);
+    for (index, (name, _)) in cases.iter().enumerate() {
+        let f = median(&mut fastest[index]);
+        let o = median(&mut options[index]);
+        println!(
+            "{name}: fastest (CSA) {f:?} ({:+.1}%), options (RAPTOR, 4 rounds) {o:?} ({:+.1}%)",
+            (f.as_secs_f64() / base_fastest.as_secs_f64() - 1.0) * 100.0,
+            (o.as_secs_f64() / base_options.as_secs_f64() - 1.0) * 100.0,
+        );
+    }
+    let with = median(&mut fastest[1]).as_secs_f64() / base_fastest.as_secs_f64();
+    let with_options = median(&mut options[1]).as_secs_f64() / base_options.as_secs_f64();
+    assert!(with <= 1.60, "fastest {with:.3}x");
+    assert!(with_options <= 1.60, "options {with_options:.3}x");
 }
 
 fn median(samples: &mut [Duration]) -> Duration {

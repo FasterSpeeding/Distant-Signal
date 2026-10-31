@@ -82,7 +82,7 @@ function transitLegSummary(leg: TripPlanTransitLeg): ReactNode {
   const arrival = leg.scheduledArrival.slice(0, 5);
   const mode = transitServiceModeLabel(leg.serviceMode) ?? 'Tram';
   const route = `${leg.originStop.name} to ${leg.destinationStop.name}`;
-  if (leg.serviceMode !== 'tram' || !leg.line) return `${departure} ${mode} ${route} ${arrival}`;
+  if (leg.serviceMode === 'replacementBus' || !leg.line) return `${departure} ${mode} ${route} ${arrival}`;
   return (
     <>
       {departure} {mode} (
@@ -93,9 +93,11 @@ function transitLegSummary(leg: TripPlanTransitLeg): ReactNode {
 }
 
 /** A walk between a station and a tram stop (§8.1): the tram end has no
- * station code, so the row names the stop. */
+ * station code, so the row names the stop. A TfL station is named as a
+ * TfL stop is (`King's Cross St. Pancras (TfL)`). */
 function transitWalkSummary(walk: TripPlanTransitWalk, minutes: number): string {
-  return `Walk ${walk.towardsStop ? 'to' : 'from'} ${walk.stop.name} tram stop, ${minutes} min`;
+  const stop = walk.network === 'tfl' ? `${walk.stop.name} (TfL)` : `${walk.stop.name} tram stop`;
+  return `Walk ${walk.towardsStop ? 'to' : 'from'} ${stop}, ${minutes} min`;
 }
 
 /** The note under a tram walk: its minutes are worked out from where the

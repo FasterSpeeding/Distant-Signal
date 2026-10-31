@@ -659,3 +659,28 @@ TfL's override files with their base files. Measured again on 2026-10-30
   the runbook's DLR and tram checks. The DLR's branches (Bank to Lewisham,
   Stratford to Canary Wharf and the rest) come from P2 unchanged.
 
+### 17.4 P4
+
+- **`tfl` is a planner network** (`PLANNER_NETWORKS`, `tfl_stops: true`):
+  stop-area spelling, rail links from `tfl_stop_crs`, walks between the
+  stations of one `tfl_stops.hub_code` (timed as interchange walks from
+  their coordinates), and its legs' `serviceMode` from the line's mode
+  (`tube`, `dlr`, else `tram`). Notices are every non-good `tfl-<line>`
+  status.
+- **A `TfL` stop end** resolves to its node only with `transit=true` and
+  a timetable for the date (`network_covers`); otherwise `tfl_access`
+  plans it, unchanged. So a client that doesn't opt in (DS-MCP) gets
+  exactly today's answers.
+- **Memory.** Measured with `transit_planning_budget` on TfL-scale
+  hand-made data (222,158 connections): with `String` codes, +48 MB a
+  date, 96 MB for the two cached dates, over the 60 MB budget. §11.2's
+  fix was made, more simply than interning: `schedule_query::Connection`
+  holds its three codes as `compact_str::CompactString` (inline up to 24
+  bytes), 96 bytes a connection with no allocation, against 192. Now: the
+  rail day 64 MB (from 104), TfL +28 MB a date, 56 MB for two (within
+  budget). The struct's padding still fits the planner operator filtering
+  spec's 2-byte `OperatorId`; `TransitGraph::trip_mode` gives a transit
+  trip's line mode for its operator.
+- **Latency** (same bench): searches with Metrolink and `TfL` against
+  Metrolink alone, `fastest` +8%, `options` -1%.
+

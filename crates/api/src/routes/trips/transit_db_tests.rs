@@ -321,3 +321,182 @@ async fn tram_stop_errors_and_the_horizon_notice() {
     cleanup(&pool, NETWORK).await;
     cleanup_rail(&pool).await;
 }
+
+// --- The `TfL` network (the `TfL` transit design §11) --------------------------
+
+/// The seed's network as `tfl` (a `tfl_stops` planner network): its
+/// stations are `TfL` stops `940GZZTTAAA` (the Underground; its rail station
+/// `ZZT` by `tfl_stop_crs`) and `940GZZTTBBB` (the DLR), in one hub when
+/// `hub` says so, and its line is a Tube line.
+async fn seed_tfl(pool: &PgPool, hub: bool) {
+    seed(pool, "tfl", today()).await;
+    let owner = ds_store::test_support::schedule_fixture_pool(pool).await;
+    cleanup_tfl_stops(pool).await;
+    let hub_code = hub.then_some("HUBTEST");
+    for (stop, name, mode) in [
+        ("940GZZTTAAA", "Aaa", "tube"),
+        ("940GZZTTBBB", "Bbb", "dlr"),
+    ] {
+        sqlx::query(
+            "INSERT INTO tfl_stops (stop_id, name, search_name, modes, lines, hub_code, \
+                latitude, longitude, fetched_at) \
+             VALUES ($1, $2, lower($2), ARRAY[$3], '[]', $4, 53.4, -2.2, now())",
+        )
+        .bind(stop)
+        .bind(name)
+        .bind(mode)
+        .bind(hub_code)
+        .execute(&owner)
+        .await
+        .expect("seed tfl_stops");
+    }
+    sqlx::query(
+        "INSERT INTO tfl_stop_crs (stop_id, crs, source) VALUES ('940GZZTTAAA', 'ZZT', 'hub')",
+    )
+    .execute(&owner)
+    .await
+    .expect("seed tfl_stop_crs");
+    sqlx::query("UPDATE transit_lines SET mode = 'tube' WHERE network = 'tfl'")
+        .execute(&owner)
+        .await
+        .expect("line mode");
+}
+
+async fn cleanup_tfl_stops(pool: &PgPool) {
+    let owner = ds_store::test_support::schedule_fixture_pool(pool).await;
+    for sql in [
+        "DELETE FROM tfl_stops WHERE stop_id IN ('940GZZTTAAA', '940GZZTTBBB')",
+        "DELETE FROM line_status WHERE line_id = 'tfl-blue'",
+    ] {
+        sqlx::query(sql).execute(&owner).await.ok();
+    }
+}
+
+async fn cleanup_tfl(pool: &PgPool) {
+    cleanup_tfl_stops(pool).await;
+    cleanup(pool, "tfl").await;
+    cleanup_rail(pool).await;
+}
+
+/// With `transit=true`, a `TfL` stop end is the network's node: rail into
+/// ZZT, its `TfL` station by `tfl_stop_crs`, and a Tube leg, named in `TfL`'s
+/// spelling, with `TfL`'s own line status as its notice.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database); --test-threads=1"]
+async fn a_tfl_stop_end_rides_the_tube_timetable_when_opted_in() {
+    let pool = ds_store::test_support::connect().await;
+    seed_tfl(&pool, false).await;
+    seed_rail(&pool).await;
+    let owner = ds_store::test_support::schedule_fixture_pool(&pool).await;
+    sqlx::query(
+        "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, source) \
+         VALUES ('tfl-blue', 'Blue', 'tube', '{TfL}', \
+           '[{\"severity\": 9, \"reason\": \"Signal failure\", \"validity\": \
+             {\"from_date\": \"2026-10-14T00:00:00Z\", \"to_date\": null, \"is_now\": true}}]', 'tfl') \
+         ON CONFLICT (line_id) DO UPDATE SET statuses = EXCLUDED.statuses, source = 'tfl'",
+    )
+    .execute(&owner)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO ingest_freshness (source, fetched_at) VALUES ('tfl', now()) \
+         ON CONFLICT (source) DO UPDATE SET fetched_at = now()",
+    )
+    .execute(&owner)
+    .await
+    .unwrap();
+    let _switch = set_switch_for_tests(&["tfl"]);
+
+    let (status, body) = get(
+        &pool,
+        &plan_uri("ZZR", "940GZZTTBBB", today(), "&transit=true"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.get("access").is_none(), "{body}");
+    let legs = body["segments"][0]["itineraries"][0]["legs"]
+        .as_array()
+        .unwrap();
+    assert_eq!(legs.len(), 3, "{legs:?}");
+    assert_eq!(legs[1]["kind"], "transfer");
+    assert_eq!(legs[1]["originCrs"], "ZZT");
+    assert_eq!(legs[1]["transitWalk"]["stop"]["id"], "940GZZTTAAA");
+    let tube = &legs[2];
+    assert_eq!(tube["kind"], "transit");
+    assert_eq!(tube["network"], "tfl");
+    assert_eq!(tube["serviceMode"], "tube");
+    assert_eq!(tube["scheduledDeparture"], "07:00:00");
+    assert_eq!(tube["originStop"]["id"], "940GZZTTAAA");
+    assert_eq!(tube["destinationStop"]["id"], "940GZZTTBBB");
+    assert_eq!(tube["line"]["id"], "tfl:blue");
+    let notice = &tube["notices"][0];
+    assert_eq!(notice["kind"], "disruption", "{tube}");
+    assert_eq!(notice["description"], "Minor Delays");
+    assert_eq!(notice["reason"], "Signal failure");
+
+    cleanup_tfl(&pool).await;
+}
+
+/// Without the opt-in, and on a date the timetable doesn't cover, a `TfL`
+/// stop end stays a `TfL` stop: `tfl_access`'s model plans it, as before the
+/// network (no 400, no transit legs).
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database); --test-threads=1"]
+async fn a_tfl_stop_end_falls_back_to_the_access_model() {
+    let pool = ds_store::test_support::connect().await;
+    seed_tfl(&pool, false).await;
+    seed_rail(&pool).await;
+    let _switch = set_switch_for_tests(&["tfl"]);
+
+    for uri in [
+        plan_uri("ZZR", "940GZZTTBBB", today(), ""),
+        plan_uri("ZZR", "940GZZTTBBB", tomorrow(), "&transit=true"),
+    ] {
+        let (status, body) = get(&pool, &uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        assert!(body.get("access").is_some(), "{uri}: {body}");
+        let legs = body["segments"][0]["itineraries"][0]["legs"]
+            .as_array()
+            .unwrap();
+        assert!(
+            legs.iter().all(|leg| leg["kind"] != "transit"),
+            "{uri}: {legs:?}"
+        );
+    }
+
+    cleanup_tfl(&pool).await;
+}
+
+/// Two stations of one `TfL` hub (Bank's Underground and DLR) are joined by
+/// a walk, served with both ends as `TfL` stops.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database); --test-threads=1"]
+async fn a_walk_between_one_hubs_stations_names_both_tfl_stops() {
+    let pool = ds_store::test_support::connect().await;
+    seed_tfl(&pool, true).await;
+    seed_rail(&pool).await;
+    let _switch = set_switch_for_tests(&["tfl"]);
+
+    let (status, body) = get(
+        &pool,
+        &plan_uri("ZZR", "940GZZTTBBB", today(), "&transit=true"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let legs = body["segments"][0]["itineraries"][0]["legs"]
+        .as_array()
+        .unwrap();
+    let hub = legs
+        .iter()
+        .find(|leg| leg["kind"] == "transfer" && leg.get("transitWalk").is_none())
+        .unwrap_or_else(|| panic!("no hub walk: {legs:?}"));
+    assert_eq!(hub["mode"], "WALK");
+    assert_eq!(hub["originCrs"], Value::Null);
+    assert_eq!(hub["destinationCrs"], Value::Null);
+    assert_eq!(hub["originStop"]["id"], "940GZZTTAAA");
+    assert_eq!(hub["originStop"]["modes"], serde_json::json!(["tube"]));
+    assert_eq!(hub["destinationStop"]["id"], "940GZZTTBBB");
+    assert_eq!(hub["minutes"], 2);
+
+    cleanup_tfl(&pool).await;
+}

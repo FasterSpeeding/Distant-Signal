@@ -29,9 +29,9 @@ fn hhmm(h: u32, m: u32) -> u32 {
 /// The one train: Moorgate 06:31 to Old Street 06:33.
 fn connections() -> Vec<Connection> {
     vec![Connection {
-        uid: "C10117".to_string(),
-        from_tiploc: "MRGT".to_string(),
-        to_tiploc: "OLDST".to_string(),
+        uid: "C10117".to_string().into(),
+        from_tiploc: "MRGT".to_string().into(),
+        to_tiploc: "OLDST".to_string().into(),
         departure_min: hhmm(6, 31),
         arrival_min: hhmm(6, 33),
         working_departure_min: hhmm(6, 31),

@@ -40,7 +40,7 @@
 //! `realtime: false` and `liveTracking: false`, no `live` block, and an
 //! "about every N min" hint ([`headway_minutes`]).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
 use anyhow::{Context, Result};
@@ -82,15 +82,32 @@ pub struct PlannerNetwork {
     /// fresh boarding on the same platform (spec §8.2).
     pub change_minutes: i32,
     pub public_stop_id: PublicStopId,
+    /// Its stations are `TfL`'s stops (the `TfL` transit design §11): their
+    /// rail links are `tfl_stop_crs`'s (no rail-links file), the stations
+    /// of one `TfL` hub (Bank's Underground and DLR) are joined by walks,
+    /// and a `TfL` stop end becomes a node only for a request that opted in
+    /// on a date the timetable covers; otherwise it stays a `TfL` stop and
+    /// `tfl_access`'s model plans it, as before.
+    pub tfl_stops: bool,
 }
 
 /// Every network the planner can take. A network listed in
 /// [`SWITCH_ENV`] must be here (and in `common::transit::NETWORKS`).
-pub const PLANNER_NETWORKS: &[PlannerNetwork] = &[PlannerNetwork {
-    id: "metrolink",
-    change_minutes: 3,
-    public_stop_id: PublicStopId::AccessNode,
-}];
+pub const PLANNER_NETWORKS: &[PlannerNetwork] = &[
+    PlannerNetwork {
+        id: "metrolink",
+        change_minutes: 3,
+        public_stop_id: PublicStopId::AccessNode,
+        tfl_stops: false,
+    },
+    // TfL's Underground, DLR and trams (the TfL transit design §11).
+    PlannerNetwork {
+        id: "tfl",
+        change_minutes: 3,
+        public_stop_id: PublicStopId::StopArea,
+        tfl_stops: true,
+    },
+];
 
 pub fn planner_network(id: &str) -> Option<&'static PlannerNetwork> {
     // The DB tests seed a `test-*` network (`ds_store::test_support::transit`)
@@ -107,6 +124,7 @@ static TEST_PLANNER_NETWORK: PlannerNetwork = PlannerNetwork {
     id: "test",
     change_minutes: 3,
     public_stop_id: PublicStopId::AccessNode,
+    tfl_stops: false,
 };
 
 /// Parses [`SWITCH_ENV`]: comma-separated ids, blanks dropped, duplicates
@@ -311,6 +329,18 @@ pub struct TripRow {
 pub struct LineRow {
     pub name: String,
     pub colour: Option<String>,
+    /// The line's own mode (`tube`, `dlr`, `tram`), when its network mixes
+    /// them: a leg's `serviceMode`.
+    pub mode: Option<String>,
+}
+
+/// A walk between two stations of one network that are one `TfL` hub
+/// (Bank's Underground and DLR stations), both ways.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HubWalkRow {
+    pub from: String,
+    pub to: String,
+    pub minutes: i32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -337,6 +367,11 @@ pub struct NetworkDay {
     pub trips: Vec<TripRow>,
     pub lines: HashMap<String, LineRow>,
     pub rail_links: Vec<RailLinkRow>,
+    /// Walks between stations of one `TfL` hub (a `tfl_stops` network).
+    pub hub_walks: Vec<HubWalkRow>,
+    /// A `tfl_stops` network's stations' `TfL` modes (`tube`, `dlr`), by
+    /// node: what a hub walk's ends say they are.
+    pub stop_modes: HashMap<String, Vec<String>>,
 }
 
 type ActiveRow = (Option<String>, Option<NaiveDate>, Option<NaiveDate>);
@@ -468,35 +503,28 @@ pub async fn read_network_day(
         },
     )
     .collect();
-    let lines: HashMap<String, LineRow> = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT line_id, name, colour FROM transit_lines WHERE network = $1 AND feed_version = $2",
-    )
-    .bind(network)
-    .bind(&feed_version)
-    .fetch_all(pool)
-    .await
-    .context("transit lines")?
-    .into_iter()
-    .map(|(id, name, colour)| (id, LineRow { name, colour }))
-    .collect();
-    let rail_links: Vec<RailLinkRow> =
-        sqlx::query_as::<_, (String, String, String, Option<f64>, Option<f64>)>(
-            "SELECT l.stop_id, l.crs, l.kind, s.latitude, s.longitude \
-             FROM transit_rail_links l LEFT JOIN stations s ON s.crs = l.crs \
-             WHERE l.network = $1 ORDER BY l.stop_id, l.crs",
+    let lines: HashMap<String, LineRow> =
+        sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+            "SELECT line_id, name, colour, mode FROM transit_lines \
+             WHERE network = $1 AND feed_version = $2",
         )
         .bind(network)
+        .bind(&feed_version)
         .fetch_all(pool)
         .await
-        .context("transit rail links")?
+        .context("transit lines")?
         .into_iter()
-        .map(|(stop_id, crs, kind, lat, lon)| RailLinkRow {
-            stop_id,
-            crs: crs.trim().to_ascii_uppercase(),
-            kind,
-            station_position: lat.zip(lon),
-        })
+        .map(|(id, name, colour, mode)| (id, LineRow { name, colour, mode }))
         .collect();
+    let (rail_links, hub_walks, stop_modes) = if settings.tfl_stops {
+        tfl_stop_links(pool, &stops).await?
+    } else {
+        (
+            read_rail_links(pool, network).await?,
+            Vec::new(),
+            HashMap::new(),
+        )
+    };
     Ok(Ok(NetworkDay {
         network: network.to_owned(),
         settings,
@@ -517,7 +545,108 @@ pub async fn read_network_day(
             .collect(),
         lines,
         rail_links,
+        hub_walks,
+        stop_modes,
     }))
+}
+
+/// A network's rail links from `transit_rail_links` (its checked-in file).
+async fn read_rail_links(pool: &PgPool, network: &str) -> Result<Vec<RailLinkRow>> {
+    let rail_links: Vec<RailLinkRow> =
+        sqlx::query_as::<_, (String, String, String, Option<f64>, Option<f64>)>(
+            "SELECT l.stop_id, l.crs, l.kind, s.latitude, s.longitude \
+             FROM transit_rail_links l LEFT JOIN stations s ON s.crs = l.crs \
+             WHERE l.network = $1 ORDER BY l.stop_id, l.crs",
+        )
+        .bind(network)
+        .fetch_all(pool)
+        .await
+        .context("transit rail links")?
+        .into_iter()
+        .map(|(stop_id, crs, kind, lat, lon)| RailLinkRow {
+            stop_id,
+            crs: crs.trim().to_ascii_uppercase(),
+            kind,
+            station_position: lat.zip(lon),
+        })
+        .collect();
+    Ok(rail_links)
+}
+
+/// A `tfl_stops` network's links, from `TfL`'s stop tables: each station's
+/// National Rail stations (`tfl_stop_crs`, an `interchange` each), the
+/// walks between the network's stations of one hub (`tfl_stops.hub_code`,
+/// timed as an interchange walk from their coordinates), and each
+/// station's `TfL` modes. A station is its stop's access-node spelling
+/// (`940GZZLUKSX` is `9400ZZLUKSX`).
+async fn tfl_stop_links(
+    pool: &PgPool,
+    stops: &[StopRow],
+) -> Result<(
+    Vec<RailLinkRow>,
+    Vec<HubWalkRow>,
+    HashMap<String, Vec<String>>,
+)> {
+    let stations: HashMap<&str, &StopRow> = stops
+        .iter()
+        .filter(|s| s.kind == "station")
+        .map(|s| (s.stop_id.as_str(), s))
+        .collect();
+    let rows: Vec<(String, Vec<String>, Option<String>)> =
+        sqlx::query_as("SELECT stop_id, modes, hub_code FROM tfl_stops")
+            .fetch_all(pool)
+            .await
+            .context("tfl stops")?;
+    let mut stop_modes = HashMap::new();
+    let mut hubs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (stop_id, modes, hub) in rows {
+        let node = access_node_spelling(&stop_id);
+        if !stations.contains_key(node.as_str()) {
+            continue;
+        }
+        if let Some(hub) = hub.filter(|h| !h.is_empty()) {
+            hubs.entry(hub).or_default().push(node.clone());
+        }
+        stop_modes.insert(node, modes);
+    }
+    let position = |node: &str| stations.get(node).and_then(|s| s.lat.zip(s.lon));
+    let mut hub_walks = Vec::new();
+    for members in hubs.values() {
+        for (i, from) in members.iter().enumerate() {
+            for to in &members[i + 1..] {
+                let distance = position(from)
+                    .zip(position(to))
+                    .map(|(a, b)| metres_between(a, b));
+                let minutes = rail_link_walk_minutes(distance, "interchange");
+                hub_walks.push(HubWalkRow {
+                    from: from.to_owned(),
+                    to: to.to_owned(),
+                    minutes,
+                });
+            }
+        }
+    }
+    let links: Vec<(String, String, Option<f64>, Option<f64>)> = sqlx::query_as(
+        "SELECT c.stop_id, c.crs, s.latitude, s.longitude \
+         FROM tfl_stop_crs c LEFT JOIN stations s ON s.crs = c.crs \
+         ORDER BY c.stop_id, c.crs",
+    )
+    .fetch_all(pool)
+    .await
+    .context("tfl stop stations")?;
+    let rail_links = links
+        .into_iter()
+        .filter_map(|(stop_id, crs, lat, lon)| {
+            let node = access_node_spelling(&stop_id);
+            stations.contains_key(node.as_str()).then(|| RailLinkRow {
+                stop_id: node,
+                crs: crs.trim().to_ascii_uppercase(),
+                kind: "interchange".to_owned(),
+                station_position: lat.zip(lon),
+            })
+        })
+        .collect();
+    Ok((rail_links, hub_walks, stop_modes))
 }
 
 /// The station `code` names in a switched-on network's active feed (`code`
@@ -544,6 +673,25 @@ pub async fn find_station(
     .fetch_optional(pool)
     .await
     .context("transit stop lookup")
+}
+
+/// Whether `network`'s active timetable covers `date` (its horizon, and a
+/// service that day): a `tfl_stops` network's stop end becomes a node only
+/// then (the `TfL` transit design §11.1); otherwise `tfl_access` plans it.
+pub async fn network_covers(pool: &PgPool, network: &str, date: NaiveDate) -> Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM transit_networks n \
+           JOIN transit_feed_versions v ON v.network = n.network \
+                AND v.feed_version = n.active_feed_version \
+           JOIN transit_service_days d ON d.network = n.network \
+                AND d.feed_version = n.active_feed_version AND d.service_date = $2 \
+         WHERE n.network = $1 AND v.horizon_from <= $2 AND v.horizon_to >= $2)",
+    )
+    .bind(network)
+    .bind(date)
+    .fetch_one(pool)
+    .await
+    .context("transit coverage")
 }
 
 /// The latest `activated_at` among `networks`: the graph cache's key is the
@@ -760,6 +908,11 @@ pub struct TransitGraph {
     pub stops: HashMap<String, StopInfo>,
     /// `(tram node, CRS)` -> the walk, both ways.
     pub walks: HashMap<(String, String), RailLinkWalk>,
+    /// `(node, node)` -> the walk between two stations of one `TfL` hub,
+    /// both ways (a `tfl_stops` network).
+    pub hub_walks: HashMap<(String, String), RailLinkWalk>,
+    /// A `tfl_stops` network's stations' `TfL` modes, by node.
+    pub stop_modes: HashMap<String, Vec<String>>,
     pub skipped: Vec<(String, SkipReason)>,
 }
 
@@ -773,6 +926,16 @@ impl TransitGraph {
         let (network, index) = split_uid(uid)?;
         let network = self.network(network)?;
         Some((network, network.trips.get(index)?))
+    }
+
+    /// The mode of the line a transit trip rides (`tube`, `dlr`, `tram`; a
+    /// line's own, from `transit_lines.mode`), `None` for a replacement bus
+    /// or a single-mode network's line: what a transit connection's
+    /// operator follows (`LT` for the Underground, `ds:DLR`, ...; the
+    /// planner operator filtering spec §6.2).
+    pub fn trip_mode(&self, uid: &str) -> Option<&str> {
+        let (network, trip) = self.trip(uid)?;
+        network.lines.get(trip.line_id.as_ref()?)?.mode.as_deref()
     }
 
     /// Whether `code` is a tram station node of this graph.
@@ -812,6 +975,8 @@ pub fn build_transit_graph(
     let mut data = rail.clone();
     let mut stops: HashMap<String, StopInfo> = HashMap::new();
     let mut walks = HashMap::new();
+    let mut hub_walks = HashMap::new();
+    let mut stop_modes = HashMap::new();
     let mut networks = Vec::new();
     for day in days {
         let by_id: HashMap<&str, &StopRow> =
@@ -931,6 +1096,36 @@ pub fn build_transit_graph(
                 RailLinkWalk { walk_minutes: walk },
             );
         }
+        // Walks between stations of one TfL hub, both ways, all day: a
+        // change of network station, so the walk alone (no rail-side
+        // buffer; each station's own change time applies on boarding).
+        for walk in &day.hub_walks {
+            if !data.crs_to_tiplocs.contains_key(&walk.from)
+                || !data.crs_to_tiplocs.contains_key(&walk.to)
+            {
+                continue;
+            }
+            for (from, to) in [(&walk.from, &walk.to), (&walk.to, &walk.from)] {
+                data.fixed_links_from_crs
+                    .entry(from.clone())
+                    .or_default()
+                    .push(FixedLink {
+                        mode: RAIL_LINK_MODE.to_owned(),
+                        to_crs: to.clone(),
+                        minutes: walk.minutes,
+                        valid_from: "0000".to_owned(),
+                        valid_to: "2359".to_owned(),
+                        days_mask: "1111111".to_owned(),
+                    });
+                hub_walks.insert(
+                    (from.clone(), to.clone()),
+                    RailLinkWalk {
+                        walk_minutes: walk.minutes,
+                    },
+                );
+            }
+        }
+        stop_modes.extend(day.stop_modes.clone());
         let trips: Vec<TripInfo> = day
             .trips
             .iter()
@@ -974,6 +1169,8 @@ pub fn build_transit_graph(
         networks,
         stops,
         walks,
+        hub_walks,
+        stop_modes,
         skipped,
     }
 }
@@ -1043,6 +1240,22 @@ pub fn record_connections(graph: &TransitGraph) {
 pub enum TransitServiceMode {
     Tram,
     ReplacementBus,
+    /// The Underground (the `TfL` network's `tube` lines).
+    Tube,
+    /// The DLR.
+    Dlr,
+}
+
+impl TransitServiceMode {
+    /// A line's mode (`transit_lines.mode`) as a leg's: `tube` and `dlr`,
+    /// else a tram.
+    fn of_line(mode: Option<&str>) -> Self {
+        match mode {
+            Some("tube") => Self::Tube,
+            Some("dlr") => Self::Dlr,
+            _ => Self::Tram,
+        }
+    }
 }
 
 /// A transit leg's `line`: `null` for a replacement bus.
@@ -1187,7 +1400,12 @@ pub fn transit_leg(
         service_mode: if trip.replacement_bus {
             TransitServiceMode::ReplacementBus
         } else {
-            TransitServiceMode::Tram
+            TransitServiceMode::of_line(
+                trip.line_id
+                    .as_ref()
+                    .and_then(|line| network.lines.get(line))
+                    .and_then(|row| row.mode.as_deref()),
+            )
         },
         live_tracking: false,
         realtime: false,
@@ -1275,6 +1493,33 @@ pub fn transit_walk(graph: &TransitGraph, from_crs: &str, to_crs: &str) -> Optio
     })
 }
 
+/// The two ends of a hub walk between `from` and `to` (both stations of a
+/// `tfl_stops` network, one `TfL` hub) as `TfL` stops: the public id
+/// (`940GZZLUBNK`), the station's name and its `TfL` modes.
+fn hub_walk_stops(
+    graph: &TransitGraph,
+    from: &str,
+    to: &str,
+) -> Option<(
+    crate::data::tfl_stops::TflStopSummary,
+    crate::data::tfl_stops::TflStopSummary,
+)> {
+    graph.hub_walks.get(&(from.to_owned(), to.to_owned()))?;
+    let stop = |node: &str| {
+        let info = graph.stops.get(node)?;
+        let spelling = graph
+            .network(&info.network)
+            .map_or(PublicStopId::StopArea, |n| n.public_stop_id);
+        Some(crate::data::tfl_stops::TflStopSummary {
+            id: public_id(node, spelling),
+            name: info.station_name.clone(),
+            modes: graph.stop_modes.get(node).cloned().unwrap_or_default(),
+            lines: Vec::new(),
+        })
+    };
+    Some((stop(from)?, stop(to)?))
+}
+
 /// `transitNotices` (spec §7.3): each network left out of the plan, as
 /// `{network, reason: "noTimetable", message}`.
 pub fn notices_json<'a>(
@@ -1305,9 +1550,23 @@ pub fn line_notices(
     line_name: &str,
     view: &ds_store::transit::disruptions::LineStatusView,
 ) -> Vec<TransitLegNotice> {
+    // A network whose status is TfL's has no situations: every status that
+    // is not good is a disruption (the TfL transit design §7).
+    let from_tfl = common::transit::status_from_tfl(network);
+    let good = [
+        common::Severity::GoodService as u8,
+        common::Severity::NoIssues as u8,
+        common::Severity::NoReportedDisruption as u8,
+    ];
     view.statuses
         .iter()
-        .filter(|status| status.situation_id.is_some())
+        .filter(|status| {
+            if from_tfl {
+                !good.contains(&status.severity)
+            } else {
+                status.situation_id.is_some()
+            }
+        })
         .map(|status| TransitLegNotice {
             kind: "disruption",
             line_id: format!("{network}:{line_id}"),
@@ -1374,6 +1633,8 @@ pub fn dress_segments(
                         origin_crs,
                         destination_crs,
                         transit_walk: walk_slot,
+                        origin_stop,
+                        destination_stop,
                         ..
                     } => {
                         let (Some(from), Some(to)) =
@@ -1381,6 +1642,16 @@ pub fn dress_segments(
                         else {
                             continue;
                         };
+                        // A walk between two stations of one TfL hub: both
+                        // ends are TfL stops, named as an access leg's are.
+                        if let Some((from_stop, to_stop)) = hub_walk_stops(graph, from, to) {
+                            *origin_stop = Some(Box::new(from_stop));
+                            *destination_stop = Some(Box::new(to_stop));
+                            *origin_crs = None;
+                            *destination_crs = None;
+                            scheduled_only = true;
+                            continue;
+                        }
                         let Some(walk) = transit_walk(graph, from, to) else {
                             continue;
                         };
@@ -1541,6 +1812,7 @@ mod tests {
                 LineRow {
                     name: "Blue Line".to_owned(),
                     colour: Some("#1f6fb5".to_owned()),
+                    mode: None,
                 },
             )]),
             rail_links: vec![
@@ -1563,6 +1835,8 @@ mod tests {
                     station_position: None,
                 },
             ],
+            hub_walks: Vec::new(),
+            stop_modes: HashMap::new(),
         }
     }
 
@@ -1779,9 +2053,9 @@ mod tests {
 
     fn connection(uid: &str, from: &str, departure_min: u32) -> Connection {
         Connection {
-            uid: uid.to_owned(),
-            from_tiploc: from.to_owned(),
-            to_tiploc: "X".to_owned(),
+            uid: uid.to_owned().into(),
+            from_tiploc: from.to_owned().into(),
+            to_tiploc: "X".to_owned().into(),
             departure_min,
             arrival_min: departure_min + 5,
             working_departure_min: departure_min,

@@ -105,3 +105,28 @@ export const TRAM_ONLY: TripPlanItinerary = {
   totalDurationMinutes: 8,
   scheduledOnly: true,
 };
+
+/** A Tube ride on the TfL network (the TfL transit design §11): its
+ * stations in TfL's stop-area spelling. Invented times. */
+export const TUBE_LEG: TripPlanTransitLeg = {
+  ...TRAM_LEG,
+  network: 'tfl',
+  serviceMode: 'tube',
+  line: { id: 'tfl:victoria', name: 'Victoria', colour: '#1f97d4' },
+  headsign: null,
+  originStop: { id: '940GZZLUKSX', name: "King's Cross St. Pancras", platform: null },
+  destinationStop: { id: '940GZZLUBXN', name: 'Brixton', platform: null },
+};
+
+/** A walk from a National Rail station to its TfL station. */
+export const WALK_TO_TUBE: TransferLeg = {
+  ...WALK_TO_TRAM,
+  originCrs: 'KGX',
+  transitWalk: {
+    network: 'tfl',
+    stop: { id: '940GZZLUKSX', name: "King's Cross St. Pancras" },
+    towardsStop: true,
+    walkMinutes: 4,
+    estimated: true,
+  },
+};

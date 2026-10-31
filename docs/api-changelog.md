@@ -3,6 +3,32 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-31: `/Trips/plan` rides the Underground, the DLR and the trams by their timetable
+
+Additive, and off until `API_TRIP_PLAN_TRANSIT_NETWORKS` lists `tfl`
+(DS-212, the TfL transit design's P4; `crates/api/src/data/transit_planning.rs`).
+
+- **`tfl` may be listed** in `API_TRIP_PLAN_TRANSIT_NETWORKS` (with
+  `API_TRANSIT_NETWORKS`). Its trips then join the day graph like
+  Metrolink's: a plan that sends `transit=true` may ride the Underground,
+  the DLR and London Trams anywhere in a journey, on their timetable,
+  changing between lines.
+- **A `TfL` stop end** (`940GZZLUKSX`) is planned on the timetable only
+  when the request sends `transit=true` and the timetable covers its
+  date. Otherwise, as before, it stays a `TfL` stop and gets the
+  estimated access legs (`access`): a client that doesn't opt in sees no
+  change.
+- **`kind: "transit"` legs gain two `serviceMode` values:** `tube` and
+  `dlr` (a tram is still `tram`). Their stops are `TfL`'s stop-area ids
+  (`940GZZLUKSX`), and `line.id` is `tfl:victoria`. Their `notices` are
+  `TfL`'s own line status (every status that isn't good service).
+- **Walks between two stations of one `TfL` hub** (Bank's Underground and
+  DLR stations) are `kind: "transfer"`, `mode: "WALK"` legs with both
+  `*Crs` `null` and `originStop`/`destinationStop` set, as an access leg's
+  are (`{id, name, modes, lines}`, `lines` empty).
+- A walk between a National Rail station and a `TfL` station is a
+  `transitWalk` as for a tram stop, with `network: "tfl"`.
+
 ## 2026-10-31: line branches, a stop's first and last departures, TfL stop ids
 
 Additive (DS-212, the TfL transit design's P2;

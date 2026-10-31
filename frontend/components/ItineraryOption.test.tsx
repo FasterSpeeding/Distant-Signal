@@ -10,7 +10,9 @@ import {
   TRAIN_INTO_MAN,
   TRAM_LEG,
   TRAM_ONLY,
+  TUBE_LEG,
   WALK_TO_TRAM,
+  WALK_TO_TUBE,
 } from '@/test/transitPlanFixtures';
 
 type TrainLeg = Extract<TripPlanLeg, { kind: 'train' }>;
@@ -547,6 +549,15 @@ describe('ItineraryOption: station groups (2026-10-07)', () => {
       const { headwayMinutes: _omitted, ...withoutHeadway } = TRAM_LEG;
       renderPlan({ ...RAIL_TRAM_RAIL, legs: [TRAIN_INTO_MAN, WALK_TO_TRAM, withoutHeadway] });
       expect(screen.queryByText(/About every/)).not.toBeInTheDocument();
+    });
+
+    it('names a Tube ride on the TfL network by its mode, and the walk to its TfL station', () => {
+      const { container } = renderPlan({ ...RAIL_TRAM_RAIL, legs: [TRAIN_INTO_MAN, WALK_TO_TUBE, TUBE_LEG] });
+      expect(
+        screen.getByText(byVisibleText("08:14 Tube (Victoria) King's Cross St. Pancras to Brixton 08:22")),
+      ).toBeInTheDocument();
+      expect(container.querySelector('[data-service-mode="tube"]')?.textContent).toBe('Tube');
+      expect(screen.getByText(/Walk to King's Cross St\. Pancras \(TfL\), 6 min/)).toBeInTheDocument();
     });
 
     it('names a replacement bus, which has no line', () => {

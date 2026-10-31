@@ -23,6 +23,8 @@ export const SERVICE_MODE_LABELS: Record<Exclude<ServiceMode, 'train'>, string> 
 export const TRANSIT_SERVICE_MODE_LABELS: Record<TripPlanTransitServiceMode, string> = {
   tram: 'Tram',
   replacementBus: 'Replacement bus',
+  tube: 'Tube',
+  dlr: 'DLR',
 };
 
 /** `mode` is a wire value: `null` for one this bundle has no label for. */
