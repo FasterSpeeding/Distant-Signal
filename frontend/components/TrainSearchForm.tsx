@@ -1,17 +1,7 @@
 'use client';
 
-import { useEffect, useId, useMemo, useState, type SubmitEvent } from 'react';
-import {
-  Button,
-  Checkbox,
-  Group,
-  Loader,
-  MultiSelect,
-  SegmentedControl,
-  Stack,
-  Text,
-  VisuallyHidden,
-} from '@mantine/core';
+import { useId, useMemo, useState, type SubmitEvent } from 'react';
+import { Button, Checkbox, Group, Loader, SegmentedControl, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { DatePickerInput } from '@/components/LazyDateFields';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { nowInLondon } from '@/lib/londonWallClock';
@@ -19,7 +9,6 @@ import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
 import { TrainSearchResults } from './TrainSearchResults';
 import { ListFilterBar, SearchIcon, type ListNoun } from './ListFilterBar';
-import { noOptionsFound } from './noOptionsFound';
 import type { TrainArrivalsPage, TrainSearchDates, TrainSearchPage } from '@/lib/types';
 import { searchDateBounds, searchDateDescription } from '@/lib/searchDates';
 import { StationField } from './StationField';
@@ -43,6 +32,7 @@ import {
 } from '@/lib/trainSearch';
 import { trackFeature } from '@/lib/usageAnalytics';
 import { TrainsAdvancedOptions } from './TrainsAdvancedOptions';
+import { TrainOperatorSelect } from './TrainOperatorSelect';
 import {
   NO_STOP_FILTERS,
   countStopFilters,
@@ -52,9 +42,7 @@ import {
   stopFilterErrors,
   type TrainStopFilters,
 } from '@/lib/trainStopFilters';
-import { getStationNames } from '@/lib/suggestions';
-import { groupLabels, useStationGroups } from '@/lib/stationGroups';
-import { isGroupCode } from '@/lib/stationLabel';
+import { useStopFilterLabels } from '@/lib/useStopFilterLabels';
 
 const TRAIN_NOUN: ListNoun = { one: 'train', other: 'trains' };
 
@@ -256,38 +244,7 @@ export function TrainSearchForm({
   const [advancedOpened, setAdvancedOpened] = useState(false);
   // Code -> name for the advanced options' rows: filled as stations are
   // picked, and once on mount for codes restored from the URL.
-  const [stopNames, setStopNames] = useState<Map<string, string>>(new Map());
-  const addStopNames = (found: Map<string, string>) => setStopNames((current) => new Map([...current, ...found]));
-  useEffect(() => {
-    const restored = [
-      ...stopFilters.startsAt,
-      ...stopFilters.terminatesAt,
-      ...stopFilters.previouslyCallsAt,
-      ...stopFilters.previouslyStopsAt,
-      ...stopFilters.callsAt,
-      ...stopFilters.via,
-      ...stopFilters.avoid,
-      ...stopFilters.avoidStop,
-    ].filter((code) => !isGroupCode(code));
-    if (restored.length === 0) return;
-    let cancelled = false;
-    void getStationNames(restored).then((found) => {
-      if (!cancelled) addStopNames(found);
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the restored filters are read on mount only
-  }, []);
-  const stopGroups = useStationGroups(
-    [
-      ...stopFilters.previouslyCallsAt,
-      ...stopFilters.previouslyStopsAt,
-      ...stopFilters.callsAt,
-      ...stopFilters.via,
-    ].some(isGroupCode),
-  );
-  const stopLabels = useMemo(() => new Map([...groupLabels(stopGroups), ...stopNames]), [stopGroups, stopNames]);
+  const { labels: stopLabels, addNames: addStopNames } = useStopFilterLabels(stopFilters);
   /** Which of the four time filters are currently HALF-entered -- an hour
    * segment filled in with the minutes left blank, or vice versa. A native
    * `<input type="time">` reports a half-entered time as `''`, exactly like
@@ -579,7 +536,7 @@ export function TrainSearchForm({
   // the popover, so picking an option closed the whole panel, and it would
   // sit outside the phone sheet's focus trap.
   const inPanel = live;
-  const comboboxProps = inPanel ? { comboboxProps: { withinPortal: false } } : {};
+  const comboboxProps = inPanel ? { withinPortal: false } : undefined;
 
   const timeNoun = arrivals ? 'arrival' : 'departure';
   const timeVerb = arrivals ? 'reaching' : between ? 'leaving' : 'at';
@@ -604,21 +561,11 @@ export function TrainSearchForm({
         clearButtonProps={{ 'aria-label': 'Clear the date' }}
         {...(inPanel && { popoverProps: { withinPortal: false } })}
       />
-      <MultiSelect
-        label="Operator (optional)"
-        placeholder="Any operator"
-        description="Only trains run by one of these operators."
+      <TrainOperatorSelect
         data={operatorOptions}
         value={operators}
         onChange={setOperators}
-        searchable
-        clearable
-        // Mantine hides the whole dropdown when it has no options and no
-        // `nothingFoundMessage`, leaving the input `aria-expanded="true"`
-        // over nothing.
-        nothingFoundMessage={noOptionsFound('No matching operators')}
-        clearButtonProps={{ 'aria-label': 'Clear operator filter', className: 'iconHitArea24' }}
-        {...comboboxProps}
+        comboboxProps={comboboxProps}
       />
       {/* All four time filters are `TimeFilterInput` -- a native
        * `<input type="time">` with a clock button that opens the platform
@@ -706,7 +653,7 @@ export function TrainSearchForm({
         errors={stopErrors}
         opened={advancedOpened}
         onOpenedChange={setAdvancedOpened}
-        comboboxProps={inPanel ? { withinPortal: false } : undefined}
+        comboboxProps={comboboxProps}
         scope={
           between
             ? `These look at the train's route between ${stationDisplay} and ${stopsAtDisplay}.`
