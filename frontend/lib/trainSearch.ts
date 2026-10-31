@@ -45,9 +45,10 @@ export type StationBoard = 'departures' | 'arrivals';
  * own times (a departure, or on the arrivals board an arrival), with
  * `time_day_offset`/`until_day_offset` for a time after midnight; between
  * two stations, `arrival_from`/`arrival_to` (and their day offsets) for
- * the arrival at `to`; `origin` (where the train starts) and `operator`;
- * and the advanced options, `calls_at`, `via`, `avoid` and `avoid_stop`
- * (`lib/trainStopFilters.ts`). */
+ * the arrival at `to`; `operator`; and the advanced options,
+ * `previously_calls_at`, `previously_stops_at`, `calls_at`, `via`,
+ * `avoid` and `avoid_stop`, and `origin` and `terminates_at` ("Starts at"
+ * and "Terminates at"; `lib/trainStopFilters.ts`). */
 export const TRAIN_URL_PARAMS = [
   'station',
   'board',
@@ -70,6 +71,9 @@ export const TRAIN_URL_PARAMS = [
   'via',
   'avoid',
   'avoid_stop',
+  'previously_calls_at',
+  'previously_stops_at',
+  'terminates_at',
 ] as const;
 
 /** A 3-letter station code. */
