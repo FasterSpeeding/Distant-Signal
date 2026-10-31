@@ -5,6 +5,7 @@ import {
   frequencyText,
   groupLinesByMode,
   isHighFrequencyMode,
+  networkModesPhrase,
   transitNetworkSummary,
 } from './transitModes';
 
@@ -12,6 +13,24 @@ describe('transitNetworkSummary', () => {
   it('names the modes of the TfL network only', () => {
     expect(transitNetworkSummary('tfl')).toBe('Underground, DLR and London Trams');
     expect(transitNetworkSummary('metrolink')).toBeNull();
+  });
+});
+
+describe('networkModesPhrase', () => {
+  it("names a single-mode network's mode from the network when its lines have none", () => {
+    expect(networkModesPhrase({ mode: 'tram', lines: [{}, {}] })).toBe('tram');
+    expect(networkModesPhrase({ mode: 'tram', lines: [] })).toBe('tram');
+  });
+
+  it("lists a mixed network's modes in line order", () => {
+    const lines = [{ mode: 'tube' }, { mode: 'dlr' }, { mode: 'tube' }, { mode: 'tram' }];
+    expect(networkModesPhrase({ mode: 'metro', lines })).toBe('Tube, DLR and tram');
+    expect(networkModesPhrase({ mode: 'metro', lines: lines.slice(0, 2) })).toBe('Tube and DLR');
+  });
+
+  it('is null when a mode has no word, rather than guess', () => {
+    expect(networkModesPhrase({ mode: 'metro', lines: [{}] })).toBeNull();
+    expect(networkModesPhrase({ mode: 'metro', lines: [{ mode: 'tube' }, { mode: 'ferry' }] })).toBeNull();
   });
 });
 
