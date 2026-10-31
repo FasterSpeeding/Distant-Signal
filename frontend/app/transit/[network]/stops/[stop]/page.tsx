@@ -109,7 +109,7 @@ export default async function TransitStopPage({ params, searchParams }: Params &
 
       <StopRailLinks links={stopDetail.railLinks} />
 
-      <TransitStopNotices notices={stopDetail.notices} />
+      <TransitStopNotices notices={stopDetail.notices} network={network} />
 
       <Stack gap="sm" id="departures">
         <SectionTitle>Departures</SectionTitle>

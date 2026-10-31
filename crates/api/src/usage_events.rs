@@ -251,6 +251,7 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/trains",
     "/transit",
     "/transit/[network]",
+    "/transit/[network]/incidents/[id]",
     "/transit/[network]/lines/[line]",
     "/transit/[network]/lines/[line]/timetable",
     "/transit/[network]/stops/[stop]",

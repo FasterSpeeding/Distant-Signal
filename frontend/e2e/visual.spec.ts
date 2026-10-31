@@ -101,6 +101,8 @@ const PAGES: [name: string, path: string][] = [
   // frontend-e2e job). Dated, so the board and timetable don't follow the
   // server's clock.
   ['transit-network', '/transit/metrolink'],
+  // A disruption's own page (the seed's E2E-S1 on the Blue Line).
+  ['transit-incident', '/transit/metrolink/incidents/E2E-S1'],
   ['transit-line', '/transit/metrolink/lines/blue?date=2026-09-17'],
   ['transit-stop', '/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17'],
   ['transit-timetable', '/transit/metrolink/lines/blue/timetable?date=2026-09-17&direction=outbound&from=07:00'],

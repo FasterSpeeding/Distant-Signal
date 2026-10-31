@@ -72,6 +72,10 @@ pub fn router() -> Router {
             "/transit/{network}/situations",
             axum::routing::get(get_situations),
         )
+        .route(
+            "/transit/{network}/situations/{situation}",
+            axum::routing::get(get_situation),
+        )
         .route("/transit/{network}/stops", axum::routing::get(list_stops))
         .route(
             "/transit/{network}/stops/{stop}",
@@ -315,6 +319,45 @@ async fn get_situations(State(app): State<App>, Path(network): Path<String>) -> 
     let view =
         disruptions::situations_view(&network, &situations, state, as_of, Utc::now(), |_| true);
     reply(SHORT_CACHE, to_json(&view)?)
+}
+
+/// A situation id as the feed gives it: 1 to 128 characters (the
+/// table's CHECK), none of them a control character.
+fn is_situation_id(id: &str) -> bool {
+    (1..=128).contains(&id.chars().count()) && !id.chars().any(char::is_control)
+}
+
+/// `/transit/{network}/situations/{situation}`: one situation for its own
+/// page (`/transit/<network>/incidents/<id>`), listed or ended (kept a week
+/// after it ends): where it stands, the lines it changes and how, and its
+/// times, with the network's `status` (its situations' freshness), so a
+/// page can say when what it shows was last read.
+async fn get_situation(
+    State(app): State<App>,
+    Path((network, situation)): Path<(String, String)>,
+) -> Reply {
+    check_network(&app, &network)?;
+    if !is_situation_id(&situation) {
+        return Err(not_found("disruption"));
+    }
+    let Some(stored) = disruptions::stored_situation(&app.database, &network, &situation)
+        .await
+        .map_err(internal_error)?
+    else {
+        return Err(not_found("disruption"));
+    };
+    let lines = disruptions::network_lines(&app.database, &network)
+        .await
+        .map_err(internal_error)?;
+    let (state, as_of) = status_state(&app, &network).await?;
+    let mut body = to_json(&disruptions::detail_view(
+        &network,
+        &stored,
+        &lines,
+        Utc::now(),
+    ))?;
+    body["status"] = json!({ "state": state, "asOf": as_of });
+    reply(SHORT_CACHE, body)
 }
 
 #[derive(Debug, Deserialize)]
@@ -584,6 +627,7 @@ mod db_tests {
             format!("/transit/{NETWORK}/stops"),
             format!("/transit/{NETWORK}/stops/{A}"),
             format!("/transit/{NETWORK}/stops/{A}/departures"),
+            format!("/transit/{NETWORK}/situations/S1"),
         ] {
             assert_eq!(get(&dark, &uri).await.0, StatusCode::NOT_FOUND, "{uri}");
         }
@@ -924,6 +968,87 @@ mod db_tests {
         let dark = app(pool.clone(), &[]);
         let (status, _, _) = get(&dark, &format!("/transit/{NETWORK}/situations")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        cleanup(&pool, NETWORK).await;
+    }
+
+    /// A situation's own page: active, upcoming, then ended (kept, and no
+    /// longer listed anywhere else); unknown ids and dark networks 404.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL (a migrated database)"]
+    async fn a_situation_has_its_own_detail_until_a_week_after_it_ends() {
+        use ds_store::test_support::transit::{apply_situations, situation};
+
+        let pool = ds_store::test_support::connect().await;
+        let today = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        seed(&pool, NETWORK, today).await;
+        let lit = app(pool.clone(), &[NETWORK]);
+
+        let now = Utc::now();
+        let mut upcoming = situation("S3", "blue", "suspended", None, now);
+        upcoming.validity[0].start = now + chrono::TimeDelta::days(2);
+        upcoming.planned = true;
+        apply_situations(
+            &pool,
+            NETWORK,
+            vec![situation("S1", "blue", "delayed", Some(B), now), upcoming],
+            now,
+        )
+        .await;
+
+        let uri = |id: &str| format!("/transit/{NETWORK}/situations/{id}");
+        let (status, cache, body) = get(&lit, &uri("S1")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(cache.as_deref(), Some(SHORT_CACHE));
+        assert_eq!(body["id"], "S1");
+        assert_eq!(body["state"], "active");
+        assert_eq!(body["summary"], "Summary S1");
+        assert_eq!(body["severity"], 9);
+        assert_eq!(body["severityDescription"], "Minor Delays");
+        assert_eq!(body["affects"][0]["id"], format!("{NETWORK}:blue"));
+        assert_eq!(body["affects"][0]["severity"], 9);
+        assert_eq!(body["stops"][0], B);
+        assert_eq!(body["advice"][0], "Allow extra time.");
+        assert_eq!(body["status"]["state"], "current");
+        assert!(body["firstSeenAt"].is_string());
+        assert!(body["endedAt"].is_null());
+
+        let (_, _, body) = get(&lit, &uri("S3")).await;
+        assert_eq!(body["state"], "upcoming");
+        assert_eq!(body["planned"], true);
+        assert!(body["starts"].is_string());
+        assert_eq!(body["severity"], 2, "suspended");
+
+        // S1 ends: its page says so, and the listings drop it.
+        let later = now + chrono::TimeDelta::seconds(1);
+        apply_situations(
+            &pool,
+            NETWORK,
+            vec![situation("S3", "blue", "suspended", None, now)],
+            later,
+        )
+        .await;
+        let (status, _, body) = get(&lit, &uri("S1")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["state"], "ended");
+        assert!(body["endedAt"].is_string());
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}/situations")).await;
+        assert!(
+            body["current"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["id"] != "S1")
+        );
+
+        for missing in [uri("NOPE"), uri("%01")] {
+            assert_eq!(
+                get(&lit, &missing).await.0,
+                StatusCode::NOT_FOUND,
+                "{missing}"
+            );
+        }
+        let dark = app(pool.clone(), &[]);
+        assert_eq!(get(&dark, &uri("S3")).await.0, StatusCode::NOT_FOUND);
         cleanup(&pool, NETWORK).await;
     }
 }

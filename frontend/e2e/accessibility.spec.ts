@@ -209,6 +209,7 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   // they name, the line lists its stops, the timetable's row headers are
   // stop links.
   ['/transit/metrolink', '/transit/metrolink'],
+  ['/transit/metrolink/incidents/E2E-S1', '/transit/metrolink/incidents/E2E-S1'],
   ['/transit/metrolink/lines/blue', '/transit/metrolink/lines/blue'],
   [
     '/transit/metrolink/lines/blue/timetable',

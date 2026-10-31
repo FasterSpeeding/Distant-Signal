@@ -3,6 +3,34 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-31: one transit disruption, `GET /public/transit/{network}/situations/{situationId}`
+
+New, unauthenticated, cached for a minute like the other transit reads
+(DS-228). One situation of a served network (a Metrolink disruption), for
+its own page, `/transit/{network}/incidents/{situationId}`. The id is the
+`id` of an entry in `/situations` or a line's `situations`, or a status
+entry's `situationId`. `404` for an unknown id, or a network not served.
+
+The body is the listing's situation (`id`, `summary`, `description`,
+`infoUrl`, `planned`, `reason`, `scope`, `lines`, `stops`, `advice`,
+`validity`, and `starts` while upcoming, with no time limit here), plus:
+
+- `state`: `active` (in effect now), `upcoming` (a validity period starts
+  later) or `ended` (no longer published, or every period is over);
+- `endedAt`: when the feed stopped listing it (it is then `ended`), else
+  `null`; `validityEndedAt`: for one still listed but `ended`, when its
+  last validity period ended (`null` when unknown);
+- `severity` and `severityDescription`: its worst status on the lines it
+  affects (`26`, Information, when it changes none: a stop notice);
+- `affects`: `{id, name, severity, description}` per line whose status
+  it changes, worst first;
+- `firstSeenAt` and `updatedAt` (the snapshot that last listed it), and
+  the network's `status` (`{state, asOf}`, as on `/transit/{network}`).
+
+A situation the feed stops listing now stays readable here for 7 days,
+as `ended`; the listings (`/situations`, a line's `situations`, a stop's
+`notices`) still drop it at once.
+
 ## 2026-10-31: `transfer`, a twelfth untracked-leg `transitMode`
 
 Additive: an untracked leg's `transitMode` may now be `transfer`

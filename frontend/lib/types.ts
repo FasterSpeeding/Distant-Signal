@@ -3566,6 +3566,26 @@ export interface TransitSituation {
   starts: string | null;
 }
 
+/** `GET /public/transit/{network}/situations/{id}`: one disruption, for
+ * its own page (docs/api-changelog.md, 2026-10-31). */
+export interface TransitSituationDetail extends TransitSituation {
+  /** `ended`: no longer published, or every validity period is over. */
+  state: 'active' | 'upcoming' | 'ended';
+  /** When the feed stopped listing it. */
+  endedAt: string | null;
+  /** For one still listed but ended: when its last validity period ended. */
+  validityEndedAt: string | null;
+  /** Its worst status on the lines it affects; 26 (Information) when it
+   * changes none. */
+  severity: number;
+  severityDescription: string;
+  /** The lines whose status it changes, worst first. */
+  affects: { id: string; name: string; severity: number; description: string }[];
+  firstSeenAt: string;
+  updatedAt: string;
+  status: { state: TransitStatusState; asOf: string | null };
+}
+
 /** `GET /public/transit/{network}/situations`, and a line's `situations`. */
 export interface TransitSituations {
   state: TransitStatusState;
