@@ -1,6 +1,7 @@
 import { Group, Stack, Text, Title } from '@mantine/core';
 import { notFound, permanentRedirect } from 'next/navigation';
 import type { Metadata } from 'next';
+import { LinkSentence } from '@/components/LinkSentence';
 import { SectionTitle } from '@/components/SectionTitle';
 import { TextLink } from '@/components/TextLink';
 import { TransitAttributionNote } from '@/components/TransitAttributionNote';
@@ -94,17 +95,14 @@ export default async function TransitStopPage({ params, searchParams }: Params &
             </TextLink>
           )}
         </Group>
-        <Group gap="xs" c="dimmed" fz="sm">
-          <TextLink href={`/transit/${network}`}>{detail.name}</TextLink>
-          {stopDetail.lines.map((id) => {
-            const line = lineNames.get(id);
-            return (
-              <TextLink key={id} href={`/transit/${network}/lines/${localLineId(id)}`}>
-                {line?.name ?? localLineId(id)}
-              </TextLink>
-            );
-          })}
-        </Group>
+        <TextLink href={`/transit/${network}`}>{detail.name}</TextLink>
+        <LinkSentence
+          lead={stopDetail.lines.length > 1 ? 'Lines here: ' : 'Line here: '}
+          links={stopDetail.lines.map((id) => ({
+            href: `/transit/${network}/lines/${localLineId(id)}`,
+            label: lineNames.get(id)?.name ?? localLineId(id),
+          }))}
+        />
       </Stack>
 
       <StopRailLinks links={stopDetail.railLinks} />

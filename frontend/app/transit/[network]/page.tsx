@@ -1,7 +1,7 @@
-import { Fragment } from 'react';
 import { Stack, Text, Title } from '@mantine/core';
 import { notFound, redirect } from 'next/navigation';
 import type { Metadata } from 'next';
+import { LinkSentence } from '@/components/LinkSentence';
 import { SectionTitle } from '@/components/SectionTitle';
 import { TextLink } from '@/components/TextLink';
 import { TransitAttributionNote } from '@/components/TransitAttributionNote';
@@ -84,17 +84,10 @@ export default async function TransitNetworkPage({ params, searchParams }: Param
           <SectionTitle>Also run by TfL</SectionTitle>
           {/* Links in a sentence, not cards: they lead off this network, so
               they stay under its own lines. */}
-          <Text size="sm" c="dimmed">
-            On the National Rail network, with live trains and timetables there:{' '}
-            {detail.nationalRailLines.map((line, index, all) => (
-              <Fragment key={line.id}>
-                <TextLink href={`/lines/${line.id}`} inline underline="always">
-                  {line.name}
-                </TextLink>
-                {index < all.length - 2 ? ', ' : index === all.length - 2 ? ' and ' : '.'}
-              </Fragment>
-            ))}
-          </Text>
+          <LinkSentence
+            lead="On the National Rail network, with live trains and timetables there: "
+            links={detail.nationalRailLines.map((line) => ({ href: `/lines/${line.id}`, label: line.name }))}
+          />
         </Stack>
       )}
 

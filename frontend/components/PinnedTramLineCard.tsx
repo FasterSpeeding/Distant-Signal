@@ -1,27 +1,29 @@
-import { ColorSwatch, Group, Stack, Text } from '@mantine/core';
-import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
+import { Text } from '@mantine/core';
+import { StatusCard } from '@/components/StatusCard';
+import { TransitLineSwatch } from '@/components/TransitLineSwatch';
 import { TransitStatusBadge } from '@/components/TransitStatusBadge';
-import { lineColour, type PinnedTramLine } from '@/lib/transit';
+import { type PinnedTramLine } from '@/lib/transit';
 
-/** A pinned tram line on the home page: its name and network, its status
- * when the network has a disruptions feed, the whole card a link to its
- * line page. */
+/** A pinned tram line on the home page, in "Your lines" beside the
+ * National Rail lines' `LineStatusCard`s and built the same way
+ * (`StatusCard`): its colour and name (the card's link) with its status
+ * badge when the network has a disruptions feed, then its network. */
 export function PinnedTramLineCard({ pinned }: { pinned: PinnedTramLine }) {
   const { network, networkName, line } = pinned;
   return (
-    <ClickableCard>
-      <Stack gap={6} align="flex-start">
-        <Group gap="xs" wrap="nowrap">
-          <ColorSwatch color={lineColour(line)} size={14} withShadow={false} aria-hidden="true" />
-          <Text fw={600}>
-            <CardTitleLink href={`/transit/${network}/lines/${line.lineId}`}>{line.name}</CardTitleLink>
-          </Text>
-        </Group>
-        <Text size="sm" c="dimmed">
-          {networkName}
-        </Text>
-        <TransitStatusBadge status={line.status} />
-      </Stack>
-    </ClickableCard>
+    <StatusCard
+      href={`/transit/${network}/lines/${line.lineId}`}
+      title={
+        <>
+          <TransitLineSwatch line={line} inline />
+          {line.name}
+        </>
+      }
+      badge={<TransitStatusBadge status={line.status} />}
+    >
+      <Text size="xs" c="dimmed">
+        {networkName}
+      </Text>
+    </StatusCard>
   );
 }

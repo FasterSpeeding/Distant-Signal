@@ -1,5 +1,6 @@
-/* `TransitLineList`: one column on a phone, two from `sm`, three from
-   `lg`; every card in a row as tall as the tallest. */
+/* `LineStatusRowList`: one column on a phone, two from `sm`, three from
+   `lg` (or two at most, `data-columns="2"`); every card in a row as tall
+   as the tallest. */
 
 .grid {
   display: grid;
@@ -14,7 +15,7 @@
 }
 
 @media (min-width: 75em) {
-  .grid {
+  .grid:not([data-columns='2']) {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }

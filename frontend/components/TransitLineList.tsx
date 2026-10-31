@@ -1,21 +1,16 @@
 import type { ReactNode } from 'react';
-import { Box, Stack, Text } from '@mantine/core';
-import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
-import { StatusRow } from '@/components/StatusRow';
+import { LineStatusRow, LineStatusRowDetail, LineStatusRowItem, LineStatusRowList } from '@/components/LineStatusRow';
 import { lineDisruptions, TransitLineDisruption } from '@/components/TransitDisruptionSummary';
-import { TransitLineSwatch } from '@/components/TransitLineSwatch';
 import { TransitStatusBadge } from '@/components/TransitStatusBadge';
 import { isGoodSeverity } from '@/lib/severity';
 import type { TransitLine, TransitLineStatus } from '@/lib/types';
-import classes from './TransitLineList.module.css';
 
 type ListedLine = TransitLine & { status?: TransitLineStatus };
 
-/** A network's lines as compact rows, the page's main way in: one card
- * per line, its colour, name (the link to its page, stretched over the
- * card) and status badge on one line, then its disruption summary. One
- * column on a phone, two from `sm`, three from `lg`, so seven Metrolink
- * lines or eleven Tube lines read at a glance.
+/** A network's lines as `LineStatusRow`s, the page's main way in: each
+ * line's colour, name and status badge, then its disruption summary, in
+ * the rows' 1/2/3-column grid, so seven Metrolink lines or eleven Tube
+ * lines read at a glance.
  *
  * `summary` fills each row's second line: the network page passes the
  * line's disruption summary there. By default a line with published
@@ -35,33 +30,25 @@ export function TransitLineList({
 }: {
   network: string;
   lines: ListedLine[];
-  /** The list's accessible name ("Underground lines"). */
+  /** The list's accessible name ("Underground"). */
   label: string;
   summary?: (line: ListedLine) => ReactNode;
 }) {
   return (
-    <Box component="ul" className={`ds-plain-list ${classes.grid}`} aria-label={label}>
+    <LineStatusRowList label={label}>
       {lines.map((line) => (
-        <li key={line.id} className={classes.item}>
-          <ClickableCard padding="xs" fill>
-            <Stack gap={2}>
-              <StatusRow
-                title={
-                  <Box className={classes.name}>
-                    <TransitLineSwatch line={line} />
-                    <Text fw={600} lineClamp={1} miw={0}>
-                      <CardTitleLink href={`/transit/${network}/lines/${line.lineId}`}>{line.name}</CardTitleLink>
-                    </Text>
-                  </Box>
-                }
-                trailing={<TransitStatusBadge status={line.status} />}
-              />
-              {summary(line)}
-            </Stack>
-          </ClickableCard>
-        </li>
+        <LineStatusRowItem key={line.id}>
+          <LineStatusRow
+            href={`/transit/${network}/lines/${line.lineId}`}
+            name={line.name}
+            colour={line}
+            badge={<TransitStatusBadge status={line.status} />}
+          >
+            {summary(line)}
+          </LineStatusRow>
+        </LineStatusRowItem>
       ))}
-    </Box>
+    </LineStatusRowList>
   );
 }
 
@@ -88,10 +75,10 @@ export function TransitLineStatusSummary({
   const text = lineName ? withoutLinePrefix(raw, lineName) : raw;
   const more = problems.length - 1;
   return (
-    <Text size="sm" c="dimmed" lineClamp={2} data-line-summary>
+    <LineStatusRowDetail data-line-summary>
       {text}
       {more > 0 && ` (and ${more} more)`}
-    </Text>
+    </LineStatusRowDetail>
   );
 }
 

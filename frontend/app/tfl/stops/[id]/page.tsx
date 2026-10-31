@@ -1,11 +1,11 @@
-import { Alert, Badge, Group, SimpleGrid, Stack, Text, Title } from '@mantine/core';
+import { Alert, Badge, Group, SimpleGrid, Stack, Title } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { ButtonLink } from '@/components/ButtonLink';
 import { LastUpdated } from '@/components/LastUpdated';
 import { LineStatusCard } from '@/components/LineStatusCard';
+import { LinkSentence } from '@/components/LinkSentence';
 import { SectionTitle } from '@/components/SectionTitle';
-import { TextLink } from '@/components/TextLink';
 import { TflArrivalsBoard } from '@/components/TflArrivalsBoard';
 import { TflStopTimetable } from '@/components/TflStopTimetable';
 import {
@@ -169,19 +169,13 @@ export default async function TflStopPage({ params, searchParams }: Params & Sea
             </Badge>
           ))}
         </Group>
-        {rail.length > 0 && (
-          <Text size="sm">
-            {rail.length > 1 ? 'National Rail stations here: ' : 'National Rail station here: '}
-            {rail.map((station, index) => (
-              <span key={station.crs}>
-                {index > 0 && ', '}
-                <TextLink href={`/stations/${encodeURIComponent(station.crs)}`} underline="always" inline>
-                  {stationLabel(station.crs, station.name)}
-                </TextLink>
-              </span>
-            ))}
-          </Text>
-        )}
+        <LinkSentence
+          lead={rail.length > 1 ? 'National Rail stations here: ' : 'National Rail station here: '}
+          links={rail.map((station) => ({
+            href: `/stations/${encodeURIComponent(station.crs)}`,
+            label: stationLabel(station.crs, station.name),
+          }))}
+        />
         <Group>
           <ButtonLink href={journeyFromTflStopHref(stop.id)} variant="default">
             Add as a journey leg
@@ -229,19 +223,10 @@ export default async function TflStopPage({ params, searchParams }: Params & Sea
               ))}
             </SimpleGrid>
           )}
-          {unreported.length > 0 && (
-            <Text size="sm">
-              {lineStatus.length > 0 ? 'Also here: ' : 'Lines here: '}
-              {unreported.map((line, index) => (
-                <span key={line.id}>
-                  {index > 0 && ', '}
-                  <TextLink href={tflLineHref(line.id)} underline="always" inline>
-                    {line.name}
-                  </TextLink>
-                </span>
-              ))}
-            </Text>
-          )}
+          <LinkSentence
+            lead={lineStatus.length > 0 ? 'Also here: ' : 'Lines here: '}
+            links={unreported.map((line) => ({ href: tflLineHref(line.id), label: line.name }))}
+          />
         </Stack>
       )}
     </Stack>

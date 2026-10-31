@@ -88,7 +88,7 @@ describe('/transit/[network]/stops/[stop]', () => {
     });
     await render();
     expect(screen.getByText(/Change for National Rail/).textContent).toBe(
-      'Change for National Rail at Manchester Piccadilly',
+      'Change for National Rail at Manchester Piccadilly.',
     );
     expect(screen.getByRole('link', { name: 'Manchester Piccadilly' }).getAttribute('href')).toBe('/stations/MAN');
     cleanup();
