@@ -7,6 +7,7 @@ import { RAIL_TRAM_RAIL, REPLACEMENT_BUS_LEG, TRAM_ONLY } from '@/test/transitPl
 const NAMES = new Map([
   ['EUS', 'London Euston'],
   ['KGX', 'London Kings Cross'],
+  ['VIC', 'London Victoria'],
 ]);
 const nameFor = (code: string) => NAMES.get(code);
 
@@ -275,6 +276,33 @@ describe('itineraryLegsForSaving', () => {
     });
   });
 
+  it('saves a TRANSFER link between two different stations as an untracked transfer leg on its times', () => {
+    // The timetable's TRANSFER links are often real hops between stations:
+    // Euston to Victoria is a 19-minute one. Arrives Euston 09:50 BST.
+    const legs = itineraryLegsForSaving(
+      [
+        itinerary([
+          train('T1', 'MKC', 'EUS', '09:00:00', '09:50:00'),
+          transfer('TRANSFER', 'EUS', 'VIC', 19),
+          train('T2', 'VIC', 'BTN', '10:30:00', '11:30:00'),
+        ]),
+      ],
+      nameFor,
+    );
+    expect(legs).toEqual([
+      { trainUid: 'T1', serviceDate: '2026-10-21', originCrs: 'MKC', destinationCrs: 'EUS' },
+      {
+        kind: 'untracked',
+        transitMode: 'transfer',
+        originName: 'London Euston',
+        destinationName: 'London Victoria',
+        plannedDeparture: '2026-10-21T08:50:00.000Z',
+        plannedArrival: '2026-10-21T09:09:00.000Z',
+      },
+      { trainUid: 'T2', serviceDate: '2026-10-21', originCrs: 'VIC', destinationCrs: 'BTN' },
+    ]);
+  });
+
   it('keeps one leg for a train ridden through a waypoint, and leaves out a change within a station', () => {
     const legs = itineraryLegsForSaving(
       [
@@ -312,6 +340,26 @@ describe('transferAsUntracked', () => {
         nameFor,
       ),
     ).toBeNull();
+    expect(
+      transferAsUntracked(
+        { kind: 'transfer', mode: 'TRANSFER', originCrs: 'eus', destinationCrs: 'EUS', minutes: 5 },
+        nameFor,
+      ),
+    ).toBeNull();
+    // A TRANSFER between two stations is a journey of its own (Euston to
+    // Victoria, 19 minutes), as is one with a TIPLOC end, named at its CRS.
+    expect(
+      transferAsUntracked(
+        { kind: 'transfer', mode: 'TRANSFER', originCrs: 'EUS', destinationCrs: 'VIC', minutes: 19 },
+        nameFor,
+      ),
+    ).toEqual({ transitMode: 'transfer', originName: 'London Euston', destinationName: 'London Victoria' });
+    expect(
+      transferAsUntracked(
+        { kind: 'transfer', mode: 'TRANSFER', originCrs: 'tiploc:STRATFD', destinationCrs: 'KGX', minutes: 12 },
+        nameFor,
+      ),
+    ).toEqual({ transitMode: 'transfer', destinationName: 'London Kings Cross' });
   });
 
   it("takes a Tube transfer's TfL stops, names and ids, where the plan has them", () => {
