@@ -11,7 +11,7 @@ import { TransitLineList } from '@/components/TransitLineList';
 import { getTransitNetwork, getTransitSituations, getTransitStops } from '@/lib/api';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
 import { orNotFound, TRANSIT_ID, transitStopHref } from '@/lib/transit';
-import { groupLinesByMode } from '@/lib/transitModes';
+import { groupLinesByMode, networkModesPhrase } from '@/lib/transitModes';
 
 interface Params {
   params: Promise<{ network: string }>;
@@ -23,7 +23,9 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { network } = await params;
   if (!TRANSIT_ID.test(network)) notFound();
   const detail = await orNotFound(getTransitNetwork(network));
-  return pageMetadata(detail.name, `${detail.name}: lines, stops and scheduled times.`, {
+  const modes = networkModesPhrase(detail);
+  const description = `${detail.name}: ${modes ? `${modes} lines` : 'lines'}, stops and scheduled times.`;
+  return pageMetadata(detail.name, description, {
     path: `/transit/${encodeURIComponent(network)}`,
     imageAlt: previewImageAlt(detail.name),
   });
@@ -49,15 +51,17 @@ export default async function TransitNetworkPage({ params, searchParams }: Param
   const fromTfl = detail.statusSource === 'tfl';
   const groups = groupLinesByMode(detail.lines);
   const hasFeed = (detail.status?.state ?? 'none') !== 'none';
+  // Only the TfL network has live data (TfL's arrivals, on each stop's
+  // `/tfl/stops/{id}` page); any other says it has none, in its own modes.
+  const modes = networkModesPhrase(detail);
+  const notice = fromTfl
+    ? "Scheduled times from TfL's timetable, and TfL's line status. Each stop's page has live arrivals."
+    : `Scheduled times from the published timetable. We don't have live ${modes ? `${modes} ` : ''}times.`;
   return (
     <Stack p="lg" gap="lg">
       <Stack gap={4}>
         <Title order={1}>{detail.name}</Title>
-        <Text c="dimmed">
-          {fromTfl
-            ? "Scheduled times from TfL's timetable, and TfL's line status. Each stop's page has live arrivals."
-            : "Scheduled times from the published timetable. We don't have live tram times."}
-        </Text>
+        <Text c="dimmed">{notice}</Text>
       </Stack>
 
       {groups.map((group) => (

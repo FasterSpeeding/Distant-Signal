@@ -59,7 +59,7 @@ describe('/transit/[network]/lines/[line]/timetable', () => {
     );
   });
 
-  it('shows a stops-by-trams grid for the window, labelled as not live', async () => {
+  it('shows a stops-by-trips grid for the window, labelled as not live', async () => {
     await render({ date: '2026-10-14', from: '07:00' });
     expect(api.getTransitLineTimetable).toHaveBeenLastCalledWith('metrolink', 'blue', {
       date: '2026-10-14',
@@ -86,7 +86,7 @@ describe('/transit/[network]/lines/[line]/timetable', () => {
     expect(screen.getByRole('link', { name: 'Later' }).getAttribute('href')).toContain('from=10%3A00');
   });
 
-  it('says when there are no trams or no published timetable', async () => {
+  it('says when there are no departures or no published timetable', async () => {
     vi.mocked(api.getTransitLineTimetable).mockResolvedValue({ ...TIMETABLE, trips: [] });
     await render({ date: '2026-10-14', from: '02:00' });
     expect(screen.getByText('No scheduled departures in this window.')).toBeTruthy();

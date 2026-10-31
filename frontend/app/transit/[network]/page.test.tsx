@@ -150,9 +150,21 @@ describe('/transit/[network]', () => {
     expect(api.getTransitNetwork).not.toHaveBeenCalledWith('Metro Link');
   });
 
-  it('titles the page with the network name', async () => {
+  it("doesn't call the TfL network's Tube and DLR lines trams", async () => {
+    // Victoria, the DLR and Central: no tram line, so no tram anywhere.
+    vi.mocked(api.getTransitNetwork).mockResolvedValue(TFL_NETWORK);
+    vi.mocked(api.getTransitStops).mockResolvedValue([]);
+    renderWithMantine(await TransitNetworkPage(params('tfl')));
+    expect(document.body.textContent).not.toMatch(/tram/i);
+    const meta = await generateMetadata(params('tfl'));
+    expect(meta.description).toBe('London (TfL): Tube and DLR lines, stops and scheduled times.');
+    expect(JSON.stringify(meta)).not.toMatch(/tram/i);
+  });
+
+  it('titles the page with the network name, and describes it by its modes', async () => {
     const meta = await generateMetadata(params('metrolink'));
     expect(meta.title).toBe('Manchester Metrolink');
+    expect(meta.description).toBe('Manchester Metrolink: tram lines, stops and scheduled times.');
   });
 });
 

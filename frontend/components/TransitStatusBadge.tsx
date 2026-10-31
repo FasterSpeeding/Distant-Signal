@@ -2,7 +2,7 @@ import { StatusBadge } from '@/components/StatusBadge';
 import type { TransitLineStatus } from '@/lib/types';
 import { StateBadge } from '@/components/StateBadge';
 
-/** A tram line's headline status: the first of its statuses ("Minor
+/** A transit line's headline status: the first of its statuses ("Minor
  * delays", "No reported disruption"), or "Status unavailable" once the
  * network's disruptions are over 30 minutes old. Nothing while the network
  * has no disruptions feed (`state: none`), so a network served without one

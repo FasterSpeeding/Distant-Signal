@@ -14,6 +14,29 @@ const MODE_LABELS: Readonly<Record<string, string>> = {
   tram: 'Trams',
 };
 
+/** A mode as running text names it: "Tube", "DLR", "tram". */
+const MODE_NOUNS: Readonly<Record<string, string>> = {
+  tube: 'Tube',
+  dlr: 'DLR',
+  tram: 'tram',
+};
+
+/** What a network's lines run, for running text and descriptions: "tram"
+ * for Metrolink and NET, "Tube, DLR and tram" for TfL. Each line's own
+ * mode, else the network's, in the order they first appear. `null` when a
+ * mode has no word here, so the copy stays mode-neutral rather than guess. */
+export function networkModesPhrase(network: {
+  mode: string;
+  lines: readonly Pick<TransitLine, 'mode'>[];
+}): string | null {
+  const modes = [...new Set(network.lines.map((line) => line.mode || network.mode))];
+  const nouns = (modes.length > 0 ? modes : [network.mode]).map((mode) => MODE_NOUNS[mode]);
+  const words = nouns.filter((noun) => noun !== undefined);
+  const last = words.at(-1);
+  if (words.length !== nouns.length || last === undefined) return null;
+  return words.length === 1 ? last : `${words.slice(0, -1).join(', ')} and ${last}`;
+}
+
 /** The lines grouped by mode, in the order their modes first appear (the
  * api's line order). One group, with no label, when every line shares a
  * mode or the api sends none: a single-mode network keeps one list. */
