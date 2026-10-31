@@ -34,7 +34,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use chrono::NaiveDate;
 use schedule_query::{
-    ChangeTime, Connection, InterchangeData, fixed_links_from, minimum_change_time,
+    ChangeTime, Connection, InterchangeData, fixed_links_from_where, minimum_change_time,
     normalize_tiploc, sibling_tiplocs,
 };
 
@@ -555,7 +555,10 @@ impl<'a> Scan<'a> {
         let Some(crs) = interchange.tiploc_to_crs.get(from.tiploc) else {
             return;
         };
-        for link in fixed_links_from(interchange, crs, self.date, from.at_min) {
+        let restrictions = self.restrictions;
+        for link in fixed_links_from_where(interchange, crs, self.date, from.at_min, |link| {
+            restrictions::allows_link(restrictions, link)
+        }) {
             let arrival = from.at_min + link.minutes as u32;
             let Some(destination_tiplocs) = interchange.crs_to_tiplocs.get(&link.to_crs) else {
                 continue;
@@ -1115,6 +1118,7 @@ mod tests {
         interchange.fixed_links_from_crs.insert(
             "EUS".to_string(),
             vec![schedule_query::FixedLink {
+                only_without: schedule_query::OperatorId::UNKNOWN,
                 operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "TUBE".to_string(),
                 to_crs: "KGX".to_string(),
@@ -1282,6 +1286,7 @@ mod tests {
                 .insert(crs.to_string(), vec![tiploc.to_string()]);
         }
         let link = |minutes: i32| schedule_query::FixedLink {
+            only_without: schedule_query::OperatorId::UNKNOWN,
             operator: schedule_query::OperatorId::UNKNOWN,
             mode: "WALK".to_string(),
             to_crs: "ZZZ".to_string(),

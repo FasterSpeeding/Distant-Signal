@@ -17,7 +17,7 @@
 //! destination), so no journey can pass through a virtual stop on its way
 //! somewhere else.
 
-use schedule_query::{FixedLink, InterchangeData};
+use schedule_query::{FixedLink, InterchangeData, OperatorId};
 
 /// One access (or egress) link between a virtual stop and a station.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +32,9 @@ pub struct AccessLink {
     /// every day; empty means all day. A window past midnight is given as
     /// two (`0530`-`2359` and `0000`-`0030`).
     pub windows: Vec<(String, String)>,
+    /// Who runs the ride (`LT` for the Tube, a `ds:` operator for the DLR
+    /// or a tram), for operator filters; [`OperatorId::UNKNOWN`] for a walk.
+    pub operator: OperatorId,
 }
 
 /// One virtual end of a journey: its code (used as both its CRS and its
@@ -53,7 +56,8 @@ fn fixed_links(to_crs: &str, link: &AccessLink) -> Vec<FixedLink> {
     windows
         .into_iter()
         .map(|(valid_from, valid_to)| FixedLink {
-            operator: schedule_query::OperatorId::UNKNOWN,
+            only_without: OperatorId::UNKNOWN,
+            operator: link.operator,
             mode: link.mode.clone(),
             to_crs: to_crs.to_owned(),
             minutes: link.minutes,
@@ -134,6 +138,7 @@ mod tests {
 
     fn link(crs: &str, minutes: i32) -> AccessLink {
         AccessLink {
+            operator: OperatorId::UNKNOWN,
             crs: crs.to_owned(),
             mode: "TUBE".to_owned(),
             minutes,

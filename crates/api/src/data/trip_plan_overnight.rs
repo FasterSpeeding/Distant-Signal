@@ -344,6 +344,7 @@ mod tests {
     fn one_side_empty_keeps_the_other_and_clears_the_reason() {
         let mut earlier = plan(Vec::new(), Some(1470));
         earlier[0].no_result_reason = Some(super::super::trip_planning_itinerary::NoResultReason {
+            link_operators: Vec::new(),
             constraint: "arriveBy",
             values: vec!["00:30".to_string()],
             message: "none".to_string(),
@@ -355,6 +356,7 @@ mod tests {
         // Both empty: the request date's own reason stays.
         let mut earlier = plan(Vec::new(), Some(1470));
         earlier[0].no_result_reason = Some(super::super::trip_planning_itinerary::NoResultReason {
+            link_operators: Vec::new(),
             constraint: "arriveBy",
             values: Vec::new(),
             message: "none".to_string(),

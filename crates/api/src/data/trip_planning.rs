@@ -240,6 +240,7 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
                 (
                     row.from_crs,
                     FixedLink {
+                        only_without: schedule_query::OperatorId::UNKNOWN,
                         operator: schedule_query::OperatorId::UNKNOWN,
                         mode: row.mode,
                         to_crs: row.to_crs,
@@ -287,6 +288,7 @@ pub fn supplementary_link_rows(
         (
             link.from_crs.clone(),
             FixedLink {
+                only_without: schedule_query::OperatorId::UNKNOWN,
                 operator: schedule_query::OperatorId::UNKNOWN,
                 mode: link.mode.clone(),
                 to_crs: link.to_crs.clone(),
@@ -347,6 +349,7 @@ pub fn add_parent_walk_links(
             .and_then(|row| row.walk_minutes);
         let walk = common::tiploc_parents::walk_minutes(link.distance_m, curated_minutes);
         let walk_link = |to_crs: &str, minutes: i32| FixedLink {
+            only_without: schedule_query::OperatorId::UNKNOWN,
             operator: schedule_query::OperatorId::UNKNOWN,
             mode: PARENT_WALK_MODE.to_string(),
             to_crs: to_crs.to_string(),
@@ -515,6 +518,9 @@ pub struct PlanningGraph {
     /// `schedule_services`: what `connections`' `operator` was set from, and
     /// what leg details and replans read a train's operator from.
     pub operators: crate::data::planner_operators::OperatorTable,
+    /// Every operator with a connection or a link in this graph: what an
+    /// operator filter's `operatorsNotRunning` is checked against.
+    pub running: schedule_query::OperatorMask,
 }
 
 /// When `schedule-reference` last finished publishing a delivery
@@ -1317,6 +1323,7 @@ mod supplementary_link_tests {
         let alf = (
             "EUS".to_string(),
             FixedLink {
+                only_without: schedule_query::OperatorId::UNKNOWN,
                 operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "TUBE".to_string(),
                 to_crs: "VXH".to_string(),
@@ -1354,6 +1361,7 @@ mod supplementary_link_tests {
         (
             from.to_string(),
             FixedLink {
+                only_without: schedule_query::OperatorId::UNKNOWN,
                 operator: schedule_query::OperatorId::UNKNOWN,
                 mode: "TUBE".to_string(),
                 to_crs: to.to_string(),

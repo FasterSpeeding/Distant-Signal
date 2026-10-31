@@ -31,6 +31,7 @@ pub mod leg_validation;
 pub mod line_train_summaries;
 pub mod notification_settings;
 pub mod notifications;
+pub mod operator_groups;
 pub mod operators;
 pub mod planner_operators;
 pub mod platform_confirmation;

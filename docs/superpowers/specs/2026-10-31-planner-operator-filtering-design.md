@@ -52,6 +52,31 @@ And on 2026-10-31, answering the first draft:
 10. [Tests](#10-tests)
 11. [Decisions and proposed defaults](#11-decisions-and-proposed-defaults)
 
+## Errata from the build (2026-10-31)
+
+Found while building P0 and P1:
+
+- **NCZ–NOP is the Tyne and Wear Metro, not NET.** NOP is Northumberland
+  Park (Tyne & Wear). `reference-data/fixed-link-operators.csv` gives it
+  `TW`, the Metro's own ATOC code. No `METRO` link is NET's.
+- **`LF` is identified** from the timetable (§11 item 9). It runs 10
+  express passenger trains a weekday under open-access retail service IDs:
+  London Euston to Stirling and back via Preston, Carlisle, Motherwell and
+  Larbert, plus Preston to Euston and back. That is Grand Union's
+  Euston to Stirling service. `reference-data/operator-names.csv` records it,
+  with the evidence.
+- **The "only five of ten" budget on a Connection Scan** is 1.5x, not
+  +5%. One of the 20 bench pairs loses its route, and a scan with no answer
+  runs to the end of the day (§7.3).
+- **`preferOperator` ships with P3**, not P1: P1's API has `operator` and
+  `avoidOperator` only.
+- **`noResultReason.values`** for `operator` / `avoidOperator` lists the
+  codes in code order, not request order. The echoed `operator` and
+  `avoidOperator` keep request order.
+- **Group members aren't checked against the timetable.** Only ATOC codes
+  named directly are. A group may hold a code that runs nothing that week;
+  `operatorsNotRunning` says so.
+
 ## 1. Summary
 
 - **Control.** One "Operators" field in `/plan`'s Advanced options: a
@@ -294,7 +319,7 @@ The other networks DS can attribute have no ATOC code at all:
 | DLR | `METRO` links CUS–SRA, CUS–WEH, CWX–GNW, CWX–LEW, CWX–SRA, SRA–GNW, SRA–LEW | `dlr` line (45 stops) | TfL P4 |
 | London Trams | `METRO` link ELE–BKJ | `tram` line (39 stops) | TfL P4 |
 | Metrolink | `METRO` links around ALT, DGT, MAN, MCV, TIM, RCD, NVR, XNA (about 1,700 rows) | none | `metrolink:<n>` (DS-164) |
-| NET (Nottingham) | `METRO` link NCZ–NOP | none | `net:<n>` |
+| NET (Nottingham) | none | none | `net:<n>` |
 
 The Elizabeth line (`XR`) and the Overground (`LO`) run only as CIF
 trains. They have no fixed links, `tfl_stops` lists none of their lines,
@@ -1078,7 +1103,7 @@ without an operator parameter, after P0's fast path:
 | Case | Budget |
 |---|---|
 | avoid, any search | ≤ +5% CPU |
-| only (≥ half the operators) | ≤ +5% CPU |
+| only (≥ half the operators) | ≤ +5% CPU on arrive-by and RAPTOR; ≤ 1.5x on CSA (a pair left with no route scans to the end of the day; measured 1.12x) |
 | only (one operator), `fastest` | ≤ 3× CPU (bounded by one full-day scan) |
 | link filtering, with the synthetic links | ≤ +2% CPU |
 | `preferOperator`, options | ≤ +10% CPU |
@@ -1284,7 +1309,8 @@ so:
      timetable already names;
    - record the finding in the reference data with the evidence.
 
-   Until then the picker shows the bare code "LF", as the Trains search
+   Done in P1 (see "Errata from the build"): Grand Union. Before that,
+   the picker would have shown the bare code "LF", as the Trains search
    does.
 10. **The Trains search** can use the planner's `running` flag and
     aliases, so "West Midlands Railway" stops matching nothing on
