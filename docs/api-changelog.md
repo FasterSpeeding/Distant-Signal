@@ -3,6 +3,15 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-11-01: station search answered from memory
+
+`GET /public/stations?q=` now matches against a list of every station
+the api keeps in memory and reads again every five minutes, instead of an
+`ILIKE` scan per request. The matches and their order are the same; a
+station added or renamed is found within five minutes. The `?stops=true`
+bus stops and ferry terminals are still read per request. DS-MCP needs no
+change.
+
 ## 2026-10-31: one transit disruption, `GET /public/transit/{network}/situations/{situationId}`
 
 New, unauthenticated, cached for a minute like the other transit reads

@@ -7,9 +7,13 @@
 //! macros need a live DB or a checked-in `.sqlx` cache at compile time,
 //! which this workspace deliberately doesn't carry.
 
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
+
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgPool;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -82,7 +86,9 @@ pub struct NearbyStation {
 /// The substring matching *is* still enough -- the WHERE clause is
 /// unchanged and nothing that matched before stops matching -- but the
 /// ordering was not. Still no `pg_trgm`, still no index: the CASE is
-/// evaluated on rows the existing sequential scan already produced.
+/// evaluated on rows the existing sequential scan already produced. The
+/// route now serves the same answer from memory ([`search_stations_cached`]);
+/// this query is the reference it is tested against.
 ///
 /// Two callers depend on this ordering for correctness, not just display:
 /// `StationSearchForm`'s "Look up" button navigates to `suggestions[0]`
@@ -144,6 +150,115 @@ pub async fn search_stations(pool: &PgPool, q: &str, limit: i64) -> Result<Vec<S
     .fetch_all(pool)
     .await?;
     Ok(rows)
+}
+
+/// How long [`search_stations_cached`] serves its in-memory list before
+/// reading `stations` again: a new or renamed station is found within this.
+const STATION_LIST_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// One station of the in-memory list, with its lower-cased match keys.
+#[derive(Debug, Clone)]
+pub(crate) struct ListedStation {
+    code: String,
+    name: String,
+    code_key: String,
+    name_key: String,
+}
+
+impl ListedStation {
+    fn new(code: String, name: String) -> Self {
+        Self {
+            code_key: code.trim().to_lowercase(),
+            name_key: name.to_lowercase(),
+            code,
+            name,
+        }
+    }
+}
+
+struct StationList {
+    loaded_at: Instant,
+    stations: Arc<[ListedStation]>,
+}
+
+static STATION_LIST: LazyLock<Mutex<Option<StationList>>> = LazyLock::new(|| Mutex::new(None));
+
+/// Every station, in the database's own name order (its collation, so the
+/// in-memory ranking breaks ties exactly as `ORDER BY name` does).
+pub(crate) async fn load_station_list(pool: &PgPool) -> Result<Vec<ListedStation>> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT crs, name FROM stations ORDER BY name, crs")
+            .fetch_all(pool)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(code, name)| ListedStation::new(code, name))
+        .collect())
+}
+
+/// [`search_stations`]'s answer, from a list of every station kept in
+/// memory and read again every [`STATION_LIST_TTL`]: what
+/// `GET /public/stations?q=` serves (2026-11-01). `stations` is about 2,600
+/// rows (prod, 2026-11-01), so matching them all here takes microseconds,
+/// where the query's sequential `ILIKE` scan took about 2.5 ms a keystroke
+/// (`pg_stat_statements`, prod). A `pg_trgm` index was the alternative, but
+/// on a table this small the planner often prefers the scan anyway, and
+/// the migration role can't create the extension (it has no `CREATE` on
+/// the database). One load at a time: the lock is held across the read.
+pub async fn search_stations_cached(pool: &PgPool, q: &str, limit: i64) -> Result<Vec<Suggestion>> {
+    let stations = {
+        let mut list = STATION_LIST.lock().await;
+        match list.as_ref() {
+            Some(loaded) if loaded.loaded_at.elapsed() < STATION_LIST_TTL => {
+                Arc::clone(&loaded.stations)
+            }
+            _ => {
+                let stations: Arc<[ListedStation]> = load_station_list(pool).await?.into();
+                *list = Some(StationList {
+                    loaded_at: Instant::now(),
+                    stations: Arc::clone(&stations),
+                });
+                stations
+            }
+        }
+    };
+    Ok(match_stations(&stations, q, limit))
+}
+
+/// [`search_stations`]'s matching and ranking over `stations` (in name
+/// order): `q` as a case-insensitive, literal substring of the code or the
+/// name; an exact code first, then a name starting with `q`, then the
+/// rest, each tier in name order; at most `limit`.
+pub(crate) fn match_stations(stations: &[ListedStation], q: &str, limit: i64) -> Vec<Suggestion> {
+    let key = q.to_lowercase();
+    let mut hits: Vec<(u8, usize)> = stations
+        .iter()
+        .enumerate()
+        .filter(|(_, station)| station.code_key.contains(&key) || station.name_key.contains(&key))
+        .map(|(position, station)| {
+            let tier = if station.code_key == key {
+                0
+            } else if station.name_key.starts_with(&key) {
+                1
+            } else {
+                2
+            };
+            (tier, position)
+        })
+        .collect();
+    hits.sort_unstable();
+    hits.into_iter()
+        .take(usize::try_from(limit).unwrap_or(0))
+        .map(|(_, position)| {
+            let station = &stations[position];
+            Suggestion {
+                code: station.code.clone(),
+                name: station.name.clone(),
+                kind: None,
+                parent_crs: None,
+            }
+        })
+        .collect()
 }
 
 /// Escapes the three characters `ILIKE` treats specially -- `%`, `_`, and
@@ -455,6 +570,61 @@ pub async fn station_accessibility(pool: &PgPool, crs: &str) -> Result<Option<se
     Ok(Some(filter_accessibility_fields(&full)))
 }
 
+/// The in-memory station match ([`match_stations`]) ranks and matches as
+/// [`search_stations`]'s SQL does; `db_tests` checks the two agree on a
+/// real table.
+#[cfg(test)]
+mod station_match_tests {
+    use super::*;
+
+    /// In name order, as `load_station_list` reads them.
+    fn list(rows: &[(&str, &str)]) -> Vec<ListedStation> {
+        rows.iter()
+            .map(|(code, name)| ListedStation::new((*code).to_owned(), (*name).to_owned()))
+            .collect()
+    }
+
+    fn codes(found: &[Suggestion]) -> Vec<&str> {
+        found.iter().map(|s| s.code.as_str()).collect()
+    }
+
+    #[test]
+    fn exact_code_then_name_prefix_then_substring_each_in_name_order() {
+        let stations = list(&[
+            ("BTY", "Bentley (South Yorkshire)"),
+            ("CLP", "Clapham (North Yorkshire)"),
+            ("YRK", "York"),
+            ("YRM", "Yarm"),
+            ("YRT", "Yorton"),
+        ]);
+        assert_eq!(
+            codes(&match_stations(&stations, "york", 20)),
+            ["YRK", "BTY", "CLP"]
+        );
+        // A code, any case, is first however its name sorts.
+        assert_eq!(codes(&match_stations(&stations, "yrt", 20)), ["YRT"]);
+        assert_eq!(
+            codes(&match_stations(&stations, "YR", 20)),
+            ["YRK", "YRM", "YRT"]
+        );
+    }
+
+    #[test]
+    fn matches_literally_and_caps_at_the_limit() {
+        let stations = list(&[
+            ("9PA", "Zeta 100% Fixture"),
+            ("9PB", "Zeta 1000 Fixture"),
+            ("9UA", "Z_YZ Sidings"),
+            ("9UB", "ZXYZ Sidings"),
+        ]);
+        assert_eq!(codes(&match_stations(&stations, "100%", 20)), ["9PA"]);
+        assert_eq!(codes(&match_stations(&stations, "z_yz", 20)), ["9UA"]);
+        assert!(match_stations(&stations, "9UA\\", 20).is_empty());
+        assert_eq!(codes(&match_stations(&stations, "zeta", 1)), ["9PA"]);
+        assert!(match_stations(&stations, "zeta", 0).is_empty());
+    }
+}
+
 /// Pure, no-database coverage of the [`ACCESSIBILITY_KEYS`] filter --
 /// deliberately not in `db_tests` below, so the allowlist's behaviour is
 /// asserted on every ordinary `cargo test -p api` run rather than only
@@ -632,6 +802,55 @@ mod db_tests {
             [format!("DELETE FROM stations WHERE crs IN ({list})")],
         )
         .await
+    }
+
+    /// The in-memory search (`search_stations_cached`, what the route
+    /// serves) answers as the SQL search does, on this database's own
+    /// collation, for a spread of queries over the fixtures and whatever
+    /// stations the database already holds.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                in_memory_station_search_matches_the_sql_search \
+                -- --ignored --test-threads=1`"]
+    async fn in_memory_station_search_matches_the_sql_search() {
+        let pool = connect().await;
+        let fixtures: [(&str, &str); 6] = [
+            ("9MA", "Zm St. Fixture"),
+            ("9MB", "Zm st Fixture"),
+            ("9MC", "zm Fixture (Lower)"),
+            ("9MD", "Fixture Zm"),
+            ("9ME", "Zm 100% Fixture"),
+            ("9MF", "Zm_Fixture"),
+        ];
+        let _cleanup = station_cleanup(&pool, &fixtures.map(|(crs, _)| crs)).await;
+        for (crs, name) in fixtures {
+            sqlx::query(
+                "INSERT INTO stations (crs, name) VALUES ($1, $2) \
+                 ON CONFLICT (crs) DO UPDATE SET name = EXCLUDED.name",
+            )
+            .bind(crs)
+            .bind(name)
+            .execute(&pool)
+            .await
+            .expect("seed fixture station");
+        }
+        let stations = load_station_list(&pool).await.expect("load stations");
+        for q in [
+            "zm", "ZM", "9m", "9ma", "fixture", "zm st", "100%", "zm_", "st.", "a", "lon", "york",
+            "cross", "-on-", "'s", "&", "(", "upon", "WAT", "é",
+        ] {
+            let sql: Vec<(String, String)> = search_stations(&pool, q, 20)
+                .await
+                .expect("sql search")
+                .into_iter()
+                .map(|s| (s.code, s.name))
+                .collect();
+            let memory: Vec<(String, String)> = match_stations(&stations, q, 20)
+                .into_iter()
+                .map(|s| (s.code, s.name))
+                .collect();
+            assert_eq!(memory, sql, "{q}");
+        }
     }
 
     #[tokio::test]
