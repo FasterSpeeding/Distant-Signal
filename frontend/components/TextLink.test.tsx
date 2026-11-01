@@ -90,7 +90,9 @@ describe('TextLink', () => {
     const credit = screen.getByRole('link', { name: 'the licence' });
     expect(credit).toHaveAttribute('data-text-link-tone', 'inherit');
     const text = screen.getByText('the licence');
-    expect(text).toHaveStyle({ color: 'inherit' });
+    // The inline style itself: jsdom 26+ resolves a computed `inherit` to
+    // the parent's colour, so `toHaveStyle` can't see the keyword.
+    expect(text.style.color).toBe('inherit');
     expect(text).toHaveAttribute('data-inherit', 'true');
   });
 

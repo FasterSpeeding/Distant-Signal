@@ -115,7 +115,12 @@ describe('/connect-claude', () => {
 
   it('puts the long connector URL in a field that can shrink, so it never runs off a phone-width screen', () => {
     renderWithMantine(ConnectClaudePage());
-    const field = screen.getByRole('textbox', { name: 'Connector URL' }).closest('.mantine-TextInput-root');
-    expect(field).toHaveStyle({ minWidth: '0rem', flex: '1 1 0%' });
+    const field = screen
+      .getByRole('textbox', { name: 'Connector URL' })
+      .closest<HTMLElement>('.mantine-TextInput-root');
+    // The inline style the component sets: jsdom 26+ resolves computed
+    // lengths (rem to px), so `toHaveStyle` would compare resolved values.
+    expect(field?.style.minWidth).toBe('0rem');
+    expect(field?.style.flex).toBe('1 1 0%');
   });
 });

@@ -73,10 +73,15 @@ export function AdvancedOptionsDisclosure({
       <AccordionItem value="advanced">
         <AccordionControl>
           Advanced options
+          {/* A real space, not a margin: the accessible name is built from
+              the text, so a margin-only gap read "Advanced options(1 set)". */}
           {status && (
-            <Text span size="sm" c={problems > 0 ? 'var(--ds-color-error-text)' : 'dimmed'} ml={6}>
-              ({status})
-            </Text>
+            <>
+              {' '}
+              <Text span size="sm" c={problems > 0 ? 'var(--ds-color-error-text)' : 'dimmed'}>
+                ({status})
+              </Text>
+            </>
           )}
         </AccordionControl>
         {!opened && summary && (

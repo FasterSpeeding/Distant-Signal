@@ -93,6 +93,21 @@ if (typeof window !== 'undefined' && !jsdomElementPrototype().scrollTo) {
   window.Element.prototype.scrollTo = vi.fn();
 }
 
+// Mantine's VisuallyHidden is `position: absolute`, which a browser
+// blockifies (computed `display: block`). Accessible-name computation
+// (dom-accessibility-api, behind Testing Library's `getByRole(..., { name })`)
+// puts a space around a non-inline child, so "<sr>10:32 </sr><sr>to </sr>PAD"
+// reads "10:32 to PAD" in a browser. Mantine's CSS isn't loaded under jsdom,
+// and since jsdom 26 an unstyled span really computes to `display: inline`,
+// which glues the words together ("10:32toPAD"); jsdom 25 and earlier
+// returned an empty `display` for everything, which happened to space them.
+// This one rule restores the browser's computed display for that class.
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.textContent = '.mantine-VisuallyHidden-root { display: block; }';
+  document.head.appendChild(style);
+}
+
 // jsdom's `window.localStorage` isn't a working Storage implementation in
 // this project's setup (e.g. `localStorage.setItem` isn't even a
 // function), but Mantine's color-scheme manager reads/writes it to
