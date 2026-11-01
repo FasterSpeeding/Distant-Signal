@@ -35,6 +35,7 @@ pub mod notifications;
 pub mod operator_groups;
 pub mod operators;
 pub mod planner_operators;
+pub mod planner_snapshot;
 pub mod platform_confirmation;
 pub mod preferences;
 pub mod pushport_platform;

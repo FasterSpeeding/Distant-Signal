@@ -668,3 +668,195 @@ async fn the_graph_cache_follows_publishes_and_feeds_and_prewarms() {
     cleanup(&pool, NETWORK).await;
     cleanup_rail(&pool).await;
 }
+
+/// DS-235: two graphs for one date, from Postgres and from the timetable
+/// snapshot, are the same graph: the same connections in the same order,
+/// pass rows, operators, bus and ferry buffer, and transit part.
+fn assert_same_graph(
+    date: NaiveDate,
+    expected: Option<&crate::data::trip_planning::PlanningGraph>,
+    actual: Option<&crate::data::trip_planning::PlanningGraph>,
+) {
+    let (Some(expected), Some(actual)) = (expected, actual) else {
+        assert_eq!(expected.is_some(), actual.is_some(), "{date}");
+        return;
+    };
+    assert_eq!(expected.connections, actual.connections, "{date}");
+    assert_eq!(expected.passes, actual.passes, "{date}");
+    assert_eq!(expected.operators, actual.operators, "{date}");
+    assert_eq!(
+        expected.interchange.modal_change, actual.interchange.modal_change,
+        "{date}"
+    );
+    assert_eq!(expected.running, actual.running, "{date}");
+    let (Some(expected), Some(actual)) = (&expected.transit, &actual.transit) else {
+        assert_eq!(
+            expected.transit.is_some(),
+            actual.transit.is_some(),
+            "{date}"
+        );
+        return;
+    };
+    assert_eq!(expected.networks, actual.networks, "{date}");
+    assert_eq!(expected.skipped, actual.skipped, "{date}");
+    assert_eq!(expected.stops, actual.stops, "{date}");
+    assert_eq!(
+        expected.interchange.modal_change, actual.interchange.modal_change,
+        "{date}"
+    );
+}
+
+async fn seed_services(pool: &PgPool) {
+    let owner = ds_store::test_support::schedule_fixture_pool(pool).await;
+    for date in [today(), tomorrow()] {
+        sqlx::query(
+            "INSERT INTO schedule_services (service_date, uid, mode, operator_atoc, stp) \
+             VALUES ($1, 'TESTTR1', 'train', 'VT', 'P'), ($1, 'TESTBUS', 'bus', NULL, 'P') \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&owner)
+        .await
+        .expect("seed services");
+    }
+}
+
+async fn cleanup_snapshots(pool: &PgPool) {
+    let owner = ds_store::test_support::schedule_fixture_pool(pool).await;
+    for sql in [
+        "DELETE FROM schedule_services WHERE uid IN ('TESTTR1', 'TESTBUS')",
+        "DELETE FROM planner_snapshots",
+        "DELETE FROM schedule_reference_publishes WHERE delivery LIKE 'TEST-DS235-%'",
+    ] {
+        sqlx::query(sql).execute(&owner).await.expect(sql);
+    }
+    crate::data::planner_snapshot::uninstall_for_tests();
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database); --test-threads=1"]
+async fn a_graph_from_the_snapshot_is_the_graph_from_postgres() {
+    use crate::data::planner_snapshot;
+
+    let pool = ds_store::test_support::connect().await;
+    cleanup_snapshots(&pool).await;
+    seed(&pool, NETWORK, today()).await;
+    seed_rail(&pool).await;
+    seed_services(&pool).await;
+    let _switch = set_switch_for_tests(&[NETWORK]);
+    let networks = vec![NETWORK.to_string()];
+    let marker = super::read_graph_marker(&pool, &networks).await.unwrap();
+    let dates: Vec<NaiveDate> = (-1..=2)
+        .map(|offset| today() + chrono::Duration::days(offset))
+        .collect();
+    let mut from_postgres = Vec::new();
+    for &date in &dates {
+        from_postgres.push(
+            super::build_planning_graph(&pool, date, &networks, &marker)
+                .await
+                .unwrap(),
+        );
+    }
+    assert!(from_postgres[1].is_some() && from_postgres[2].is_some());
+
+    // Built, stored, read back and decoded unchanged.
+    let snapshot = planner_snapshot::build(&pool, &networks).await.unwrap();
+    // It spans the dates with calling points; the others fall back to
+    // Postgres, and nothing is published there either way.
+    for &date in &dates {
+        assert_eq!(
+            snapshot.offset(date).is_some(),
+            date == today() || date == tomorrow(),
+            "{date}"
+        );
+    }
+    let version = planner_snapshot::version_for(&marker, &networks);
+    let bytes = planner_snapshot::encode(&snapshot).unwrap();
+    planner_snapshot::store(&pool, &version, &bytes)
+        .await
+        .unwrap();
+    let stored = planner_snapshot::load(&pool, &version)
+        .await
+        .unwrap()
+        .expect("the stored row");
+    assert_eq!(planner_snapshot::decode(&stored.bytes).unwrap(), snapshot);
+
+    // Installed from the stored row, then every date's graph built from it.
+    let hour = std::time::Duration::from_secs(3600);
+    assert_eq!(
+        planner_snapshot::ensure(&pool, &marker, &networks, hour)
+            .await
+            .unwrap(),
+        planner_snapshot::Outcome::Loaded
+    );
+    assert!(planner_snapshot::current(&marker, &networks).is_some());
+    for (date, expected) in dates.iter().zip(&from_postgres) {
+        let actual = super::build_planning_graph(&pool, *date, &networks, &marker)
+            .await
+            .unwrap();
+        assert_same_graph(*date, expected.as_ref(), actual.as_ref());
+    }
+
+    cleanup_snapshots(&pool).await;
+    cleanup(&pool, NETWORK).await;
+    cleanup_rail(&pool).await;
+}
+
+/// DS-235: the snapshot follows the graph cache's key: built once, current
+/// until a new publish, then built again for the new marker (and the old
+/// one no longer used); another process loads the stored row; one older
+/// than the max age is rebuilt.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database); --test-threads=1"]
+async fn the_snapshot_is_rebuilt_on_a_new_publish_and_loaded_elsewhere() {
+    use crate::data::planner_snapshot::{self, Outcome};
+
+    let pool = ds_store::test_support::connect().await;
+    cleanup_snapshots(&pool).await;
+    seed_rail(&pool).await;
+    let networks: Vec<String> = Vec::new();
+    let hour = std::time::Duration::from_secs(3600);
+    let ensure = |marker: crate::data::trip_planning::GraphMarker, max_age| {
+        let pool = pool.clone();
+        let networks = networks.clone();
+        async move {
+            planner_snapshot::ensure(&pool, &marker, &networks, max_age)
+                .await
+                .unwrap()
+        }
+    };
+    let marker = super::read_graph_marker(&pool, &networks).await.unwrap();
+    assert_eq!(ensure(marker.clone(), hour).await, Outcome::Built);
+    assert_eq!(ensure(marker.clone(), hour).await, Outcome::Current);
+
+    let owner = ds_store::test_support::schedule_fixture_pool(&pool).await;
+    sqlx::query(
+        "INSERT INTO schedule_reference_publishes (delivery, completed_at) \
+         SELECT 'TEST-DS235-1', COALESCE(max(completed_at), now()) + interval '1 second' \
+         FROM schedule_reference_publishes",
+    )
+    .execute(&owner)
+    .await
+    .unwrap();
+    let published = super::read_graph_marker(&pool, &networks).await.unwrap();
+    assert_ne!(published, marker);
+    assert!(planner_snapshot::current(&published, &networks).is_none());
+    assert_eq!(ensure(published.clone(), hour).await, Outcome::Built);
+    assert!(planner_snapshot::current(&published, &networks).is_some());
+    assert!(
+        planner_snapshot::current(&marker, &networks).is_none(),
+        "graphs for the old publish no longer use it"
+    );
+
+    // Another process (or this one restarted) loads the stored row.
+    planner_snapshot::uninstall_for_tests();
+    assert_eq!(ensure(published.clone(), hour).await, Outcome::Loaded);
+    // Past the max age, it is built again.
+    assert_eq!(
+        ensure(published.clone(), std::time::Duration::ZERO).await,
+        Outcome::Built
+    );
+
+    cleanup_snapshots(&pool).await;
+    cleanup_rail(&pool).await;
+}

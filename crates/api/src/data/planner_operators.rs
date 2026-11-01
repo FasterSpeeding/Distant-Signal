@@ -146,7 +146,7 @@ fn parse_metro_stations(csv: &str) -> HashMap<String, OperatorId> {
 }
 
 /// A date's UID -> operator, from `schedule_services` (spec §6.1).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OperatorTable {
     by_uid: HashMap<String, OperatorId>,
 }
