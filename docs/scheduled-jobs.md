@@ -11,6 +11,7 @@ one goes wrong. Alerts: [scheduled jobs](alerts.md#scheduled-jobs).
 | `<fullname>-poller-stations` (only with `pollers.stations.mode: cronjob`) | poller-stations, once: one fetch of the stations feed, written to Postgres in one transaction. 04:20 UTC. | `pollers.stations.cron` |
 | `<fullname>-poller-transit-schedule-tfl` (only with `pollerTransitSchedule.networks.tfl.timetableMode: cronjob`) | poller-transit-schedule for TfL, once: one timetable download, parse and publish onto `ds:ingest:transit-tfl`. 04:00 UTC. | `pollerTransitSchedule.networks.tfl.timetableCron` |
 | `<fullname>-poller-transit-schedule-metrolink` (only with `pollerTransitSchedule.networks.metrolink.timetableMode: cronjob`) | poller-transit-schedule for Metrolink's timetable, once, onto `ds:ingest:transit-metrolink`. 03:30 UTC. Its situations loop stays in the always-on Deployment of the same name. | `pollerTransitSchedule.networks.metrolink.timetableCron` |
+| `<fullname>-poller-tfl-daily` (only with `pollers.tfl.stops.mode: cronjob`) | poller-tfl's daily stops and route-sequences jobs, once each, onto `ds:ingest:tfl-stops`. 05:40 UTC. The status poll stays in the poller-tfl Deployment. | `pollers.tfl.stops.cron` |
 
 ## How a run behaves
 
@@ -65,10 +66,11 @@ suspended for an ordinary deploy.
 
 A worker with a `mode` value runs either as its always-on Deployment
 (`deployment`, the default) or as a CronJob (`cronjob`); the chart renders
-exactly one of them per loop, and CI checks it. Four have one, each a
+exactly one of them per loop, and CI checks it. Five have one, each a
 daily job that spends the rest of the day idle: `pollers.tocs.mode`,
-`pollers.stations.mode` and, for poller-transit-schedule's TfL and
-Metrolink networks, `pollerTransitSchedule.networks.<network>.timetableMode`. The CronJob comes from
+`pollers.stations.mode`, poller-tfl's daily jobs (`pollers.tfl.stops.mode`)
+and, for poller-transit-schedule's TfL and Metrolink networks,
+`pollerTransitSchedule.networks.<network>.timetableMode`. The CronJob comes from
 `distant-signal.cronWorkerSpec` with the defaults above, and its pods keep
 the component's labels, so its NetworkPolicies, Redis ACL user, database
 role and Secrets apply exactly as they did to the Deployment.
@@ -167,6 +169,34 @@ DistantSignalScheduledJobPending fires after 15 minutes, and the run fails
 at `activeDeadlineSeconds` (30 minutes). The next day's run, or a manual
 one, catches up within the 36-hour freshness allowance.
 
+### poller-tfl's daily jobs
+
+poller-tfl runs a five-minute line-status poll and, while
+`pollers.tfl.stops.enabled`, two daily jobs: the stops job and (with
+`stops.routes`) the route-sequences job, about 110 TfL calls in all.
+`TFL_JOBS` picks them: `all` (the default, one Deployment), `status` or
+`daily`. With `pollers.tfl.stops.mode: cronjob` the Deployment runs
+`status` and a CronJob `<fullname>-poller-tfl-daily` runs `daily` once a day
+at 05:40 UTC. Each daily job skips if its own snapshot on the stream is
+fresher than half a day, then waits for its snapshot to reach the stream.
+Both jobs run even if one fails. A transient failure of either exits 1, so
+the Job retries and the job that succeeded skips. A refused snapshot (the
+feed guard) exits 3.
+
+Why 05:40 UTC, when the Deployment ran them in the evening: it is clear of
+the 03:00 dump, the 03:30–04:40 scheduled pollers and the 05:00 backups (a
+diff takes about 3 minutes). The routes are also fresh before the morning
+peak. TfL's rate limit is per key per minute, not per time of day; the
+status poll shares the key but makes one call per 5 minutes. A 429 waits
+what TfL asks (`Retry-After`), up to six attempts a call, which the
+45-minute `activeDeadlineSeconds` covers.
+
+The status poll keeps its `/metrics` and DistantSignalPollerStale
+(`tfl`). The daily jobs' `tfl-stops` and `tfl-routes` stale rules drop. They
+are covered by the scheduled-job alerts and by DistantSignalIngestSourceStale
+for the `tfl-stops` and `tfl-line-routes` sources (2 days). That alert is
+on in both modes.
+
 ### Switching a worker over, and back
 
 The same for each (shown for tocs; stations uses `pollers.stations.mode`,
@@ -226,7 +256,8 @@ says why it can't be placed.
 
 Each CronJob has its own switch (`apiMaintenance.enabled`,
 `postgresql.pgbackrest.backup.suspend`, `pollers.tocs.mode`,
-`pollers.stations.mode`, `pollerTransitSchedule.networks.<network>.timetableMode`).
+`pollers.stations.mode`, `pollers.tfl.stops.mode`,
+`pollerTransitSchedule.networks.<network>.timetableMode`).
 Setting a transit network back to `deployment` returns its Deployment to
 both loops; the timetable waits out its day from the stream cursor. The
 failure policy, the replacement policy and the TTLs need no rollback of
