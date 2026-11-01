@@ -288,14 +288,25 @@ fn instant(date: NaiveDate, minute: u32) -> Option<DateTime<Utc>> {
     trip_plan_live::service_instant(date, minute)
 }
 
+/// Whether a planner `TRANSFER` link is known to be a Tube hop: London
+/// Underground runs it (`operator` `LT`: the pair also has a `TUBE` link,
+/// `planner_operators::attribute_fixed_links`), or both its ends are Tube
+/// stops (`tfl_stops::attach_transfer_stops` keeps a cross-station
+/// `TRANSFER`'s stops only when both ends have one, through `tfl_stop_crs`).
+fn is_tube_hop(operator: Option<&str>, has_both_stops: bool) -> bool {
+    operator == Some("LT") || has_both_stops
+}
+
 /// The planner's transfer mode as an untracked leg's (the web planner's
 /// `transferAsUntracked`): a `TRANSFER` link between two different
-/// stations (Euston to Victoria, 19 minutes) is a `transfer` leg. `None`
-/// for a `TRANSFER` within one station (the same code at both ends).
+/// stations (Euston to Victoria, 19 minutes) is a `tube` leg when it is a
+/// known Tube hop (`tube_hop`, [`is_tube_hop`]), else a `transfer` leg.
+/// `None` for a `TRANSFER` within one station (the same code at both ends).
 fn transfer_mode(
     mode: &str,
     origin_crs: Option<&str>,
     destination_crs: Option<&str>,
+    tube_hop: bool,
 ) -> Option<&'static str> {
     Some(match mode.to_ascii_uppercase().as_str() {
         "WALK" => "walk",
@@ -308,10 +319,36 @@ fn transfer_mode(
             if code(origin_crs) == code(destination_crs) {
                 return None;
             }
-            "transfer"
+            if tube_hop { "tube" } else { "transfer" }
         }
         _ => return None,
     })
+}
+
+/// A planned transfer leg's untracked mode ([`transfer_mode`]); `None` for
+/// a train leg or a change within one station.
+fn planned_transfer_mode(leg: &PlannedLeg) -> Option<&'static str> {
+    let PlannedLeg::Transfer {
+        mode,
+        origin_crs,
+        destination_crs,
+        origin_stop,
+        destination_stop,
+        operator,
+        ..
+    } = leg
+    else {
+        return None;
+    };
+    transfer_mode(
+        mode,
+        origin_crs.as_deref(),
+        destination_crs.as_deref(),
+        is_tube_hop(
+            operator.as_deref(),
+            origin_stop.is_some() && destination_stop.is_some(),
+        ),
+    )
 }
 
 /// Station names for every code in `codes` (best effort).
@@ -441,7 +478,6 @@ fn suggestion_legs(
                 });
             }
             PlannedLeg::Transfer {
-                mode,
                 origin_crs,
                 destination_crs,
                 minutes,
@@ -450,9 +486,7 @@ fn suggestion_legs(
                 destination_stop,
                 ..
             } => {
-                let Some(transit_mode) =
-                    transfer_mode(mode, origin_crs.as_deref(), destination_crs.as_deref())
-                else {
+                let Some(transit_mode) = planned_transfer_mode(leg) else {
                     continue;
                 };
                 let minutes = Duration::minutes(i64::from((*minutes).max(0)));
@@ -498,10 +532,13 @@ fn candidate(planned: &Planned, legs: &[SuggestionLeg]) -> Option<Candidate> {
     let mut tube_or_bus = 0;
     let mut walk_minutes = 0;
     for leg in &itinerary.legs {
-        if let PlannedLeg::Transfer { mode, minutes, .. } = leg {
-            match mode.to_ascii_uppercase().as_str() {
-                "TUBE" | "BUS" | "METRO" => tube_or_bus += 1,
-                "WALK" => walk_minutes += u32::try_from((*minutes).max(0)).unwrap_or(0),
+        if let PlannedLeg::Transfer { minutes, .. } = leg {
+            // A `TRANSFER` between two stations (Euston to Victoria) is
+            // most often the Tube, and always more than a change: it counts
+            // as a ride, a known Tube hop or not.
+            match planned_transfer_mode(leg) {
+                Some("tube" | "bus" | "metro" | "transfer") => tube_or_bus += 1,
+                Some("walk") => walk_minutes += u32::try_from((*minutes).max(0)).unwrap_or(0),
                 _ => {}
             }
         }
@@ -678,23 +715,156 @@ pub fn build_set(
 
 #[cfg(test)]
 mod tests {
-    use super::transfer_mode;
+    use chrono::NaiveDate;
+
+    use super::{Planned, candidate, planned_transfer_mode, transfer_mode};
+    use crate::data::tfl_stops::TflStopSummary;
+    use crate::data::trip_planning_itinerary::{PlannedItinerary, PlannedLeg};
 
     #[test]
     fn a_transfer_link_between_stations_is_a_transfer_leg() {
         assert_eq!(
-            transfer_mode("TRANSFER", Some("EUS"), Some("VIC")),
+            transfer_mode("TRANSFER", Some("EUS"), Some("VIC"), false),
             Some("transfer")
         );
         assert_eq!(
-            transfer_mode("TRANSFER", Some("tiploc:STRATFD"), Some("KGX")),
+            transfer_mode("TRANSFER", Some("tiploc:STRATFD"), Some("KGX"), false),
             Some("transfer")
         );
-        assert_eq!(transfer_mode("TRANSFER", Some("eus"), Some("EUS")), None);
-        assert_eq!(transfer_mode("TRANSFER", None, None), None);
         assert_eq!(
-            transfer_mode("TUBE", Some("EUS"), Some("KGX")),
+            transfer_mode("TRANSFER", Some("eus"), Some("EUS"), false),
+            None
+        );
+        assert_eq!(transfer_mode("TRANSFER", None, None, false), None);
+        assert_eq!(
+            transfer_mode("TUBE", Some("EUS"), Some("KGX"), false),
             Some("tube")
         );
+    }
+
+    #[test]
+    fn a_known_tube_hop_is_a_tube_leg_but_never_a_change_within_a_station() {
+        assert_eq!(
+            transfer_mode("TRANSFER", Some("EUS"), Some("VIC"), true),
+            Some("tube")
+        );
+        assert_eq!(
+            transfer_mode("TRANSFER", Some("EUS"), Some("EUS"), true),
+            None
+        );
+        // Only `TRANSFER` is re-read: a walk stays a walk.
+        assert_eq!(
+            transfer_mode("WALK", Some("EUS"), Some("VIC"), true),
+            Some("walk")
+        );
+    }
+
+    fn stop(id: &str) -> TflStopSummary {
+        TflStopSummary {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            modes: vec!["tube".to_owned()],
+            lines: Vec::new(),
+        }
+    }
+
+    fn transfer(
+        mode: &str,
+        to: &str,
+        operator: Option<&str>,
+        stops: bool,
+        minutes: i32,
+    ) -> PlannedLeg {
+        PlannedLeg::Transfer {
+            operator: operator.map(str::to_owned),
+            estimated_walk: false,
+            mode: mode.to_owned(),
+            origin_crs: Some("EUS".to_owned()),
+            destination_crs: Some(to.to_owned()),
+            minutes,
+            line: None,
+            origin_stop: stops.then(|| Box::new(stop("940GZZLUEUS"))),
+            destination_stop: stops.then(|| Box::new(stop("940GZZLUVIC"))),
+            access: None,
+            transit_walk: None,
+        }
+    }
+
+    #[test]
+    fn a_planned_transfer_is_a_tube_hop_by_its_operator_or_its_two_stops() {
+        let mode = |leg: PlannedLeg| planned_transfer_mode(&leg);
+        assert_eq!(
+            mode(transfer("TRANSFER", "VIC", Some("LT"), false, 19)),
+            Some("tube")
+        );
+        assert_eq!(
+            mode(transfer("TRANSFER", "VIC", None, true, 19)),
+            Some("tube")
+        );
+        assert_eq!(
+            mode(transfer("TRANSFER", "VIC", None, false, 19)),
+            Some("transfer")
+        );
+        assert_eq!(
+            mode(transfer("TRANSFER", "VIC", Some("ds:DLR"), false, 19)),
+            Some("transfer")
+        );
+        assert_eq!(mode(transfer("TRANSFER", "EUS", Some("LT"), true, 5)), None);
+    }
+
+    fn planned(legs: Vec<PlannedLeg>) -> Planned {
+        Planned {
+            itinerary: PlannedItinerary {
+                legs,
+                change_count: 1,
+                access_change_count: 0,
+                total_duration_minutes: 60,
+                exceeds_recommended_changes: None,
+                departure_min: 600,
+                arrival_min: 660,
+                arrival_tiploc: None,
+                departure_tiploc: None,
+                live_feasible: None,
+                continues_previous_train: false,
+                via_satisfied_by: Vec::new(),
+                scheduled_only: None,
+                alternative: None,
+                operator_only: false,
+                labels: Vec::new(),
+            },
+            date: NaiveDate::from_ymd_opt(2026, 11, 2).expect("date"),
+            through_leg_id: 1,
+            rejoins_leg_id: None,
+            operator_only: None,
+            outside_operator_filter: false,
+        }
+    }
+
+    /// The ranking's "no Tube" pick and its transfer weight see a
+    /// cross-station `TRANSFER` as a ride, as they see a `TUBE` link; a
+    /// change within one station, or a walk, is not one.
+    #[test]
+    fn ranking_counts_a_cross_station_transfer_as_a_tube_or_bus_ride() {
+        let count = |legs: Vec<PlannedLeg>| {
+            candidate(&planned(legs), &[])
+                .expect("candidate")
+                .tube_or_bus_transfers
+        };
+        assert_eq!(
+            count(vec![transfer("TUBE", "VIC", Some("LT"), false, 19)]),
+            1
+        );
+        assert_eq!(
+            count(vec![transfer("TRANSFER", "VIC", Some("LT"), false, 19)]),
+            1
+        );
+        assert_eq!(count(vec![transfer("TRANSFER", "VIC", None, false, 19)]), 1);
+        assert_eq!(count(vec![transfer("TRANSFER", "EUS", None, false, 5)]), 0);
+        let walk = candidate(
+            &planned(vec![transfer("WALK", "VIC", None, false, 12)]),
+            &[],
+        )
+        .expect("candidate");
+        assert_eq!((walk.tube_or_bus_transfers, walk.walk_minutes), (0, 12));
     }
 }

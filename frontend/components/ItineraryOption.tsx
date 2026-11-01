@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
 import { Group, Radio, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { ClickableCard, selectableCardRadioProps, StaticCard } from './ClickableCard';
-import { codeRouteLabel, tflStopPlaceName } from '@/lib/stationLabel';
+import { codeRouteLabel, isTiplocCode } from '@/lib/stationLabel';
+import { labelPlaceEnds, RAIL_PLACE, stopPlaceKind, type PlaceKind } from '@/lib/placeKinds';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import {
   accessLegStopCount,
@@ -23,13 +24,21 @@ import type {
   TripPlanWaypointSatisfied,
   TflStop,
 } from '@/lib/types';
-import { accessChangeClause, accessLegNote, accessStopsNote, changesBadge, transferLabel } from '@/lib/displayLabels';
+import {
+  accessChangeClause,
+  accessLegNote,
+  accessStopsNote,
+  changesBadge,
+  transferLegLabel,
+} from '@/lib/displayLabels';
 import { transitServiceModeLabel } from '@/lib/serviceMode';
 import { SCHEDULED_CAPTION } from '@/lib/transitStops';
 import { StateBadge } from './StateBadge';
 import { StatusBadge } from './StatusBadge';
 import { TransitLineSwatch } from './TransitLineSwatch';
 import { LateDepartureNote, plannerLateDepartureTimes } from './LateDepartureNote';
+
+type TransferLeg = Extract<TripPlanLeg, { kind: 'transfer' }>;
 
 /** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
  * full name -- `GET /Trips/plan` (unlike every other station-bearing
@@ -43,33 +52,63 @@ import { LateDepartureNote, plannerLateDepartureTimes } from './LateDepartureNot
  * unresolved code. */
 function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): ReactNode {
   if (leg.kind === 'transit') return transitLegSummary(leg);
-  if (leg.kind === 'transfer' && leg.transitWalk) return transitWalkSummary(leg.transitWalk, leg.minutes);
-  // A TfL stop From or To (DS-135) is no station: its access leg has no
-  // code at that end, only the stop, named `Uxbridge (Tube)`.
-  const end = (code: string | null, stop: TflStop | undefined): [string | null, string | undefined] => {
-    if (code) return [code, stationNames.get(code)];
-    if (stop) return [stop.id, tflStopPlaceName(stop)];
-    return [null, undefined];
-  };
-  const [originCode, originName] = end(leg.originCrs, leg.kind === 'transfer' ? leg.originStop : undefined);
-  const [destinationCode, destinationName] = end(
-    leg.destinationCrs,
-    leg.kind === 'transfer' ? leg.destinationStop : undefined,
-  );
-  const route = codeRouteLabel(originCode, originName, destinationCode, destinationName);
   if (leg.kind === 'train') {
+    const name = (code: string | null) => (code ? stationNames.get(code) : undefined);
+    const route = codeRouteLabel(leg.originCrs, name(leg.originCrs), leg.destinationCrs, name(leg.destinationCrs));
     // Public (timetable) times first; the working times only for a response
     // without them.
     const departure = (leg.publicDeparture ?? leg.scheduledDeparture).slice(0, 5);
     const arrival = (leg.publicArrival ?? leg.scheduledArrival).slice(0, 5);
     return `${departure} ${route} ${arrival}${liveNote(leg.live)}`;
   }
+  if (leg.transitWalk) return transitWalkSummary(leg, leg.transitWalk, stationNames);
+  // A TfL stop From or To (DS-135) is no station: its access leg has no
+  // code at that end, only the stop, named `Uxbridge (Tube)`.
+  const end = (code: string | null, stop: TflStop | undefined): PlanEnd => {
+    if (code) return stationEnd(code, stationNames);
+    if (stop) return { code: stop.id, name: stop.name, kind: stopPlaceKind(stop) };
+    return { code: null, name: undefined };
+  };
+  const route = planRouteLabel(end(leg.originCrs, leg.originStop), end(leg.destinationCrs, leg.destinationStop));
   // A TfL access ride that changes trains says so in the route itself, so
   // it never reads (or is announced, inside the card's radio label) as one
   // train: "Tube (Piccadilly line) Uxbridge to Heathrow, change at Acton
   // Town, 45 min".
   const change = leg.access ? accessChangeClause(leg.access) : undefined;
-  return `${transferLabel(leg.mode, leg.line)} ${route}${change ? `, ${change}` : ''}, ${leg.minutes} min`;
+  return `${transferLegLabel(leg)} ${route}${change ? `, ${change}` : ''}, ${leg.minutes} min`;
+}
+
+/** One end of a plan row: its code (a CRS, or a stop's id), its bare name
+ * and what kind of station it is. */
+interface PlanEnd {
+  code: string | null;
+  name: string | undefined;
+  kind?: PlaceKind | undefined;
+}
+
+/** A transfer's station end: a National Rail station for a CRS, of no
+ * known kind for a bus stop's or ferry terminal's `tiploc:` code. */
+function stationEnd(code: string | null, stationNames: Map<string, string>): PlanEnd {
+  if (!code) return { code: null, name: undefined };
+  return { code, name: stationNames.get(code), kind: isTiplocCode(code) ? undefined : RAIL_PLACE };
+}
+
+/** A transfer row's route, "VXH · Vauxhall to EUS · Euston". Each stop end
+ * says its mode (`Uxbridge (Tube)`), and a National Rail end says it is
+ * one when the names would otherwise read alike (DS-239): "Vauxhall (Tube)
+ * to VXH · Vauxhall (National Rail)". */
+function planRouteLabel(origin: PlanEnd, destination: PlanEnd): string {
+  const [originName, destinationName] = labelPlaceEnds(
+    { name: origin.name ?? '', kind: origin.kind },
+    { name: destination.name ?? '', kind: destination.kind },
+    { alwaysTagStops: true },
+  );
+  return codeRouteLabel(
+    origin.code,
+    origin.name === undefined ? undefined : originName,
+    destination.code,
+    destination.name === undefined ? undefined : destinationName,
+  );
 }
 
 /** A tram leg (transit trip planning §11.3): "08:14 Tram (Blue Line)
@@ -92,12 +131,23 @@ function transitLegSummary(leg: TripPlanTransitLeg): ReactNode {
   );
 }
 
-/** A walk between a station and a tram stop (§8.1): the tram end has no
- * station code, so the row names the stop. A TfL station is named as a
- * TfL stop is (`King's Cross St. Pancras (TfL)`). */
-function transitWalkSummary(walk: TripPlanTransitWalk, minutes: number): string {
-  const stop = walk.network === 'tfl' ? `${walk.stop.name} (TfL)` : `${walk.stop.name} tram stop`;
-  return `Walk ${walk.towardsStop ? 'to' : 'from'} ${stop}, ${minutes} min`;
+/** A walk between a National Rail station and a tram or TfL stop (§8.1):
+ * the stop end has no station code, so the row names the stop. A TfL
+ * station says its mode, as a TfL stop does ("Walk VXH · Vauxhall
+ * (National Rail) to Vauxhall (Tube), 4 min", DS-239); another network's
+ * says it is a tram stop ("Walk MAN · Manchester Piccadilly to Piccadilly
+ * tram stop, 6 min"). */
+function transitWalkSummary(leg: TransferLeg, walk: TripPlanTransitWalk, stationNames: Map<string, string>): string {
+  const station = stationEnd(walk.towardsStop ? leg.originCrs : leg.destinationCrs, stationNames);
+  const tfl = walk.network === 'tfl';
+  const stop: PlanEnd = {
+    code: walk.stop.id,
+    name: tfl ? walk.stop.name : `${walk.stop.name} tram stop`,
+    // A TfL station from an api without its modes is "(TfL)", as before.
+    kind: tfl ? (stopPlaceKind(walk.stop) ?? { kind: 'stop', modes: ['TfL'] }) : undefined,
+  };
+  const route = walk.towardsStop ? planRouteLabel(station, stop) : planRouteLabel(stop, station);
+  return `Walk ${route}, ${leg.minutes} min`;
 }
 
 /** The note under a tram walk: its minutes are worked out from where the

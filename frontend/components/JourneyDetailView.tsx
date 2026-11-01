@@ -313,6 +313,7 @@ export function JourneyDetailView({
             leg={leg}
             isOwner={journey.isOwner}
             isOnlyLeg={journey.legs.length === 1}
+            neighbours={{ previous: journey.legs[index - 1], next: journey.legs[index + 1] }}
             replan={{
               missable: leg.id === missable,
               openBreakId: openBreak?.id ?? null,

@@ -425,10 +425,34 @@ pub fn transfer_modes(mode: &str) -> Option<Vec<String>> {
     Some(modes.iter().map(|m| (*m).to_owned()).collect())
 }
 
+/// The stop modes to look up for a transfer leg, and whether it keeps its
+/// stops only when both ends have one: [`transfer_modes`] for its mode,
+/// else the Tube's for a `TRANSFER` between two different stations (Euston
+/// to Victoria: often a Tube hop the link doesn't say is one), kept only
+/// when both ends are Tube stops, which is what makes it a known Tube hop
+/// (`journey_alternatives::is_tube_hop`, the web planner's
+/// `transferTransitMode`). `None` for anything else, and for a `TRANSFER`
+/// within one station.
+fn leg_stop_modes(
+    mode: &str,
+    origin_crs: Option<&str>,
+    destination_crs: Option<&str>,
+) -> Option<(Vec<String>, bool)> {
+    if let Some(modes) = transfer_modes(mode) {
+        return Some((modes, false));
+    }
+    let code = |crs: Option<&str>| crs.map(|c| c.trim().to_ascii_uppercase());
+    let (origin, destination) = (code(origin_crs)?, code(destination_crs)?);
+    (mode.trim().eq_ignore_ascii_case("TRANSFER") && origin != destination)
+        .then(|| (vec!["tube".to_owned()], true))
+}
+
 /// Fills `originStop`/`destinationStop` on every `TUBE` and `METRO`
 /// transfer leg of `segments` (spec §5): each end's CRS through
-/// [`stops_for_crs`], the best stop. Best effort: on a database error the
-/// legs keep no stops and the plan is served as before.
+/// [`stops_for_crs`], the best stop; and on a `TRANSFER` between two
+/// stations when both are Tube stops ([`leg_stop_modes`]). Best effort: on
+/// a database error the legs keep no stops and the plan is served as
+/// before.
 pub async fn attach_transfer_stops(pool: &PgPool, segments: &mut [SegmentResult]) {
     let mut wanted: BTreeMap<Vec<String>, Vec<String>> = BTreeMap::new();
     for leg in segments
@@ -442,7 +466,8 @@ pub async fn attach_transfer_stops(pool: &PgPool, segments: &mut [SegmentResult]
             destination_crs,
             ..
         } = leg
-            && let Some(modes) = transfer_modes(mode)
+            && let Some((modes, _)) =
+                leg_stop_modes(mode, origin_crs.as_deref(), destination_crs.as_deref())
         {
             let codes = wanted.entry(modes).or_default();
             codes.extend(origin_crs.iter().cloned());
@@ -481,7 +506,8 @@ pub async fn attach_transfer_stops(pool: &PgPool, segments: &mut [SegmentResult]
             destination_stop,
             ..
         } = leg
-            && let Some(modes) = transfer_modes(mode)
+            && let Some((modes, both_or_neither)) =
+                leg_stop_modes(mode, origin_crs.as_deref(), destination_crs.as_deref())
         {
             let lookup = |crs: &Option<String>| {
                 crs.as_ref()
@@ -489,8 +515,12 @@ pub async fn attach_transfer_stops(pool: &PgPool, segments: &mut [SegmentResult]
                     .cloned()
                     .map(Box::new)
             };
-            *origin_stop = lookup(origin_crs);
-            *destination_stop = lookup(destination_crs);
+            let (origin, destination) = (lookup(origin_crs), lookup(destination_crs));
+            if both_or_neither && (origin.is_none() || destination.is_none()) {
+                continue;
+            }
+            *origin_stop = origin;
+            *destination_stop = destination;
         }
     }
 }
@@ -1062,6 +1092,20 @@ mod tests {
     }
 
     #[test]
+    fn a_cross_station_transfer_looks_for_tube_stops_at_both_ends() {
+        let tube = Some((vec!["tube".to_owned()], true));
+        assert_eq!(leg_stop_modes("TRANSFER", Some("EUS"), Some("VIC")), tube);
+        assert_eq!(leg_stop_modes("transfer", Some("eus"), Some("KGX ")), tube);
+        assert_eq!(leg_stop_modes("TRANSFER", Some("EUS"), Some("eus")), None);
+        assert_eq!(leg_stop_modes("TRANSFER", None, Some("VIC")), None);
+        assert_eq!(
+            leg_stop_modes("TUBE", Some("EUS"), Some("VIC")),
+            Some((vec!["tube".to_owned()], false))
+        );
+        assert_eq!(leg_stop_modes("WALK", Some("EUS"), Some("VIC")), None);
+    }
+
+    #[test]
     fn overrides_are_crs_codes_and_naptan_ids() {
         for (crs, stop) in CRS_OVERRIDES {
             assert!(
@@ -1299,6 +1343,9 @@ mod db_tests {
                     transfer("TUBE", "Z8A", "Z8B"),
                     transfer("WALK", "Z8A", "Z8B"),
                     transfer("TUBE", "Z8A", "Z8C"),
+                    transfer("TRANSFER", "Z8A", "Z8B"),
+                    transfer("TRANSFER", "Z8A", "Z8C"),
+                    transfer("TRANSFER", "Z8A", "Z8A"),
                 ],
                 change_count: 0,
                 access_change_count: 0,
@@ -1332,6 +1379,15 @@ mod db_tests {
             legs[2].get("destinationStop").is_none(),
             "Z8C has none: {legs}"
         );
+        // A `TRANSFER` between two stations that are both Tube stops is a
+        // Tube hop: it names both. With one end not a Tube stop it names
+        // neither, nor does a change within one station.
+        assert_eq!(legs[3]["originStop"]["id"], "940GZZTESTA");
+        assert_eq!(legs[3]["destinationStop"]["id"], "940GZZTESTC");
+        for leg in [&legs[4], &legs[5]] {
+            assert!(leg.get("originStop").is_none(), "{legs}");
+            assert!(leg.get("destinationStop").is_none(), "{legs}");
+        }
         // Both stops serve only Testline: the leg names it. A walk, and a
         // leg with one stop unknown, name none.
         attach_transfer_lines(&mut segments);
@@ -1339,6 +1395,7 @@ mod db_tests {
         assert_eq!(legs[0]["line"], "Testline");
         assert!(legs[1].get("line").is_none(), "{legs}");
         assert!(legs[2].get("line").is_none(), "{legs}");
+        assert_eq!(legs[3]["line"], "Testline");
         cleanup(&pool).await;
     }
 

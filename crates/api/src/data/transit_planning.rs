@@ -1578,6 +1578,11 @@ pub struct TransitWalk {
 pub struct TransitWalkStop {
     pub id: String,
     pub name: String,
+    /// A `TfL` station's `tfl_stops` modes (`tube`, `dlr`, `tram`), so a
+    /// client can say which kind of station the walk reaches (DS-239);
+    /// left out when none are known (another network's stop).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<String>,
 }
 
 /// The station's code in the network's public spelling.
@@ -1717,6 +1722,7 @@ pub fn transit_walk(graph: &TransitGraph, from_crs: &str, to_crs: &str) -> Optio
         stop: TransitWalkStop {
             id: public_id(node, spelling),
             name: info.station_name.clone(),
+            modes: graph.stop_modes.get(node).cloned().unwrap_or_default(),
         },
         towards_stop,
         walk_minutes: walk.walk_minutes,
@@ -2432,10 +2438,39 @@ mod tests {
         assert!(walk.towards_stop);
         assert_eq!(walk.walk_minutes, 2);
         assert_eq!(walk.stop.name, "Piccadilly");
+        // No `TfL` modes for a Metrolink stop: left out of the response.
+        assert!(walk.stop.modes.is_empty());
+        assert!(
+            serde_json::to_value(&walk).unwrap()["stop"]
+                .get("modes")
+                .is_none()
+        );
         let back = transit_walk(&graph, "9400ZZMAVIC", "MCV").unwrap();
         assert!(!back.towards_stop);
         assert_eq!(back.walk_minutes, 4);
         assert!(transit_walk(&graph, "MAN", "MCV").is_none());
+    }
+
+    #[test]
+    fn a_rail_link_walk_to_a_tfl_station_says_its_modes() {
+        let day = day(vec![trip("T1", 8 * 3600, false)]);
+        let mut graph = build_transit_graph(
+            &rail(),
+            std::slice::from_ref(&day),
+            &HashMap::new(),
+            Vec::new(),
+            2,
+            5,
+        );
+        graph
+            .stop_modes
+            .insert("9400ZZMAPIC".to_owned(), vec!["dlr".to_owned()]);
+        let walk = transit_walk(&graph, "MAN", "9400ZZMAPIC").unwrap();
+        assert_eq!(walk.stop.modes, vec!["dlr".to_owned()]);
+        assert_eq!(
+            serde_json::to_value(&walk).unwrap()["stop"]["modes"],
+            serde_json::json!(["dlr"])
+        );
     }
 
     #[test]
