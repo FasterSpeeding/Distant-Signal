@@ -115,11 +115,24 @@ pub fn planner_network(id: &str) -> Option<&'static PlannerNetwork> {
     // The DB tests seed a `test-*` network (`ds_store::test_support::transit`)
     // rather than touch a real network's rows.
     #[cfg(test)]
+    if id.starts_with("test-tfl") {
+        return Some(&TEST_TFL_PLANNER_NETWORK);
+    }
+    #[cfg(test)]
     if id.starts_with("test-") {
         return Some(&TEST_PLANNER_NETWORK);
     }
     PLANNER_NETWORKS.iter().find(|network| network.id == id)
 }
+
+/// A `test-tfl*` network: as `tfl`, its stations are `TfL`'s stops.
+#[cfg(test)]
+static TEST_TFL_PLANNER_NETWORK: PlannerNetwork = PlannerNetwork {
+    id: "test-tfl",
+    change_minutes: 3,
+    public_stop_id: PublicStopId::StopArea,
+    tfl_stops: true,
+};
 
 #[cfg(test)]
 static TEST_PLANNER_NETWORK: PlannerNetwork = PlannerNetwork {
