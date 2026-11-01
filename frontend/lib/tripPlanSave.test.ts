@@ -109,8 +109,9 @@ describe('itineraryLegsForSaving', () => {
       {
         kind: 'untracked',
         transitMode: 'walk',
-        originName: 'London Euston',
-        destinationName: 'Euston',
+        // Each end says what it is (DS-239): the names would read alike.
+        originName: 'London Euston (National Rail)',
+        destinationName: 'Euston (Tube)',
         // The walk to the stop is named after it; only a ride can have its id.
         plannedDeparture: '2026-10-21T08:30:00.000Z',
         plannedArrival: '2026-10-21T08:35:00.000Z',
@@ -485,7 +486,7 @@ describe('itineraryLegsForSaving with a tram leg', () => {
         kind: 'untracked',
         transitMode: 'walk',
         originName: 'Manchester Piccadilly',
-        destinationName: 'Piccadilly',
+        destinationName: 'Piccadilly (Metrolink)',
         // A walk has no stop id (the api takes one only on a ride); the
         // stop's name is its place.
         plannedDeparture: '2026-11-04T08:00:00.000Z',
@@ -506,7 +507,7 @@ describe('itineraryLegsForSaving with a tram leg', () => {
       {
         kind: 'untracked',
         transitMode: 'walk',
-        originName: 'Victoria',
+        originName: 'Victoria (Metrolink)',
         destinationName: 'Manchester Victoria',
         // The walk follows the tram it leaves, not the train before it.
         plannedDeparture: '2026-11-04T08:22:00.000Z',
@@ -565,8 +566,9 @@ describe('itineraryLegsForSaving sends stop ids only where the api takes them', 
       {
         kind: 'untracked',
         transitMode: 'walk',
-        originName: 'Wimbledon',
-        destinationName: 'Wimbledon',
+        // Not "Wimbledon to Wimbledon" (DS-239).
+        originName: 'Wimbledon (National Rail)',
+        destinationName: 'Wimbledon (Tube)',
         plannedDeparture: '2026-11-02T09:05:00.000Z',
         plannedArrival: '2026-11-02T09:09:00.000Z',
       },
@@ -584,8 +586,8 @@ describe('itineraryLegsForSaving sends stop ids only where the api takes them', 
       {
         kind: 'untracked',
         transitMode: 'walk',
-        originName: 'West Brompton',
-        destinationName: 'West Brompton',
+        originName: 'West Brompton (Tube)',
+        destinationName: 'West Brompton (National Rail)',
         plannedDeparture: '2026-11-02T09:25:00.000Z',
         plannedArrival: '2026-11-02T09:29:00.000Z',
       },
