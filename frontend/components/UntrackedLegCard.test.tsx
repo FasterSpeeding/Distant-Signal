@@ -125,4 +125,43 @@ describe('UntrackedLegCard stop links', () => {
     expect(screen.getByRole('link', { name: 'Wimbledon' })).toHaveAttribute('href', '/tfl/stops/940GZZCRWMB');
     expect(screen.queryByRole('link', { name: 'Home' })).toBeNull();
   });
+
+  // DS-239: a walk saved as "Vauxhall to Vauxhall" says which end is which
+  // when the journey's other legs tell.
+  it('says which end of an alike-named walk is National Rail and which the Tube, from the legs either side', () => {
+    const walk = leg({ transitMode: 'walk', lineName: null, originName: 'Vauxhall', destinationName: 'Vauxhall' });
+    renderWithMantine(
+      <UntrackedLegCard
+        journeyId={1}
+        leg={walk}
+        isOwner={false}
+        isOnlyLeg={false}
+        neighbours={{
+          previous: leg({ kind: 'train', transitMode: null, destinationCrs: 'VXH', destinationName: 'Vauxhall' }),
+          next: leg({ originName: 'Vauxhall', originStopId: '940GZZLUVXL', destinationStopId: '940GZZLUEUS' }),
+        }}
+      />,
+    );
+    expect(screen.getByText('Vauxhall (National Rail) to Vauxhall (Tube)')).toBeInTheDocument();
+  });
+
+  it('keeps the stop links when it tags alike names from their stop ids', () => {
+    renderWithMantine(
+      <UntrackedLegCard
+        journeyId={1}
+        leg={leg({
+          transitMode: 'metro',
+          lineName: null,
+          originName: 'Canning Town',
+          originStopId: '940GZZDLCGT',
+          destinationName: 'Canning Town',
+          destinationStopId: '940GZZLUCGT',
+        })}
+        isOwner={false}
+        isOnlyLeg={false}
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'Canning Town (DLR)' })).toHaveAttribute('href', '/tfl/stops/940GZZDLCGT');
+    expect(screen.getByRole('link', { name: 'Canning Town (Tube)' })).toHaveAttribute('href', '/tfl/stops/940GZZLUCGT');
+  });
 });

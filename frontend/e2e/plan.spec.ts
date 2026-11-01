@@ -306,8 +306,8 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
   const card = page.locator('[data-plan-entry]').first();
   await expect(card.getByText('07:02 Tram (Blue Line) Piccadilly to Eccles 07:27')).toBeVisible();
   await expect(card.getByText('Tram', { exact: true })).toBeVisible();
-  await expect(card.getByText(/^Walk to Piccadilly tram stop, \d+ min$/)).toBeVisible();
-  await expect(card.getByText(/^Walk from Eccles tram stop, \d+ min$/)).toBeVisible();
+  await expect(card.getByText(/^Walk MAN( · .+)? to Piccadilly tram stop, \d+ min$/)).toBeVisible();
+  await expect(card.getByText(/^Walk Eccles tram stop to ZTE( · .+)?, \d+ min$/)).toBeVisible();
   await expect(card.getByText(/^About \d+ min walk, estimated$/).first()).toBeVisible();
   await expect(card.getByText('Scheduled times, not live')).toBeVisible();
   await expect(card).not.toContainText(/on time|expected|late/i);
@@ -328,7 +328,8 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
   });
   // A walk to a stop is named after it, without its id: the api takes a
   // stop id only on a ride.
-  expect(legs[1]).toMatchObject({ kind: 'untracked', destinationName: 'Piccadilly' });
+  // Each end of a walk between a station and a stop says what it is (DS-239).
+  expect(legs[1]).toMatchObject({ kind: 'untracked', destinationName: 'Piccadilly (Metrolink)' });
   expect(legs[1]).not.toHaveProperty('destinationStopId');
   // The tram's own timetabled times (07:02 to 07:27 BST), its line and stations.
   expect(legs[2]).toEqual({
@@ -342,7 +343,7 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
     plannedDeparture: '2026-09-17T06:02:00.000Z',
     plannedArrival: '2026-09-17T06:27:00.000Z',
   });
-  expect(legs[3]).toMatchObject({ kind: 'untracked', originName: 'Eccles' });
+  expect(legs[3]).toMatchObject({ kind: 'untracked', originName: 'Eccles (Metrolink)' });
   expect(legs[3]).not.toHaveProperty('originStopId');
   expect(legs[4]).toMatchObject({ trainUid: 'E2ETR2', originCrs: 'ZTE', destinationCrs: 'ZTB' });
 });
@@ -476,7 +477,9 @@ test('saves a plan with walks to and from a Tube station, the stop ids only on t
     minutes: 4,
     transitWalk: { network: 'tfl', stop, towardsStop: end === 'to', walkMinutes: 2, estimated: true },
   });
-  const testbury = { id: '940GZZLUTST', name: 'Testbury' };
+  // London Euston's Tube station, named as TfL names it: the walk's two
+  // ends would read alike without their kinds (DS-239).
+  const euston = { id: '940GZZLUEUS', name: 'Euston' };
   const westTest = { id: '940GZZLUWTS', name: 'West Test' };
   await page.route('**/api/Trips/plan?*', (route) =>
     route.fulfill({
@@ -490,7 +493,7 @@ test('saves a plan with walks to and from a Tube station, the stop ids only on t
             itineraries: [
               {
                 legs: [
-                  walk('to', 'ZEA', testbury),
+                  walk('to', 'EUS', euston),
                   {
                     kind: 'transit',
                     network: 'tfl',
@@ -506,7 +509,7 @@ test('saves a plan with walks to and from a Tube station, the stop ids only on t
                     headsign: null,
                     originCrs: null,
                     destinationCrs: null,
-                    originStop: { ...testbury, platform: null },
+                    originStop: { ...euston, platform: null },
                     destinationStop: { ...westTest, platform: null },
                     headwayMinutes: 4,
                     notices: [],
@@ -555,6 +558,8 @@ test('saves a plan with walks to and from a Tube station, the stop ids only on t
   await openPlan(page, 'origin=ZEA&destination=ZEC&date=2026-09-17&departAfter=07:30');
   await findRoutes(page);
   const card = page.locator('[data-plan-entry]').first();
+  await expect(card.getByText('Walk EUS · London Euston (National Rail) to Euston (Tube), 4 min')).toBeVisible();
+  await expect(card.getByText(/^Walk West Test \(Tube\) to ZWT( · .+)?, 4 min$/)).toBeVisible();
   await card.getByRole('radio').check({ force: true });
   await page.getByRole('button', { name: 'Track this journey' }).click();
   await expect(page.getByText('First leg tracked')).toBeVisible();
@@ -562,9 +567,16 @@ test('saves a plan with walks to and from a Tube station, the stop ids only on t
 
   expect(saved).not.toBeNull();
   expect(saved!.legs.map((leg) => leg.transitMode ?? 'train')).toEqual(['walk', 'tube', 'walk', 'train']);
-  expect(saved!.legs[0]).toMatchObject({ destinationName: 'Testbury' });
+  expect(saved!.legs[0]).toMatchObject({
+    originName: 'London Euston (National Rail)',
+    destinationName: 'Euston (Tube)',
+  });
   expect(saved!.legs[0]).not.toHaveProperty('destinationStopId');
-  expect(saved!.legs[1]).toMatchObject({ originStopId: '940GZZLUTST', destinationStopId: '940GZZLUWTS' });
-  expect(saved!.legs[2]).toMatchObject({ originName: 'West Test' });
+  expect(saved!.legs[1]).toMatchObject({
+    originName: 'Euston',
+    originStopId: '940GZZLUEUS',
+    destinationStopId: '940GZZLUWTS',
+  });
+  expect(saved!.legs[2]).toMatchObject({ originName: 'West Test (Tube)' });
   expect(saved!.legs[2]).not.toHaveProperty('originStopId');
 });

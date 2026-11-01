@@ -1,3 +1,4 @@
+import { stopModesLabel } from './placeKinds';
 import { isTransitStopCode } from './transitStops';
 
 /** `"London Kings Cross (KGX)"`, or the bare code when no name resolved.
@@ -107,13 +108,11 @@ export function isTflStopCode(code: string | null | undefined): boolean {
   return !!code && TFL_STOP_CODE.test(code.trim());
 }
 
-const TFL_MODE_LABELS: Record<string, string> = { tube: 'Tube', dlr: 'DLR', tram: 'tram' };
-
 /** A TfL stop's name as the planner shows it, its modes in brackets the
  * way a bus stop says `(bus)`: `Uxbridge (Tube)`, `Bank (Tube, DLR)`. */
 export function tflStopPlaceName(stop: { name: string; modes: string[] }): string {
-  const modes = stop.modes.map((mode) => TFL_MODE_LABELS[mode] ?? mode);
-  return modes.length > 0 ? `${stop.name} (${modes.join(', ')})` : stop.name;
+  const modes = stopModesLabel(stop.modes);
+  return modes ? `${stop.name} (${modes})` : stop.name;
 }
 
 /** A named station group in the planner's lists (`GET /Trips/plan`'s
