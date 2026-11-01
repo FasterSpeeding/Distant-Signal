@@ -935,8 +935,23 @@ async fn plan_trip_request(
     // A `TfL` stop end (DS-135): its access candidates, read before the
     // permit like the other checks (a few hundred `tfl_stops` rows). A tram
     // stop end of a planner network is a graph node instead (spec §12.2).
+    // DS-234: the access rides wait by the Tube's headways at the plan's
+    // time (the whole day's when no time is asked for).
+    let ride_time = tfl_access::RideTime {
+        date: params.date,
+        clock: match time {
+            _ if params.depart_after.is_none() && params.arrive_by.is_none() => {
+                tfl_access::RideClock::AnyTime
+            }
+            trip_planning_itinerary::TimeBound::DepartAfter(at) => {
+                tfl_access::RideClock::DepartAfter(at)
+            }
+            trip_planning_itinerary::TimeBound::ArriveBy(at) => tfl_access::RideClock::ArriveBy(at),
+        },
+    };
     let access = load_access_ends(
         &app,
+        ride_time,
         if transit_ends[0].is_some() {
             ""
         } else {
@@ -1248,6 +1263,7 @@ async fn plan_trip_request(
 /// National Rail station near it, and the same stop at both ends are 400s.
 async fn load_access_ends(
     app: &App,
+    time: tfl_access::RideTime,
     origin: &str,
     destination: &str,
 ) -> Result<Option<tfl_access::AccessEnds>, (StatusCode, String)> {
@@ -1260,7 +1276,7 @@ async fn load_access_ends(
             "origin and destination must differ".to_string(),
         ));
     }
-    tfl_access::load_access(&app.database, origin, destination)
+    tfl_access::load_access(&app.database, origin, destination, time)
         .await
         .map_err(internal_error("read the TfL stops"))?
         .map(Some)
@@ -3684,6 +3700,7 @@ mod db_tests {
     mod operator_rule;
     mod tfl_access;
     mod tfl_access_times;
+    mod tfl_access_waits;
 
     use axum::body::Body;
     use axum::http::Request;
