@@ -21,7 +21,7 @@ tracing = "0.1.44"
 trust-schema = { path = "../trust-schema" }
 
 [dev-dependencies]
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "test-util", "net", "io-util"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "test-util", "net", "io-util"] }
 
 [lints]
 workspace = true
