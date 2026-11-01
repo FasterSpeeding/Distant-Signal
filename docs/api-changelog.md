@@ -3,6 +3,15 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-11-01: station search answered from memory
+
+`GET /public/stations?q=` now matches against a list of every station
+the api keeps in memory and reads again every five minutes, instead of an
+`ILIKE` scan per request. The matches and their order are the same; a
+station added or renamed is found within five minutes. The `?stops=true`
+bus stops and ferry terminals are still read per request. DS-MCP needs no
+change.
+
 ## 2026-11-01: Tube access rides wait by the timetable's headways
 
 No new fields. `/Trips/plan`'s Tube, DLR and tram access legs (a `TfL`
@@ -990,6 +999,11 @@ docs/superpowers/specs/2026-10-24-trips-plan-max-changes-12-design.md.
 
 DS-MCP: its own default of 4 now matches DS. Its schema's ceiling of 24
 is above DS's 12; values 13 to 24 are a 400 from DS.
+
+Correction (2026-11-01): DS-MCP's ceiling is now 12 as well (its
+fix-max-changes-12 release), so its schema and DS agree and no value it
+accepts is a 400 from DS. The paragraph above describes DS-MCP as it was
+on 2026-10-24.
 
 ## 2026-10-26: station code and TfL stop id lists
 

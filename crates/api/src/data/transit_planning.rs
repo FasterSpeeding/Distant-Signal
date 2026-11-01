@@ -49,6 +49,8 @@ use schedule_query::{CallingPointForConnections, Connection, FixedLink, Intercha
 use serde::Serialize;
 use sqlx::PgPool;
 
+use crate::data::planner_snapshot::DaySet;
+
 /// The networks whose trams enter the planner's graph
 /// (`API_TRIP_PLAN_TRANSIT_NETWORKS`, comma-separated; chart
 /// `api.tripPlanTransitNetworks`). Empty by default.
@@ -285,7 +287,7 @@ impl SkipReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct StopRow {
     pub stop_id: String,
     /// `station` or `platform`.
@@ -297,7 +299,7 @@ pub struct StopRow {
     pub lon: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct PatternStopRow {
     pub stop_id: String,
     pub arr_offset_s: i32,
@@ -306,7 +308,7 @@ pub struct PatternStopRow {
     pub drop_off: i16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct PatternRow {
     pub line_id: Option<String>,
     pub direction: i16,
@@ -315,7 +317,7 @@ pub struct PatternRow {
     pub stops: Vec<PatternStopRow>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct TripRow {
     pub trip_id: String,
     pub line_id: Option<String>,
@@ -325,7 +327,7 @@ pub struct TripRow {
     pub replacement_bus: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct LineRow {
     pub name: String,
     pub colour: Option<String>,
@@ -336,14 +338,14 @@ pub struct LineRow {
 
 /// A walk between two stations of one network that are one `TfL` hub
 /// (Bank's Underground and DLR stations), both ways.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct HubWalkRow {
     pub from: String,
     pub to: String,
     pub minutes: i32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct RailLinkRow {
     /// The tram station.
     pub stop_id: String,
@@ -380,7 +382,6 @@ type ActiveRow = (Option<String>, Option<NaiveDate>, Option<NaiveDate>);
 /// left out. Seven small indexed reads (the trips are about 1,500 rows a
 /// weekday for Metrolink, the pattern stops under 2,000).
 #[expect(
-    clippy::too_many_lines,
     clippy::type_complexity,
     reason = "seven linear reads, each into its row tuple"
 )]
@@ -426,6 +427,69 @@ pub async fn read_network_day(
     if trips.is_empty() {
         return Ok(Err(SkipReason::NoServiceDay));
     }
+    let parts = read_feed_parts(pool, network, &feed_version, settings).await?;
+    Ok(Ok(parts.day(
+        network,
+        settings,
+        trips
+            .into_iter()
+            .map(
+                |(trip_id, line_id, pattern_id, start_s, headsign, replacement_bus)| TripRow {
+                    trip_id,
+                    line_id,
+                    pattern_id,
+                    start_s,
+                    headsign,
+                    replacement_bus,
+                },
+            )
+            .collect(),
+    )))
+}
+
+/// A feed version's date-independent half: everything [`NetworkDay`] holds
+/// but the date's trips. Read by [`read_feed_parts`], for one date's
+/// [`read_network_day`] or for a whole horizon's [`read_network_feed`].
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct FeedParts {
+    pub stops: Vec<StopRow>,
+    pub patterns: HashMap<String, PatternRow>,
+    pub lines: HashMap<String, LineRow>,
+    pub rail_links: Vec<RailLinkRow>,
+    pub hub_walks: Vec<HubWalkRow>,
+    pub stop_modes: HashMap<String, Vec<String>>,
+}
+
+impl FeedParts {
+    /// The [`NetworkDay`] of these parts with `trips`.
+    pub fn day(&self, network: &str, settings: PlannerNetwork, trips: Vec<TripRow>) -> NetworkDay {
+        NetworkDay {
+            network: network.to_owned(),
+            settings,
+            stops: self.stops.clone(),
+            patterns: self.patterns.clone(),
+            trips,
+            lines: self.lines.clone(),
+            rail_links: self.rail_links.clone(),
+            hub_walks: self.hub_walks.clone(),
+            stop_modes: self.stop_modes.clone(),
+        }
+    }
+}
+
+/// `network`'s `feed_version`'s [`FeedParts`]: its patterns, stops, lines
+/// and links.
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear reads, each into its row tuple"
+)]
+async fn read_feed_parts(
+    pool: &PgPool,
+    network: &str,
+    feed_version: &str,
+    settings: PlannerNetwork,
+) -> Result<FeedParts> {
+    let feed_version = feed_version.to_owned();
     let pattern_rows: Vec<(String, Option<String>, i16, Option<String>)> = sqlx::query_as(
         "SELECT pattern_id, line_id, direction, headsign FROM transit_patterns \
          WHERE network = $1 AND feed_version = $2",
@@ -525,28 +589,149 @@ pub async fn read_network_day(
             HashMap::new(),
         )
     };
-    Ok(Ok(NetworkDay {
-        network: network.to_owned(),
-        settings,
+    Ok(FeedParts {
         stops,
         patterns,
-        trips: trips
-            .into_iter()
-            .map(
-                |(trip_id, line_id, pattern_id, start_s, headsign, replacement_bus)| TripRow {
-                    trip_id,
-                    line_id,
-                    pattern_id,
-                    start_s,
-                    headsign,
-                    replacement_bus,
-                },
-            )
-            .collect(),
         lines,
         rail_links,
         hub_walks,
         stop_modes,
+    })
+}
+
+/// A `transit_trips` row with its service: what [`read_network_feed`] reads.
+type FeedTripRow = (
+    String,
+    Option<String>,
+    String,
+    i32,
+    Option<String>,
+    bool,
+    String,
+);
+
+/// One network's whole active feed for the timetable snapshot
+/// (`data::planner_snapshot`, DS-235): its [`FeedParts`], its horizon, and
+/// every trip with the service dates it runs on in `[start, start + days)`.
+/// [`NetworkFeed::day`] gives what [`read_network_day`] reads for one date.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct NetworkFeed {
+    pub horizon_from: Option<NaiveDate>,
+    pub horizon_to: Option<NaiveDate>,
+    pub parts: FeedParts,
+    /// Every trip, ordered by `(start_s, trip_id)` as a date's read orders
+    /// them, with the days (offsets from the snapshot's start) it runs on.
+    pub trips: Vec<(TripRow, DaySet)>,
+}
+
+impl NetworkFeed {
+    /// `network`'s day on `start + offset` (`date`), or why it is left out:
+    /// exactly [`read_network_day`]'s answer for that date.
+    pub fn day(
+        &self,
+        network: &str,
+        settings: PlannerNetwork,
+        date: NaiveDate,
+        offset: u16,
+    ) -> Result<NetworkDay, SkipReason> {
+        if self.horizon_from.is_none_or(|from| date < from)
+            || self.horizon_to.is_none_or(|to| date > to)
+        {
+            return Err(SkipReason::OutsideHorizon);
+        }
+        let trips: Vec<TripRow> = self
+            .trips
+            .iter()
+            .filter(|(_, days)| days.contains(offset))
+            .map(|(trip, _)| trip.clone())
+            .collect();
+        if trips.is_empty() {
+            return Err(SkipReason::NoServiceDay);
+        }
+        Ok(self.parts.day(network, settings, trips))
+    }
+}
+
+/// `network`'s active feed over `[start, start + days)` (see
+/// [`NetworkFeed`]); `None` when it has no active feed version (or isn't a
+/// planner network): [`SkipReason::NoFeed`] on every date.
+pub async fn read_network_feed(
+    pool: &PgPool,
+    network: &str,
+    start: NaiveDate,
+    days: u16,
+) -> Result<Option<NetworkFeed>> {
+    let Some(settings) = planner_network(network).copied() else {
+        return Ok(None);
+    };
+    let active: Option<ActiveRow> = sqlx::query_as(
+        "SELECT n.active_feed_version, v.horizon_from, v.horizon_to \
+         FROM transit_networks n LEFT JOIN transit_feed_versions v \
+           ON v.network = n.network AND v.feed_version = n.active_feed_version \
+         WHERE n.network = $1",
+    )
+    .bind(network)
+    .fetch_optional(pool)
+    .await
+    .context("transit active feed version")?;
+    let Some((Some(feed_version), horizon_from, horizon_to)) = active else {
+        return Ok(None);
+    };
+    let end = start + chrono::Days::new(u64::from(days.min(DaySet::DAYS)));
+    let service_days: Vec<(String, NaiveDate)> = sqlx::query_as(
+        "SELECT service_id, service_date FROM transit_service_days \
+         WHERE network = $1 AND feed_version = $2 \
+           AND service_date >= $3 AND service_date < $4",
+    )
+    .bind(network)
+    .bind(&feed_version)
+    .bind(start)
+    .bind(end)
+    .fetch_all(pool)
+    .await
+    .context("transit service days")?;
+    let mut offsets: HashMap<String, DaySet> = HashMap::new();
+    for (service_id, date) in service_days {
+        let Ok(offset) = u16::try_from((date - start).num_days()) else {
+            continue;
+        };
+        offsets.entry(service_id).or_default().insert(offset);
+    }
+    let trips: Vec<FeedTripRow> = sqlx::query_as(
+        "SELECT trip_id, line_id, pattern_id, start_s, headsign, replacement_bus, service_id \
+             FROM transit_trips WHERE network = $1 AND feed_version = $2 \
+             ORDER BY start_s, trip_id",
+    )
+    .bind(network)
+    .bind(&feed_version)
+    .fetch_all(pool)
+    .await
+    .context("transit trips")?;
+    let trips = trips
+        .into_iter()
+        .filter_map(
+            |(trip_id, line_id, pattern_id, start_s, headsign, replacement_bus, service_id)| {
+                let days = *offsets.get(&service_id)?;
+                Some((
+                    TripRow {
+                        trip_id,
+                        line_id,
+                        pattern_id,
+                        start_s,
+                        headsign,
+                        replacement_bus,
+                    },
+                    days,
+                ))
+            },
+        )
+        .collect();
+    let parts = read_feed_parts(pool, network, &feed_version, settings).await?;
+    Ok(Some(NetworkFeed {
+        horizon_from,
+        horizon_to,
+        parts,
+        trips,
     }))
 }
 
@@ -1230,15 +1415,22 @@ pub async fn read_days(
                 SkipReason::Error
             }
         };
-        metrics::counter!(
-            common::metrics::metric_name("api_trip_plan_transit_networks_skipped_total"),
-            "network" => network.clone(),
-            "reason" => reason.metric_label()
-        )
-        .increment(1);
+        count_skip(network, reason);
         skipped.push((network.clone(), reason));
     }
     (days, skipped)
+}
+
+/// Counts a network left out of a date's graph
+/// (`api_trip_plan_transit_networks_skipped_total{network, reason}`), by
+/// [`read_days`] or the timetable snapshot's equivalent.
+pub fn count_skip(network: &str, reason: SkipReason) {
+    metrics::counter!(
+        common::metrics::metric_name("api_trip_plan_transit_networks_skipped_total"),
+        "network" => network.to_owned(),
+        "reason" => reason.metric_label()
+    )
+    .increment(1);
 }
 
 /// Sets the `api_trip_plan_transit_connections{network}` gauge.
