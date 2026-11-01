@@ -255,17 +255,27 @@ struct UntrackedLegRequest {
     origin_stop_id: Option<String>,
     #[serde(default)]
     destination_stop_id: Option<String>,
+    /// The network ride it is (DS-237, additive): a plan's transit leg's
+    /// `network`, its line's local id and its headsign. Checked by
+    /// `journeys::attach_leg_timetable`.
+    #[serde(default)]
+    transit_network: Option<String>,
+    #[serde(default)]
+    transit_line_id: Option<String>,
+    #[serde(default)]
+    headsign: Option<String>,
 }
 
 impl UntrackedLegRequest {
     /// The leg's fields (`journeys::validate_untracked_leg`), then its
-    /// stop ids (`journeys::attach_untracked_stops`).
+    /// stop ids (`journeys::attach_untracked_stops`), then its network
+    /// ride (`journeys::attach_leg_timetable`).
     async fn validate(
         &self,
         pool: &sqlx::PgPool,
     ) -> Result<journeys::UntrackedLeg, (StatusCode, String)> {
         let leg = self.validate_fields()?;
-        journeys::attach_untracked_stops(
+        let leg = journeys::attach_untracked_stops(
             pool,
             leg,
             self.origin_stop_id.as_deref(),
@@ -273,6 +283,16 @@ impl UntrackedLegRequest {
         )
         .await
         .map_err(internal_error("check untracked leg stops"))?
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+        journeys::attach_leg_timetable(
+            pool,
+            leg,
+            self.transit_network.as_deref(),
+            self.transit_line_id.as_deref(),
+            self.headsign.as_deref(),
+        )
+        .await
+        .map_err(internal_error("check the leg's timetable"))?
         .map_err(|msg| (StatusCode::BAD_REQUEST, msg))
     }
 
@@ -1500,6 +1520,17 @@ struct JourneyLegDetailResponse {
     /// replaced (additive, 2026-10-23); empty for a leg the latest change
     /// kept or for a journey never changed.
     replaces_leg_ids: Vec<i64>,
+    /// A timetabled untracked leg's network ride, as saved (DS-237,
+    /// additive): its network (`tfl`), its line's local id (`victoria`)
+    /// and its headsign; `null` on every other leg.
+    transit_network: Option<String>,
+    transit_line_id: Option<String>,
+    headsign: Option<String>,
+    /// What the network's active timetable says about that ride now
+    /// (`data::timetabled_legs::LegTimetable`): scheduled times only,
+    /// never live. Absent on other legs, and when it couldn't be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timetable: Option<crate::data::timetabled_legs::LegTimetable>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1976,6 +2007,15 @@ async fn build_journey_detail_response(
         leg_states[index] = Some(state);
     }
 
+    // Each timetabled untracked leg as the network's timetable has it now
+    // (DS-237); `None` for every other leg, and on a failed read.
+    let timetable_keys: Vec<_> = leg_rows
+        .iter()
+        .map(journeys::JourneyLegWithNamesRow::timetable_key)
+        .collect();
+    let timetables =
+        crate::data::timetabled_legs::resolve_all(&app.database, &timetable_keys).await;
+
     // Absent on every leg when it couldn't be worked out.
     let timings = journey_feasibility::journey_timings(
         &app.database,
@@ -2009,8 +2049,11 @@ async fn build_journey_detail_response(
     };
 
     let mut legs = Vec::with_capacity(leg_rows.len());
-    for ((leg, tracked_train_state), connection) in
-        leg_rows.into_iter().zip(leg_states).zip(connections)
+    for (((leg, tracked_train_state), connection), timetable) in leg_rows
+        .into_iter()
+        .zip(leg_states)
+        .zip(connections)
+        .zip(timetables)
     {
         // Low finding #5 (2026-09-25 review): `TrackedTrainState` is reused
         // verbatim here for BOTH the owner's own read and every non-owner
@@ -2092,6 +2135,10 @@ async fn build_journey_detail_response(
             search_filters: leg.search_filters.map(|filters| filters.0),
             connection,
             replaces_leg_ids: Vec::new(),
+            transit_network: leg.transit_network,
+            transit_line_id: leg.transit_line_id,
+            headsign: leg.headsign,
+            timetable,
         });
     }
 

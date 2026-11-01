@@ -224,6 +224,32 @@ pub struct JourneyLegWithNamesRow {
     pub destination_stop_id: Option<String>,
     /// See [`JourneyLegRow::search_filters`].
     pub search_filters: Option<sqlx::types::Json<LegSearchFilters>>,
+    /// A timetabled untracked leg's network, line and headsign (DS-237,
+    /// [`LegTimetableFields`]); `None` otherwise.
+    pub transit_network: Option<String>,
+    pub transit_line_id: Option<String>,
+    pub headsign: Option<String>,
+    pub timetable_hint: Option<sqlx::types::Json<crate::data::timetabled_legs::TimetableHint>>,
+}
+
+impl JourneyLegWithNamesRow {
+    /// The key to find this leg in its network's timetable: a timetabled
+    /// untracked leg's (both stops, both planned times); `None` for any
+    /// other leg.
+    pub fn timetable_key(&self) -> Option<crate::data::timetabled_legs::LegKey> {
+        Some(crate::data::timetabled_legs::LegKey {
+            network: self.transit_network.clone()?,
+            line_id: self.transit_line_id.clone()?,
+            origin_stop_id: self.origin_stop_id.clone()?,
+            destination_stop_id: self.destination_stop_id.clone()?,
+            planned_departure: self.planned_departure?,
+            planned_arrival: self.planned_arrival?,
+            hint_trip_id: self
+                .timetable_hint
+                .as_ref()
+                .map(|hint| hint.0.trip_id.clone()),
+        })
+    }
 }
 
 /// Generic over `E: PgExecutor` (rather than `&PgPool`) -- see
@@ -1307,6 +1333,24 @@ pub struct UntrackedLeg {
     /// [`validate_untracked_leg`], set by [`attach_untracked_stops`].
     pub origin_stop_id: Option<String>,
     pub destination_stop_id: Option<String>,
+    /// The network ride it is (DS-237): `None` from
+    /// [`validate_untracked_leg`], set by [`attach_leg_timetable`]. Boxed:
+    /// most untracked legs have none.
+    pub timetable: Option<Box<LegTimetableFields>>,
+}
+
+/// A timetabled untracked leg's ride (DS-237, `data::timetabled_legs`):
+/// what finds it again in its network's timetable, with its stops and
+/// planned times.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegTimetableFields {
+    /// A trip-planner network (`tfl`, `metrolink`).
+    pub network: String,
+    /// The network's local line id (`victoria`, `blue`).
+    pub line_id: String,
+    pub headsign: Option<String>,
+    /// The ride its planned times matched when it was saved, if any.
+    pub hint: Option<crate::data::timetabled_legs::TimetableHint>,
 }
 
 impl UntrackedLeg {
@@ -1404,7 +1448,116 @@ pub fn validate_untracked_leg(
         planned_arrival,
         origin_stop_id: None,
         destination_stop_id: None,
+        timetable: None,
     })
+}
+
+/// Whether `id` is a network's local id (`tfl`, `victoria`), as the
+/// migration's CHECK allows.
+fn is_local_id(id: &str) -> bool {
+    (1..=32).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Gives an untracked leg, its stops already attached
+/// ([`attach_untracked_stops`]), the network ride it is (DS-237):
+/// `transitNetwork`, `transitLineId` and `headsign`, all from a plan's
+/// transit leg. With no network nothing changes; a line or headsign without
+/// one is refused. The network must be a trip-planner network with an
+/// active timetable that has the line, the leg a `tube`, `dlr` or `tram`
+/// leg with both stops. The inner `Err` is the 400's sentence. The ride its
+/// planned times match now, if any, is kept as the hint.
+pub async fn attach_leg_timetable(
+    pool: &PgPool,
+    mut leg: UntrackedLeg,
+    network: Option<&str>,
+    line_id: Option<&str>,
+    headsign: Option<&str>,
+) -> anyhow::Result<Result<UntrackedLeg, String>> {
+    let clean = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
+    let (network, line_id, headsign) = (clean(network), clean(line_id), clean(headsign));
+    let Some(network) = network else {
+        if line_id.is_some() || headsign.is_some() {
+            return Ok(Err(
+                "transitLineId and headsign need a transitNetwork.".to_string()
+            ));
+        }
+        return Ok(Ok(leg));
+    };
+    if !is_local_id(&network) || crate::data::transit_planning::planner_network(&network).is_none()
+    {
+        return Ok(Err(format!(
+            "transitNetwork {network} is not a network we plan with."
+        )));
+    }
+    let Some(line_id) = line_id.filter(|line| is_local_id(line)) else {
+        return Ok(Err(
+            "A leg with a transitNetwork needs its transitLineId, such as victoria.".to_string(),
+        ));
+    };
+    if !crate::data::timetabled_legs::MODES.contains(&leg.transit_mode.as_str()) {
+        return Ok(Err(format!(
+            "Only a {} leg can have a transitNetwork.",
+            crate::data::timetabled_legs::MODES.join(", ")
+        )));
+    }
+    let (Some(origin), Some(destination)) =
+        (leg.origin_stop_id.clone(), leg.destination_stop_id.clone())
+    else {
+        return Ok(Err(
+            "A leg with a transitNetwork needs an originStopId and a destinationStopId."
+                .to_string(),
+        ));
+    };
+    if let Some(headsign) = &headsign
+        && (headsign.chars().count() > crate::data::timetabled_legs::HEADSIGN_MAX_CHARS
+            || headsign.chars().any(char::is_control))
+    {
+        return Ok(Err(format!(
+            "The headsign can be at most {} characters, on one line.",
+            crate::data::timetabled_legs::HEADSIGN_MAX_CHARS
+        )));
+    }
+    match crate::data::timetabled_legs::line_exists(pool, &network, &line_id).await? {
+        None => {
+            return Ok(Err(format!(
+                "We don't have a timetable for {network} at the moment."
+            )));
+        }
+        Some(false) => {
+            return Ok(Err(format!(
+                "transitLineId {line_id} is not a line of {network}."
+            )));
+        }
+        Some(true) => {}
+    }
+    let hint = crate::data::timetabled_legs::hint_for(
+        pool,
+        &crate::data::timetabled_legs::LegKey {
+            network: network.clone(),
+            line_id: line_id.clone(),
+            origin_stop_id: origin,
+            destination_stop_id: destination,
+            planned_departure: leg.planned_departure,
+            planned_arrival: leg.planned_arrival,
+            hint_trip_id: None,
+        },
+    )
+    .await;
+    leg.timetable = Some(Box::new(LegTimetableFields {
+        network,
+        line_id,
+        headsign,
+        hint,
+    }));
+    Ok(Ok(leg))
 }
 
 /// Gives a validated untracked leg the `TfL` stops its places were picked
@@ -1732,8 +1885,10 @@ where
         "INSERT INTO journey_legs \
             (journey_id, leg_order, service_date, match_mode, window_searched, kind, \
              transit_mode, origin_place, destination_place, line_name, \
-             planned_departure, planned_arrival, origin_stop_id, destination_stop_id) \
-         VALUES ($1, $2, $3, 'manual', FALSE, 'untracked', $4, $5, $6, $7, $8, $9, $10, $11) \
+             planned_departure, planned_arrival, origin_stop_id, destination_stop_id, \
+             transit_network, transit_line_id, headsign, timetable_hint) \
+         VALUES ($1, $2, $3, 'manual', FALSE, 'untracked', $4, $5, $6, $7, $8, $9, $10, $11, \
+                 $12, $13, $14, $15) \
          RETURNING id",
     )
     .bind(journey_id)
@@ -1747,6 +1902,15 @@ where
     .bind(leg.planned_arrival)
     .bind(&leg.origin_stop_id)
     .bind(&leg.destination_stop_id)
+    .bind(leg.timetable.as_ref().map(|t| &t.network))
+    .bind(leg.timetable.as_ref().map(|t| &t.line_id))
+    .bind(leg.timetable.as_ref().and_then(|t| t.headsign.as_ref()))
+    .bind(
+        leg.timetable
+            .as_ref()
+            .and_then(|t| t.hint.as_ref())
+            .map(sqlx::types::Json),
+    )
     .fetch_one(executor)
     .await?;
     Ok(id)
@@ -1830,8 +1994,9 @@ pub async fn update_untracked_leg(
     // The journey row first, as every other leg write takes it, so the
     // revision written below never waits on it while holding the leg.
     lock_owned_journey(&mut tx, journey_id, user_id).await?;
-    let kind: Option<(String,)> = sqlx::query_as(
-        "SELECT jl.kind FROM journey_legs jl JOIN journeys j ON j.id = jl.journey_id \
+    let current: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT jl.kind, jl.origin_stop_id, jl.destination_stop_id \
+         FROM journey_legs jl JOIN journeys j ON j.id = jl.journey_id \
          WHERE jl.id = $1 AND jl.journey_id = $2 AND j.user_id = $3 FOR UPDATE OF jl",
     )
     .bind(leg_id)
@@ -1839,17 +2004,31 @@ pub async fn update_untracked_leg(
     .bind(user_id)
     .fetch_optional(&mut *tx)
     .await?;
-    match kind {
+    let keeps_timetable = match current {
         None => return Ok(UpdateUntrackedOutcome::NotFound),
-        Some((kind,)) if kind != LEG_KIND_UNTRACKED => {
+        Some((kind, ..)) if kind != LEG_KIND_UNTRACKED => {
             return Ok(UpdateUntrackedOutcome::NotUntracked);
         }
-        Some(_) => {}
-    }
+        Some((_, origin, destination)) => {
+            leg.timetable.is_none()
+                && crate::data::timetabled_legs::MODES.contains(&leg.transit_mode.as_str())
+                && leg.origin_stop_id.is_some()
+                && origin == leg.origin_stop_id
+                && destination == leg.destination_stop_id
+        }
+    };
+    // A timetabled leg (DS-237) stays one through an edit that keeps its
+    // stops and a timetabled mode and names no network of its own (the
+    // edit form doesn't); its new times are matched on the next read.
+    // Otherwise the edit's own network, or none.
     sqlx::query(
         "UPDATE journey_legs SET transit_mode = $2, origin_place = $3, destination_place = $4, \
              line_name = $5, planned_departure = $6, planned_arrival = $7, service_date = $8, \
-             origin_stop_id = $9, destination_stop_id = $10 \
+             origin_stop_id = $9, destination_stop_id = $10, \
+             transit_network = CASE WHEN $11::TEXT IS NOT NULL THEN $11 WHEN $15 THEN transit_network END, \
+             transit_line_id = CASE WHEN $11::TEXT IS NOT NULL THEN $12 WHEN $15 THEN transit_line_id END, \
+             headsign = CASE WHEN $11::TEXT IS NOT NULL THEN $13 WHEN $15 THEN headsign END, \
+             timetable_hint = CASE WHEN $11::TEXT IS NOT NULL THEN $14 WHEN $15 THEN timetable_hint END \
          WHERE id = $1",
     )
     .bind(leg_id)
@@ -1862,6 +2041,16 @@ pub async fn update_untracked_leg(
     .bind(leg.service_date())
     .bind(&leg.origin_stop_id)
     .bind(&leg.destination_stop_id)
+    .bind(leg.timetable.as_ref().map(|t| &t.network))
+    .bind(leg.timetable.as_ref().map(|t| &t.line_id))
+    .bind(leg.timetable.as_ref().and_then(|t| t.headsign.as_ref()))
+    .bind(
+        leg.timetable
+            .as_ref()
+            .and_then(|t| t.hint.as_ref())
+            .map(sqlx::types::Json),
+    )
+    .bind(keeps_timetable)
     .execute(&mut *tx)
     .await?;
     crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
@@ -3318,7 +3507,8 @@ static LIST_LEGS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| 
                 jl.transit_mode, {origin_place} AS origin_place, \
                 {destination_place} AS destination_place, jl.line_name, \
                 jl.planned_departure, jl.planned_arrival, jl.origin_stop_id, \
-                jl.destination_stop_id, jl.search_filters \
+                jl.destination_stop_id, jl.search_filters, jl.transit_network, \
+                jl.transit_line_id, jl.headsign, jl.timetable_hint \
          FROM journey_legs jl \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
@@ -5529,6 +5719,7 @@ mod db_tests {
             planned_arrival: "2026-09-22T10:30:00Z".parse().unwrap(),
             origin_stop_id: None,
             destination_stop_id: None,
+            timetable: None,
         });
 
         let mut tx = pool.begin().await.expect("begin");

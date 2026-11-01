@@ -59,6 +59,7 @@ pub mod tfl_stops;
 pub mod ticket_extraction;
 pub mod ticket_precheck;
 pub mod ticket_subprocess;
+pub mod timetabled_legs;
 pub mod tiploc_locations;
 pub mod tracking_phase;
 pub mod train_operator;

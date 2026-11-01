@@ -181,6 +181,7 @@ impl Suggestion {
                     planned_arrival: *planned_arrival,
                     origin_stop_id: origin_stop_id.clone(),
                     destination_stop_id: destination_stop_id.clone(),
+                    timetable: None,
                 })),
             })
             .collect()
