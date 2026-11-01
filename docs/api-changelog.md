@@ -3,6 +3,18 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-11-02: tram rides timed in both directions
+
+No shape change. TfL publishes London Trams timetables only from
+Wimbledon, so the trams' routes the other way (towards Wimbledon, and New
+Addington to Church Street) had no running times, and `/Trips/plan` timed
+rides on them by its distance estimate. poller-tfl now gives each such
+step the same two stops' timetabled time in the other direction, never
+replacing a time TfL publishes. On `/Trips/plan` and in saved journeys,
+tram rides on those routes get timetable-based durations, so their times
+can differ by a minute or two from before. Other lines are unchanged.
+DS-MCP: no change needed.
+
 ## 2026-11-01: a walk to a `TfL` station says the station's modes
 
 Additive. On `/Trips/plan`, a walk between a National Rail station and a
