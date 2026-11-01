@@ -9,7 +9,7 @@
 use std::future::{Future, ready};
 use std::sync::Mutex;
 
-use super::{ChunkPart, DatedProduct, LinePopulation, PublishSink, SinkError};
+use super::{ChunkPart, DatedProduct, LinePopulation, PublishSink, Signal, SinkError};
 
 pub(crate) const STANOX_CRS: &str = "stanox-crs";
 pub(crate) const TIPLOC_CRS: &str = "tiploc-crs";
@@ -25,6 +25,12 @@ pub(crate) const ASSOCIATIONS: &str = "schedule-associations";
 pub(crate) const PUBLISHES: &str = "schedule-reference-publishes";
 /// The completion marker's read (the startup seed).
 pub(crate) const LAST_PUBLISH: &str = "schedule-reference-publishes (read)";
+/// A run signal's write (`schedule_reference_signals`).
+pub(crate) const SIGNALS: &str = "schedule-reference-signals";
+/// The settled delivery's read.
+pub(crate) const SETTLED: &str = "schedule-reference-signals (settled read)";
+/// The run lock's attempt.
+pub(crate) const RUN_LOCK: &str = "run-lock";
 
 /// The endpoint a chunked product's parts are recorded under.
 pub(crate) const fn dated_endpoint(product: DatedProduct) -> &'static str {
@@ -87,6 +93,12 @@ pub(crate) struct FakePublishSink {
     calls: Mutex<Vec<Call>>,
     scripts: Mutex<Vec<Script>>,
     last_completed: Mutex<Option<String>>,
+    /// Another run holds the run lock ([`Self::hold_run_lock_elsewhere`]).
+    lock_held_elsewhere: Mutex<bool>,
+    /// This sink holds the run lock.
+    holding_run_lock: Mutex<bool>,
+    /// The settled delivery, as the last `Settled` signal recorded it.
+    settled: Mutex<Option<String>>,
 }
 
 impl FakePublishSink {
@@ -98,6 +110,29 @@ impl FakePublishSink {
     pub(crate) fn with_last_completed(self, delivery: Option<&str>) -> Self {
         *self.last_completed.lock().unwrap() = delivery.map(str::to_owned);
         self
+    }
+
+    /// Another run holds (`true`) or released (`false`) the run lock.
+    pub(crate) fn hold_run_lock_elsewhere(&self, held: bool) {
+        *self.lock_held_elsewhere.lock().unwrap() = held;
+    }
+
+    /// Whether this sink holds the run lock now.
+    pub(crate) fn holds_run_lock(&self) -> bool {
+        *self.holding_run_lock.lock().unwrap()
+    }
+
+    /// The `(kind, product)` of every recorded signal, in order.
+    pub(crate) fn signals(&self) -> Vec<(String, String)> {
+        self.calls_to(SIGNALS)
+            .into_iter()
+            .map(|call| {
+                (
+                    call.body["kind"].as_str().unwrap_or_default().to_owned(),
+                    call.body["product"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect()
     }
 
     /// The next `times` calls to `endpoint` fail with `fail` (`u64::MAX`:
@@ -263,14 +298,62 @@ impl PublishSink for FakePublishSink {
         ready(self.answer(ASSOCIATIONS, body, format!("service_date={service_date}")))
     }
 
+    /// Also moves the marker the next seed reads, as the table would.
     fn record_completed_publish(&self, delivery: &str) -> impl Future<Output = Answer> {
-        ready(self.write(PUBLISHES, &serde_json::json!({ "delivery": delivery })))
+        let answer = self.write(PUBLISHES, &serde_json::json!({ "delivery": delivery }));
+        if answer.is_ok() {
+            *self.last_completed.lock().unwrap() = Some(delivery.to_owned());
+        }
+        ready(answer)
     }
 
     fn last_completed_publish(&self) -> impl Future<Output = Result<Option<String>, SinkError>> {
         let answer = self
             .answer(LAST_PUBLISH, serde_json::Value::Null, String::new())
             .map(|()| self.last_completed.lock().unwrap().clone());
+        ready(answer)
+    }
+
+    fn try_lock_run(&self) -> impl Future<Output = Result<bool, SinkError>> {
+        let answer = self
+            .answer(RUN_LOCK, serde_json::Value::Null, String::new())
+            .map(|()| {
+                let free = !*self.lock_held_elsewhere.lock().unwrap();
+                if free {
+                    *self.holding_run_lock.lock().unwrap() = true;
+                }
+                free
+            });
+        ready(answer)
+    }
+
+    fn unlock_run(&self) -> impl Future<Output = ()> {
+        *self.holding_run_lock.lock().unwrap() = false;
+        ready(())
+    }
+
+    fn record_signal(
+        &self,
+        signal: Signal,
+        product: &str,
+        delivery: Option<&str>,
+    ) -> impl Future<Output = Answer> {
+        let body = serde_json::json!({
+            "kind": signal.kind(),
+            "product": product,
+            "delivery": delivery,
+        });
+        let answer = self.answer(SIGNALS, body, String::new());
+        if answer.is_ok() && signal == Signal::Settled {
+            *self.settled.lock().unwrap() = delivery.map(str::to_owned);
+        }
+        ready(answer)
+    }
+
+    fn settled_delivery(&self) -> impl Future<Output = Result<Option<String>, SinkError>> {
+        let answer = self
+            .answer(SETTLED, serde_json::Value::Null, String::new())
+            .map(|()| self.settled.lock().unwrap().clone());
         ready(answer)
     }
 }

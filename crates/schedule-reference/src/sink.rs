@@ -16,6 +16,7 @@ pub(crate) mod db;
 pub(crate) mod fake;
 
 pub(crate) use db::DbSink;
+pub(crate) use ds_store::schedule::reference_signals::Signal;
 
 /// Why a publish (or one chunk of it) failed (spec §9.1). Every variant
 /// keeps its cause, so logs still show the SQLSTATE underneath.
@@ -177,6 +178,25 @@ pub(crate) trait PublishSink {
 
     /// Reads that marker back: the newest delivery whose publish completed.
     async fn last_completed_publish(&self) -> Result<Option<String>, SinkError>;
+
+    /// Takes the run lock (a session advisory lock, held until
+    /// [`Self::unlock_run`]): `false` when another run holds it.
+    async fn try_lock_run(&self) -> Result<bool, SinkError>;
+
+    /// Releases the run lock, if this sink holds it.
+    async fn unlock_run(&self);
+
+    /// Records a run signal (`schedule_reference_signals`, DS-241) for
+    /// `product` (`""` for a run-wide one).
+    async fn record_signal(
+        &self,
+        signal: Signal,
+        product: &str,
+        delivery: Option<&str>,
+    ) -> Result<(), SinkError>;
+
+    /// The delivery the last [`Signal::Settled`] named.
+    async fn settled_delivery(&self) -> Result<Option<String>, SinkError>;
 }
 
 #[cfg(test)]
