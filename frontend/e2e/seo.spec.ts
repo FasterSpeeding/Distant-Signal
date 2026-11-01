@@ -48,7 +48,7 @@ const LIVE_PREVIEWS: [page: string, missing: string, description: RegExp][] = [
   [`/stations/${CRS}`, '/stations/ZZZ', /^Disruption, accessibility and departures for /],
   // The public train page (the seed's train); a session-only
   // `/train/by-id/...` page has no card of its own.
-  [`/train/${TRAIN_UID}/${TRAIN_DATE}`, '/train/ZZ9999/2099-01-01', /./],
+  [`/train/${TRAIN_UID}/${TRAIN_DATE}`, '/train/ZZ9999/2099-01-01', /: calling points, platforms and live running\.$/],
 ];
 
 for (const [path, missing, description] of LIVE_PREVIEWS) {
