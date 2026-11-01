@@ -306,8 +306,8 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
   const card = page.locator('[data-plan-entry]').first();
   await expect(card.getByText('07:02 Tram (Blue Line) Piccadilly to Eccles 07:27')).toBeVisible();
   await expect(card.getByText('Tram', { exact: true })).toBeVisible();
-  await expect(card.getByText(/^Walk to Piccadilly tram stop, \d+ min$/)).toBeVisible();
-  await expect(card.getByText(/^Walk from Eccles tram stop, \d+ min$/)).toBeVisible();
+  await expect(card.getByText(/^Walk MAN( · .+)? to Piccadilly tram stop, \d+ min$/)).toBeVisible();
+  await expect(card.getByText(/^Walk Eccles tram stop to ZTE( · .+)?, \d+ min$/)).toBeVisible();
   await expect(card.getByText(/^About \d+ min walk, estimated$/).first()).toBeVisible();
   await expect(card.getByText('Scheduled times, not live')).toBeVisible();
   await expect(card).not.toContainText(/on time|expected|late/i);
@@ -328,7 +328,8 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
   });
   // A walk to a stop is named after it, without its id: the api takes a
   // stop id only on a ride.
-  expect(legs[1]).toMatchObject({ kind: 'untracked', destinationName: 'Piccadilly' });
+  // Each end of a walk between a station and a stop says what it is (DS-239).
+  expect(legs[1]).toMatchObject({ kind: 'untracked', destinationName: 'Piccadilly (Metrolink)' });
   expect(legs[1]).not.toHaveProperty('destinationStopId');
   // The tram's own timetabled times (07:02 to 07:27 BST), its line, stations
   // and network ride.
@@ -347,84 +348,123 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
     transitLineId: 'blue',
     headsign: 'Eccles',
   });
-  expect(legs[3]).toMatchObject({ kind: 'untracked', originName: 'Eccles' });
+  expect(legs[3]).toMatchObject({ kind: 'untracked', originName: 'Eccles (Metrolink)' });
   expect(legs[3]).not.toHaveProperty('originStopId');
   expect(legs[4]).toMatchObject({ trainUid: 'E2ETR2', originCrs: 'ZTE', destinationCrs: 'ZTB' });
 });
 
 // A timetable TRANSFER link between two different stations (Euston to
-// Victoria is a 19-minute one) is a journey of its own: saving the plan
-// keeps it as an untracked `transfer` leg on its times, not a change within
-// one station to drop. The plan (made-up codes) and the save are answered
-// here, so this spends none of the file's `/Trips/plan` budget.
-test('saves a TRANSFER link between two stations as an untracked transfer leg', async ({ page }) => {
-  const train = (trainUid: string, originCrs: string, destinationCrs: string, dep: string, arr: string) => ({
-    kind: 'train',
-    trainUid,
-    serviceDate: '2026-09-17',
-    originCrs,
-    destinationCrs,
-    scheduledDeparture: dep,
-    scheduledArrival: arr,
-    publicDeparture: dep,
-    publicArrival: arr,
-    arrivalDayOffset: 0,
-  });
-  await page.route('**/api/Trips/plan?*', (route) =>
-    route.fulfill({
-      json: {
-        results: 'fastest',
-        segments: [
-          {
-            originCrs: 'ZEA',
-            destinationCrs: 'ZEC',
-            cappedByMaxChanges: false,
-            itineraries: [
-              {
-                legs: [
-                  train('E2EXF1', 'ZEA', 'ZXB', '08:00:00', '08:40:00'),
-                  { kind: 'transfer', mode: 'TRANSFER', originCrs: 'ZXB', destinationCrs: 'ZXC', minutes: 19 },
-                  train('E2EXF2', 'ZXC', 'ZEC', '09:10:00', '09:50:00'),
-                ],
-                changeCount: 1,
-                totalDurationMinutes: 110,
-              },
-            ],
-          },
-        ],
-      },
-    }),
-  );
-  let saved: { legs: Record<string, unknown>[] } | null = null;
-  await page.route('**/api/Journeys/itinerary', async (route) => {
-    saved = route.request().postDataJSON() as { legs: Record<string, unknown>[] };
-    await route.fulfill({ json: { journeyId: 990002, legId: 1, trackingId: null, resolutionStatus: null } });
-  });
-  await page.route('**/api/Journeys/990002', (route) => route.fulfill({ status: 404, body: 'Not found' }));
-
-  await openPlan(page, 'origin=ZEA&destination=ZEC&date=2026-09-17&departAfter=07:30');
-  await findRoutes(page);
-  const card = page.locator('[data-plan-entry]').first();
-  await expect(card.getByText(/^Change ZXB to ZXC, 19 min$/)).toBeVisible();
-  await card.getByRole('radio').check({ force: true });
-  await page.getByRole('button', { name: 'Track this journey' }).click();
-  await expect(page.getByText('First leg tracked')).toBeVisible();
-
-  expect(saved).not.toBeNull();
-  expect(saved!.legs).toEqual([
-    { trainUid: 'E2EXF1', serviceDate: '2026-09-17', originCrs: 'ZEA', destinationCrs: 'ZXB' },
-    // From the first train's arrival (08:40 BST) for 19 minutes.
-    {
-      kind: 'untracked',
-      transitMode: 'transfer',
-      originName: 'ZXB',
-      destinationName: 'ZXC',
-      plannedDeparture: '2026-09-17T07:40:00.000Z',
-      plannedArrival: '2026-09-17T07:59:00.000Z',
+// Victoria is a 19-minute one) is a journey of its own: the card says
+// "Transfer" (#95), and saving the plan keeps it as an untracked `transfer`
+// leg on its times, not a change within one station to drop. One London
+// Underground runs (`operator: LT`) is a known Tube hop: "Tube" on the card,
+// a `tube` leg saved; so is one with a Tube stop at both ends, which saves
+// both stop ids (only a plain transfer's mode can't have them). The plan
+// (made-up codes) and the save are answered here, so this spends none of
+// the file's `/Trips/plan` budget.
+const ZXB_STOP = { id: '940GZZLUZXB', name: 'Zed Bee', modes: ['tube'], lines: [] };
+const ZXC_STOP = { id: '940GZZLUZXC', name: 'Zed Cee', modes: ['tube'], lines: [] };
+const TRANSFER_CASES = [
+  {
+    name: 'an untracked transfer leg',
+    plan: { operator: null },
+    label: 'Transfer',
+    saved: { transitMode: 'transfer', originName: 'ZXB', destinationName: 'ZXC' },
+  },
+  {
+    name: 'a Tube leg when London Underground runs it',
+    plan: { operator: 'LT' },
+    label: 'Tube',
+    saved: { transitMode: 'tube', originName: 'ZXB', destinationName: 'ZXC' },
+  },
+  {
+    name: 'a Tube leg with both stop ids when both ends are Tube stops',
+    plan: { operator: null, originStop: ZXB_STOP, destinationStop: ZXC_STOP },
+    label: 'Tube',
+    saved: {
+      transitMode: 'tube',
+      originName: 'Zed Bee',
+      destinationName: 'Zed Cee',
+      originStopId: '940GZZLUZXB',
+      destinationStopId: '940GZZLUZXC',
     },
-    { trainUid: 'E2EXF2', serviceDate: '2026-09-17', originCrs: 'ZXC', destinationCrs: 'ZEC' },
-  ]);
-});
+  },
+] as const;
+for (const { name, plan, label, saved: expected } of TRANSFER_CASES) {
+  test(`saves a TRANSFER link between two stations as ${name}`, async ({ page }) => {
+    const train = (trainUid: string, originCrs: string, destinationCrs: string, dep: string, arr: string) => ({
+      kind: 'train',
+      trainUid,
+      serviceDate: '2026-09-17',
+      originCrs,
+      destinationCrs,
+      scheduledDeparture: dep,
+      scheduledArrival: arr,
+      publicDeparture: dep,
+      publicArrival: arr,
+      arrivalDayOffset: 0,
+    });
+    await page.route('**/api/Trips/plan?*', (route) =>
+      route.fulfill({
+        json: {
+          results: 'fastest',
+          segments: [
+            {
+              originCrs: 'ZEA',
+              destinationCrs: 'ZEC',
+              cappedByMaxChanges: false,
+              itineraries: [
+                {
+                  legs: [
+                    train('E2EXF1', 'ZEA', 'ZXB', '08:00:00', '08:40:00'),
+                    {
+                      kind: 'transfer',
+                      mode: 'TRANSFER',
+                      originCrs: 'ZXB',
+                      destinationCrs: 'ZXC',
+                      minutes: 19,
+                      ...plan,
+                    },
+                    train('E2EXF2', 'ZXC', 'ZEC', '09:10:00', '09:50:00'),
+                  ],
+                  changeCount: 1,
+                  totalDurationMinutes: 110,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    let saved: { legs: Record<string, unknown>[] } | null = null;
+    await page.route('**/api/Journeys/itinerary', async (route) => {
+      saved = route.request().postDataJSON() as { legs: Record<string, unknown>[] };
+      await route.fulfill({ json: { journeyId: 990002, legId: 1, trackingId: null, resolutionStatus: null } });
+    });
+    await page.route('**/api/Journeys/990002', (route) => route.fulfill({ status: 404, body: 'Not found' }));
+
+    await openPlan(page, 'origin=ZEA&destination=ZEC&date=2026-09-17&departAfter=07:30');
+    await findRoutes(page);
+    const card = page.locator('[data-plan-entry]').first();
+    await expect(card.getByText(`${label} ZXB to ZXC, 19 min`, { exact: true })).toBeVisible();
+    await card.getByRole('radio').check({ force: true });
+    await page.getByRole('button', { name: 'Track this journey' }).click();
+    await expect(page.getByText('First leg tracked')).toBeVisible();
+
+    expect(saved).not.toBeNull();
+    expect(saved!.legs).toEqual([
+      { trainUid: 'E2EXF1', serviceDate: '2026-09-17', originCrs: 'ZEA', destinationCrs: 'ZXB' },
+      // From the first train's arrival (08:40 BST) for 19 minutes.
+      {
+        kind: 'untracked',
+        ...expected,
+        plannedDeparture: '2026-09-17T07:40:00.000Z',
+        plannedArrival: '2026-09-17T07:59:00.000Z',
+      },
+      { trainUid: 'E2EXF2', serviceDate: '2026-09-17', originCrs: 'ZXC', destinationCrs: 'ZEC' },
+    ]);
+  });
+}
 
 // Wimbledon to Milton Keynes by the District line, as production planned
 // it on 2026-11-02 (made-up codes and times here): a walk into a TfL
@@ -442,7 +482,9 @@ test('saves a plan with walks to and from a Tube station, the stop ids only on t
     minutes: 4,
     transitWalk: { network: 'tfl', stop, towardsStop: end === 'to', walkMinutes: 2, estimated: true },
   });
-  const testbury = { id: '940GZZLUTST', name: 'Testbury' };
+  // London Euston's Tube station, named as TfL names it: the walk's two
+  // ends would read alike without their kinds (DS-239).
+  const euston = { id: '940GZZLUEUS', name: 'Euston' };
   const westTest = { id: '940GZZLUWTS', name: 'West Test' };
   await page.route('**/api/Trips/plan?*', (route) =>
     route.fulfill({
@@ -456,7 +498,7 @@ test('saves a plan with walks to and from a Tube station, the stop ids only on t
             itineraries: [
               {
                 legs: [
-                  walk('to', 'ZEA', testbury),
+                  walk('to', 'EUS', euston),
                   {
                     kind: 'transit',
                     network: 'tfl',
@@ -472,7 +514,7 @@ test('saves a plan with walks to and from a Tube station, the stop ids only on t
                     headsign: null,
                     originCrs: null,
                     destinationCrs: null,
-                    originStop: { ...testbury, platform: null },
+                    originStop: { ...euston, platform: null },
                     destinationStop: { ...westTest, platform: null },
                     headwayMinutes: 4,
                     notices: [],
@@ -521,6 +563,8 @@ test('saves a plan with walks to and from a Tube station, the stop ids only on t
   await openPlan(page, 'origin=ZEA&destination=ZEC&date=2026-09-17&departAfter=07:30');
   await findRoutes(page);
   const card = page.locator('[data-plan-entry]').first();
+  await expect(card.getByText('Walk EUS · London Euston (National Rail) to Euston (Tube), 4 min')).toBeVisible();
+  await expect(card.getByText(/^Walk West Test \(Tube\) to ZWT( · .+)?, 4 min$/)).toBeVisible();
   await card.getByRole('radio').check({ force: true });
   await page.getByRole('button', { name: 'Track this journey' }).click();
   await expect(page.getByText('First leg tracked')).toBeVisible();
@@ -528,9 +572,16 @@ test('saves a plan with walks to and from a Tube station, the stop ids only on t
 
   expect(saved).not.toBeNull();
   expect(saved!.legs.map((leg) => leg.transitMode ?? 'train')).toEqual(['walk', 'tube', 'walk', 'train']);
-  expect(saved!.legs[0]).toMatchObject({ destinationName: 'Testbury' });
+  expect(saved!.legs[0]).toMatchObject({
+    originName: 'London Euston (National Rail)',
+    destinationName: 'Euston (Tube)',
+  });
   expect(saved!.legs[0]).not.toHaveProperty('destinationStopId');
-  expect(saved!.legs[1]).toMatchObject({ originStopId: '940GZZLUTST', destinationStopId: '940GZZLUWTS' });
-  expect(saved!.legs[2]).toMatchObject({ originName: 'West Test' });
+  expect(saved!.legs[1]).toMatchObject({
+    originName: 'Euston',
+    originStopId: '940GZZLUEUS',
+    destinationStopId: '940GZZLUWTS',
+  });
+  expect(saved!.legs[2]).toMatchObject({ originName: 'West Test (Tube)' });
   expect(saved!.legs[2]).not.toHaveProperty('originStopId');
 });

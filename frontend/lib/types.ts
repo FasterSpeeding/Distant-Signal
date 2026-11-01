@@ -2053,7 +2053,9 @@ export interface TripPlanTransitNotice {
  * station to the stop. */
 export interface TripPlanTransitWalk {
   network: string;
-  stop: { id: string; name: string };
+  /** `modes`: a TfL station's `tfl_stops` modes (`tube`, `dlr`, `tram`;
+   * 2026-11-01), absent for another network's or from an older api. */
+  stop: { id: string; name: string; modes?: string[] };
   towardsStop: boolean;
   walkMinutes: number;
   estimated: boolean;

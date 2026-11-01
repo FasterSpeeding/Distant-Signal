@@ -109,8 +109,9 @@ describe('itineraryLegsForSaving', () => {
       {
         kind: 'untracked',
         transitMode: 'walk',
-        originName: 'London Euston',
-        destinationName: 'Euston',
+        // Each end says what it is (DS-239): the names would read alike.
+        originName: 'London Euston (National Rail)',
+        destinationName: 'Euston (Tube)',
         // The walk to the stop is named after it; only a ride can have its id.
         plannedDeparture: '2026-10-21T08:30:00.000Z',
         plannedArrival: '2026-10-21T08:35:00.000Z',
@@ -373,6 +374,31 @@ describe('transferAsUntracked', () => {
     ).toEqual({ transitMode: 'transfer', destinationName: 'London Kings Cross' });
   });
 
+  it('saves a TRANSFER between stations that is a known Tube hop as a Tube leg', () => {
+    const hop = { kind: 'transfer' as const, mode: 'TRANSFER', originCrs: 'EUS', destinationCrs: 'VIC', minutes: 19 };
+    // Run by London Underground: the pair also has a Tube link.
+    expect(transferAsUntracked({ ...hop, operator: 'LT', line: 'Victoria' }, nameFor)).toEqual({
+      transitMode: 'tube',
+      originName: 'London Euston',
+      destinationName: 'London Victoria',
+      lineName: 'Victoria line',
+    });
+    // A Tube stop at both ends: the stops are the places.
+    const euston = { id: '940GZZLUEUS', name: 'Euston', modes: ['tube'], lines: [] };
+    const victoria = { id: '940GZZLUVIC', name: 'Victoria', modes: ['tube'], lines: [] };
+    expect(transferAsUntracked({ ...hop, originStop: euston, destinationStop: victoria }, nameFor)).toEqual({
+      transitMode: 'tube',
+      originName: 'Euston',
+      destinationName: 'Victoria',
+      originStopId: '940GZZLUEUS',
+      destinationStopId: '940GZZLUVIC',
+    });
+    // Not known to be one: a transfer, as before.
+    expect(transferAsUntracked({ ...hop, operator: null }, nameFor)?.transitMode).toBe('transfer');
+    // Within one station: still not a leg of its own.
+    expect(transferAsUntracked({ ...hop, destinationCrs: 'EUS', operator: 'LT' }, nameFor)).toBeNull();
+  });
+
   it("takes a Tube transfer's TfL stops, names and ids, where the plan has them", () => {
     const euston = { id: '940GZZTESTE', name: 'Euston', modes: ['tube'], lines: [] };
     const kingsCross = { id: '940GZZTESTK', name: "King's Cross St. Pancras", modes: ['tube'], lines: [] };
@@ -462,7 +488,7 @@ describe('itineraryLegsForSaving with a tram leg', () => {
         kind: 'untracked',
         transitMode: 'walk',
         originName: 'Manchester Piccadilly',
-        destinationName: 'Piccadilly',
+        destinationName: 'Piccadilly (Metrolink)',
         // A walk has no stop id (the api takes one only on a ride); the
         // stop's name is its place.
         plannedDeparture: '2026-11-04T08:00:00.000Z',
@@ -487,7 +513,7 @@ describe('itineraryLegsForSaving with a tram leg', () => {
       {
         kind: 'untracked',
         transitMode: 'walk',
-        originName: 'Victoria',
+        originName: 'Victoria (Metrolink)',
         destinationName: 'Manchester Victoria',
         // The walk follows the tram it leaves, not the train before it.
         plannedDeparture: '2026-11-04T08:22:00.000Z',
@@ -559,8 +585,9 @@ describe('itineraryLegsForSaving sends stop ids only where the api takes them', 
       {
         kind: 'untracked',
         transitMode: 'walk',
-        originName: 'Wimbledon',
-        destinationName: 'Wimbledon',
+        // Not "Wimbledon to Wimbledon" (DS-239).
+        originName: 'Wimbledon (National Rail)',
+        destinationName: 'Wimbledon (Tube)',
         plannedDeparture: '2026-11-02T09:05:00.000Z',
         plannedArrival: '2026-11-02T09:09:00.000Z',
       },
@@ -580,8 +607,8 @@ describe('itineraryLegsForSaving sends stop ids only where the api takes them', 
       {
         kind: 'untracked',
         transitMode: 'walk',
-        originName: 'West Brompton',
-        destinationName: 'West Brompton',
+        originName: 'West Brompton (Tube)',
+        destinationName: 'West Brompton (National Rail)',
         plannedDeparture: '2026-11-02T09:25:00.000Z',
         plannedArrival: '2026-11-02T09:29:00.000Z',
       },
@@ -603,6 +630,16 @@ describe('itineraryLegsForSaving sends stop ids only where the api takes them', 
       originStop: euston,
       destinationStop: victoria,
     }));
+    // A TRANSFER between two stations with a Tube stop at one end only is
+    // no known Tube hop: a plain transfer, which can't have a stop id.
+    transfers.push({
+      kind: 'transfer',
+      mode: 'TRANSFER',
+      originCrs: 'EUS',
+      destinationCrs: 'VIC',
+      minutes: 10,
+      originStop: euston,
+    });
     const rides: TripPlanLeg[] = [
       TUBE_LEG,
       { ...TUBE_LEG, serviceMode: 'dlr' },
@@ -618,17 +655,29 @@ describe('itineraryLegsForSaving sends stop ids only where the api takes them', 
       nameFor,
     );
     const untracked = legs.filter((leg) => 'kind' in leg);
-    expect(untracked).toHaveLength(15);
+    expect(untracked).toHaveLength(16);
     for (const leg of untracked) expect(accepted(leg), JSON.stringify(leg)).toBe(true);
-    // The legs that can have their stops keep them.
+    // The legs that can have their stops keep them: the TRANSFER with a Tube
+    // stop at both ends is a known Tube hop, saved as a tube ride with both.
     expect(untracked.filter((leg) => leg.originStopId !== undefined).map((leg) => leg.transitMode)).toEqual([
       'tube',
       'metro',
+      'tube',
       'tube',
       'dlr',
       'tram',
       'tram',
       'bus',
     ]);
+    // The TUBE link and the TRANSFER Tube hop, each with both stops.
+    const eustonTube = untracked.filter((leg) => leg.transitMode === 'tube' && leg.originName === 'Euston');
+    expect(eustonTube).toHaveLength(2);
+    for (const leg of eustonTube) {
+      expect(leg).toMatchObject({ originStopId: '940GZZLUEUS', destinationStopId: '940GZZLUVIC' });
+    }
+    const plain = untracked.filter((leg) => leg.transitMode === 'transfer');
+    expect(plain).toHaveLength(1);
+    expect(plain[0]).not.toHaveProperty('originStopId');
+    expect(plain[0]).not.toHaveProperty('destinationStopId');
   });
 });

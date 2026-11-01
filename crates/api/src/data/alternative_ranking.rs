@@ -196,7 +196,8 @@ pub struct Candidate {
     /// Live (else timetabled) arrival at the final destination.
     pub arrival: DateTime<Utc>,
     pub changes: u32,
-    /// `TUBE`, `BUS` and `METRO` transfers.
+    /// `TUBE`, `BUS` and `METRO` transfers, and `TRANSFER`s between two
+    /// different stations (a Tube hop, or a ride the link does not name).
     pub tube_or_bus_transfers: u32,
     pub walk_minutes: u32,
     /// The tightest change's spare minutes after the minimum change time.
