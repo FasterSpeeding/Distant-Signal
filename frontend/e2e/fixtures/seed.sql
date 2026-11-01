@@ -949,6 +949,15 @@ VALUES
    '[{"id": "piccadilly", "name": "Piccadilly"}]', NULL, 51.5231, -0.1243, NOW())
 ON CONFLICT (stop_id) DO NOTHING;
 
+-- Walthamstow Central, the end of journey-timetabled-leg.spec.ts's Victoria
+-- line ride from King's Cross (DS-237): a timetabled leg's stops must be
+-- TfL stops. The stub answers it with a 503; no page or baseline shows it.
+INSERT INTO tfl_stops (stop_id, name, search_name, modes, lines, hub_code, latitude, longitude, fetched_at)
+VALUES
+  ('940GZZLUWWL', 'Walthamstow Central', 'walthamstow central', '{tube}',
+   '[{"id": "victoria", "name": "Victoria"}]', NULL, 51.5830, -0.0199, NOW())
+ON CONFLICT (stop_id) DO NOTHING;
+
 INSERT INTO tfl_stop_crs (stop_id, crs, source)
 VALUES ('940GZZLUKSX', 'KGX', 'hub')
 ON CONFLICT DO NOTHING;

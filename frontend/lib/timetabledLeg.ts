@@ -1,6 +1,14 @@
 import { formatTime } from './dateFormat';
 import { transitIncidentHref, transitNetworkName } from './transitStops';
-import type { JourneyLegDetail, LegTimetable, TransitMode, TripPlanTransitNotice } from './types';
+import type {
+  JourneyLegDetail,
+  LegLiveArrivalsFilter,
+  LegTimetable,
+  TflArrival,
+  TflStopArrivals,
+  TransitMode,
+  TripPlanTransitNotice,
+} from './types';
 
 // A timetabled leg (DS-237): a Tube, DLR or tram ride saved from a plan,
 // found in its network's timetable on every read. Its times are the
@@ -22,6 +30,16 @@ export function timetableCaption(timetable: LegTimetable, mode: TransitMode | nu
   return `${source} ${vehicles} usually run every ${minutes}.`;
 }
 
+/** A line's name for a sentence: a Tube line's with "line" after it
+ * ("Victoria line"), as TfL names them without; any other as named ("Blue
+ * Line", "DLR"); "line" when unknown. */
+export function lineLabel(timetable: LegTimetable): string {
+  const line = timetable.line;
+  if (!line) return 'line';
+  if (line.mode === 'tube' && !/\bline$/i.test(line.name)) return `${line.name} line`;
+  return line.name;
+}
+
 /** The note when the timetable no longer has the ride as planned, or
  * `null` when it does (or when there is nothing worth saying). `done`
  * legs say nothing about a missing timetable: it has moved on. */
@@ -31,7 +49,7 @@ export function timetableNote(
   done: boolean,
 ): { text: string; tone: 'neutral' | 'caution' } | null {
   const vehicle = vehicleNoun(mode);
-  const line = timetable.line?.name ?? 'line';
+  const line = lineLabel(timetable);
   switch (timetable.state) {
     case 'matched':
       return null;
@@ -44,7 +62,7 @@ export function timetableNote(
     case 'notInTimetable':
       if (done) return null;
       return {
-        text: `This ${vehicle} isn't in the timetable any more. The ${line} still runs between these stops that day, so check the times before you travel.`,
+        text: `The timetable has no ${vehicle} at this time. The ${line} still runs between these stops that day, so check the times before you travel.`,
         tone: 'caution',
       };
     case 'noService':
@@ -94,4 +112,37 @@ export function nextTimetabledNote(next: JourneyLegDetail): string | null {
  * the traveller can't make the planned one, else `null`. */
 export function retimedArrival(leg: JourneyLegDetail): string | null {
   return leg.connection?.nextTimetabled?.arrival ?? null;
+}
+
+/** How long before a timetabled leg's planned departure its live
+ * arrivals panel appears (phase C). */
+export const LIVE_ARRIVALS_LEAD_MINUTES = 60;
+
+/** Whether a timetabled leg shows TfL's live arrivals at `now`: it has a
+ * filter, and is between an hour before its planned departure and its
+ * planned arrival. */
+export function showsLiveArrivals(leg: JourneyLegDetail, now: Date): boolean {
+  if (!leg.timetable?.liveArrivals || !leg.plannedDeparture || !leg.plannedArrival) return false;
+  const opens = new Date(leg.plannedDeparture).getTime() - LIVE_ARRIVALS_LEAD_MINUTES * 60_000;
+  const closes = new Date(leg.plannedArrival).getTime();
+  return now.getTime() >= opens && now.getTime() < closes;
+}
+
+/** A station name for comparing TfL's with the timetable's: lower case,
+ * letters and digits only ("King's Cross St. Pancras" and "Kings Cross St
+ * Pancras" are one). */
+function nameKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** The predictions at the leg's boarding stop for its line whose
+ * destination reaches its alighting stop, soonest first, at most `limit`. */
+export function arrivalsForLeg(arrivals: TflStopArrivals, filter: LegLiveArrivalsFilter, limit = 4): TflArrival[] {
+  const wanted = new Set(filter.destinations.map(nameKey));
+  return arrivals.groups
+    .filter((group) => group.lineId === filter.lineId)
+    .flatMap((group) => group.arrivals)
+    .filter((arrival) => wanted.has(nameKey(arrival.destination)))
+    .sort((a, b) => a.expectedArrival.localeCompare(b.expectedArrival))
+    .slice(0, limit);
 }

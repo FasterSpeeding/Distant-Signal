@@ -214,10 +214,87 @@ pub struct LegTimetable {
     pub headway_minutes: Option<u32>,
     /// Current disruption on the line (the plan's transit leg notices).
     pub notices: Vec<TransitLegNotice>,
+    /// On a network whose stations are `TfL`'s stops (`tfl`, phase C), so
+    /// with `TfL`'s live arrivals: which of
+    /// the boarding stop's predictions are for this ride's line and reach
+    /// the alighting stop. Absent elsewhere, and when no pattern of the
+    /// line serves the two stops.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_arrivals: Option<LiveArrivalsFilter>,
     /// Every ride between the two stations in the read window, for the
     /// connection checks.
     #[serde(skip)]
     pub rides: Vec<Ride>,
+}
+
+/// What a client picks from `GET /public/tfl/stops/{stopId}/arrivals` for
+/// a timetabled leg (DS-237, phase C): the groups of `lineId`, and in them
+/// the trains whose destination is one of `destinations`, the last stations
+/// of the line's timetabled patterns from the boarding stop through the
+/// alighting one. Indicative: a prediction is not the leg's ride.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveArrivalsFilter {
+    /// The boarding stop, `TfL`'s spelling (`940GZZLUEUS`).
+    pub stop_id: String,
+    /// `TfL`'s line id (`victoria`; the network's local ids are `TfL`'s).
+    pub line_id: String,
+    /// Station names, as the timetable names them, sorted.
+    pub destinations: Vec<String>,
+}
+
+/// The last stations' names, sorted and deduplicated, of `line_id`'s
+/// patterns in `feed_version` that call at station `origin` (to board)
+/// and then at station `destination` (to alight), both stored nodes:
+/// where a train that serves the leg can be going. Any day's patterns,
+/// so a day with no timetabled ride still has them.
+async fn line_destinations(
+    pool: &PgPool,
+    network: &str,
+    feed_version: &str,
+    line_id: &str,
+    origin: &str,
+    destination: &str,
+) -> Result<Vec<String>> {
+    sqlx::query_scalar(
+        "WITH platforms AS ( \
+             SELECT s.stop_id, COALESCE(s.parent_stop_id, s.stop_id) AS station \
+             FROM transit_stops s \
+             WHERE s.network = $1 AND s.feed_version = $2 \
+               AND (s.stop_id = ANY($4) OR s.parent_stop_id = ANY($4))), \
+         serving AS ( \
+             SELECT DISTINCT o.pattern_id \
+             FROM transit_patterns p \
+             JOIN transit_pattern_stops o ON o.network = p.network \
+              AND o.feed_version = p.feed_version AND o.pattern_id = p.pattern_id \
+              AND o.pickup <> 1 \
+             JOIN platforms po ON po.stop_id = o.stop_id AND po.station = $5 \
+             JOIN transit_pattern_stops a ON a.network = o.network \
+              AND a.feed_version = o.feed_version AND a.pattern_id = o.pattern_id \
+              AND a.seq > o.seq AND a.drop_off <> 1 \
+             JOIN platforms pa ON pa.stop_id = a.stop_id AND pa.station = $6 \
+             WHERE p.network = $1 AND p.feed_version = $2 AND p.line_id = $3), \
+         last AS ( \
+             SELECT DISTINCT ON (ps.pattern_id) ps.stop_id \
+             FROM transit_pattern_stops ps JOIN serving USING (pattern_id) \
+             WHERE ps.network = $1 AND ps.feed_version = $2 \
+             ORDER BY ps.pattern_id, ps.seq DESC) \
+         SELECT DISTINCT COALESCE(st.name, p.name) AS name \
+         FROM last \
+         JOIN transit_stops p ON p.network = $1 AND p.feed_version = $2 AND p.stop_id = last.stop_id \
+         LEFT JOIN transit_stops st ON st.network = $1 AND st.feed_version = $2 \
+              AND st.stop_id = p.parent_stop_id \
+         ORDER BY name",
+    )
+    .bind(network)
+    .bind(feed_version)
+    .bind(line_id)
+    .bind([origin, destination])
+    .bind(origin)
+    .bind(destination)
+    .fetch_all(pool)
+    .await
+    .context("read the line's destinations")
 }
 
 /// The local time `seconds` after `date`'s midnight in London, to the
@@ -555,6 +632,7 @@ async fn resolve_one(pool: &PgPool, key: &LegKey) -> Result<LegTimetable> {
         calls: Vec::new(),
         headway_minutes: None,
         notices: Vec::new(),
+        live_arrivals: None,
         rides: Vec::new(),
     };
     let line = match active_feed(pool, &key.network).await? {
@@ -570,9 +648,32 @@ async fn resolve_one(pool: &PgPool, key: &LegKey) -> Result<LegTimetable> {
         (MatchState::NoService, None) if runs => (MatchState::NotInTimetable, None),
         chosen => chosen,
     };
+    let tfl_stops =
+        transit_planning::planner_network(&key.network).is_some_and(|network| network.tfl_stops);
+    let live_arrivals = if tfl_stops {
+        let origin = transit_planning::access_node_spelling(&key.origin_stop_id);
+        let destination = transit_planning::access_node_spelling(&key.destination_stop_id);
+        let destinations = line_destinations(
+            pool,
+            &key.network,
+            &feed_version,
+            &key.line_id,
+            &origin,
+            &destination,
+        )
+        .await?;
+        (!destinations.is_empty()).then(|| LiveArrivalsFilter {
+            stop_id: transit_planning::public_id(&origin, PublicStopId::StopArea),
+            line_id: key.line_id.clone(),
+            destinations,
+        })
+    } else {
+        None
+    };
     let Some(ride) = ride.cloned() else {
         return Ok(LegTimetable {
             headway_minutes: headway_minutes(&rides, key.planned_departure),
+            live_arrivals,
             rides,
             ..empty(state, line)
         });
@@ -588,6 +689,7 @@ async fn resolve_one(pool: &PgPool, key: &LegKey) -> Result<LegTimetable> {
         calls,
         headway_minutes: headway_minutes(&rides, ride.departure),
         notices: Vec::new(),
+        live_arrivals,
         rides,
     })
 }

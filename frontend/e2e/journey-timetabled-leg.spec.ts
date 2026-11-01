@@ -10,6 +10,11 @@ import AxeBuilder from '@axe-core/playwright';
 // journey page then shows each as scheduled, with its stops, the
 // disruption and the note. The journey is deleted again at the end, so no
 // other spec or screenshot sees it.
+//
+// Then a Victoria line ride from King's Cross St. Pancras to Walthamstow
+// Central (the seeded TfL network) leaving in ten minutes: its card lists
+// TfL's live predictions at King's Cross (scripts/tfl-arrivals-stub.py)
+// for trains that reach Walthamstow, never the Brixton ones.
 
 const SESSION_COOKIE = process.env.E2E_SESSION_COOKIE;
 
@@ -27,6 +32,11 @@ async function logIn(context: BrowserContext) {
       sameSite: 'Lax',
     },
   ]);
+}
+
+/** `minutes` from now, as an instant. */
+function fromNow(minutes: number): string {
+  return new Date(Date.now() + minutes * 60_000).toISOString();
 }
 
 /** `HH:MM` London time `days` from London's today, as an instant. */
@@ -137,5 +147,39 @@ test.describe('timetabled legs', () => {
 
     const results = await new AxeBuilder({ page }).include('[data-timetabled-leg]').analyze();
     expect(results.violations).toEqual([]);
+  });
+
+  test("a Tube ride about to leave lists TfL's live trains that reach its stop", async ({ page, context }) => {
+    await logIn(context);
+    await page.goto('/journeys');
+    const created = await api(page, 'POST', '/Journeys', {
+      leg: {
+        mode: 'untracked',
+        transitMode: 'tube',
+        lineName: 'Victoria',
+        originStopId: '940GZZLUKSX',
+        destinationStopId: '940GZZLUWWL',
+        plannedDeparture: fromNow(10),
+        plannedArrival: fromNow(20),
+        transitNetwork: 'tfl',
+        transitLineId: 'victoria',
+      },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const tubeJourney = created.body.journeyId as number;
+    try {
+      await page.goto(`/journeys/${tubeJourney}`);
+      const panel = page.locator('[data-live-arrivals]');
+      await expect(panel.getByText("Next trains at King's Cross St. Pancras (live from TfL)")).toBeVisible();
+      const rows = panel.locator('[data-live-arrival]');
+      await expect(rows).toHaveCount(1);
+      await expect(rows.first()).toContainText('Walthamstow Central');
+      await expect(panel.getByText(/Brixton/)).toHaveCount(0);
+      await expect(panel.getByText(/^TfL's predictions for trains that go to Walthamstow Central\./)).toBeVisible();
+      const results = await new AxeBuilder({ page }).include('[data-live-arrivals]').analyze();
+      expect(results.violations).toEqual([]);
+    } finally {
+      await api(page, 'DELETE', `/Journeys/${tubeJourney}`);
+    }
   });
 });
