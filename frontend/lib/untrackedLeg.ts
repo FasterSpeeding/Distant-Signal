@@ -1,4 +1,5 @@
 import { formatTime } from './dateFormat';
+import { labelPlaceEnds, placeNamesAlike, RAIL_PLACE, stopPlaceKind, type PlaceKind } from './placeKinds';
 import type { JourneyLegDetail, TransitMode, UntrackedLegFields, UntrackedStatus } from './types';
 
 /** An untracked leg: a Tube ride, a bus, a walk, anything we have no live
@@ -74,12 +75,77 @@ export function untrackedLegTitle(leg: Pick<UntrackedLegFields, 'transitMode' | 
   return leg.lineName ? `${mode}: ${leg.lineName}` : mode;
 }
 
+/** The fields of a leg that say what kind of station its ends are. */
+type PlaceLeg = Pick<JourneyLegDetail, 'originName' | 'destinationName'> &
+  Partial<
+    Pick<
+      JourneyLegDetail,
+      'kind' | 'originCrs' | 'destinationCrs' | 'transitMode' | 'originStopId' | 'destinationStopId'
+    >
+  >;
+
+/** The legs either side of an untracked leg in its journey, which can say
+ * what its ends are: a train leg arrives at, or leaves from, a National
+ * Rail station; a Tube ride's end is a Tube stop. */
+export interface UntrackedLegNeighbours {
+  previous?: PlaceLeg | null | undefined;
+  next?: PlaceLeg | null | undefined;
+}
+
+/** The modes whose places are TfL stops of that mode. */
+const STOP_MODE_OF: Partial<Record<string, string>> = { tube: 'tube', dlr: 'dlr', tram: 'tram' };
+
+function rideKind(mode: string | null | undefined): PlaceKind | undefined {
+  const stopMode = STOP_MODE_OF[mode ?? ''];
+  return stopMode ? { kind: 'stop', modes: [stopMode] } : undefined;
+}
+
+/** What kind of station `neighbour`'s `end` is, if it says. */
+function neighbourEndKind(
+  neighbour: PlaceLeg | null | undefined,
+  end: 'origin' | 'destination',
+): PlaceKind | undefined {
+  if (!neighbour) return undefined;
+  const crs = end === 'origin' ? neighbour.originCrs : neighbour.destinationCrs;
+  if (!isUntrackedLeg(neighbour)) return crs ? RAIL_PLACE : undefined;
+  const stopId = end === 'origin' ? neighbour.originStopId : neighbour.destinationStopId;
+  return stopPlaceKind({ id: stopId ?? null }) ?? rideKind(neighbour.transitMode);
+}
+
+/** An untracked leg's place names, each end saying what kind of station it
+ * is when the two would otherwise read alike (DS-239): a leg saved before
+ * the planner named them, "Vauxhall to Vauxhall", reads "Vauxhall
+ * (National Rail) to Vauxhall (Tube)". Worked out when shown, never
+ * stored: from each end's stop id (or a Tube ride's own mode), else the
+ * leg either side of it (the train before a walk arrives at the National
+ * Rail station, the Tube ride after it leaves from the Tube station). An
+ * end nothing tells is as saved, as are names that differ. */
+export function untrackedLegPlaceNames(
+  leg: PlaceLeg,
+  neighbours: UntrackedLegNeighbours = {},
+): { originName: string | null; destinationName: string | null } {
+  const originName = leg.originName ?? null;
+  const destinationName = leg.destinationName ?? null;
+  if (!originName || !destinationName || !placeNamesAlike(originName, destinationName)) {
+    return { originName, destinationName };
+  }
+  const ownKind = (id: string | null | undefined): PlaceKind | undefined =>
+    stopPlaceKind({ id: id ?? null }) ?? rideKind(leg.transitMode);
+  const [origin, destination] = labelPlaceEnds(
+    { name: originName, kind: ownKind(leg.originStopId) ?? neighbourEndKind(neighbours.previous, 'destination') },
+    { name: destinationName, kind: ownKind(leg.destinationStopId) ?? neighbourEndKind(neighbours.next, 'origin') },
+  );
+  return { originName: origin, destinationName: destination };
+}
+
 /** "Euston to Victoria", one end, or `null` with neither. Free text, so
- * never a station code. */
-export function untrackedLegPlaces(leg: Pick<JourneyLegDetail, 'originName' | 'destinationName'>): string | null {
-  if (leg.originName && leg.destinationName) return `${leg.originName} to ${leg.destinationName}`;
-  if (leg.originName) return `From ${leg.originName}`;
-  if (leg.destinationName) return `To ${leg.destinationName}`;
+ * never a station code. Names that read alike say what each end is where
+ * the leg or `neighbours` tell ([`untrackedLegPlaceNames`]). */
+export function untrackedLegPlaces(leg: PlaceLeg, neighbours: UntrackedLegNeighbours = {}): string | null {
+  const { originName, destinationName } = untrackedLegPlaceNames(leg, neighbours);
+  if (originName && destinationName) return `${originName} to ${destinationName}`;
+  if (originName) return `From ${originName}`;
+  if (destinationName) return `To ${destinationName}`;
   return null;
 }
 

@@ -41,7 +41,14 @@ import { routeLabel, stationLabel } from '@/lib/stationLabel';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import { journeyListItemCancellation, viewerCanPickTrain } from '@/lib/trackedRowStatus';
 import { trackedTrainDisplayName, trackedTrainHref, trackedTrainRouteLabel } from '@/lib/trackingName';
-import { isUntrackedLeg, untrackedLegPlaces, untrackedLegTimes, untrackedLegTitle } from '@/lib/untrackedLeg';
+import {
+  isUntrackedLeg,
+  untrackedLegPlaceNames,
+  untrackedLegPlaces,
+  untrackedLegTimes,
+  untrackedLegTitle,
+  type UntrackedLegNeighbours,
+} from '@/lib/untrackedLeg';
 import type { JourneyDetail, JourneyLegDetail, SharedVia } from '@/lib/types';
 
 /* The logged-in home page's journey sections: "Current journey" (the one
@@ -55,9 +62,9 @@ import type { JourneyDetail, JourneyLegDetail, SharedVia } from '@/lib/types';
  * (YRK) to Newcastle (NCL) · 14:02"), or an untracked leg's mode, places
  * and planned times ("Tube: Victoria line, Euston to Victoria · 08:05 to
  * 08:20"). */
-function legNowText(leg: JourneyLegDetail): string {
+function legNowText(leg: JourneyLegDetail, neighbours: UntrackedLegNeighbours = {}): string {
   if (isUntrackedLeg(leg)) {
-    const places = untrackedLegPlaces(leg);
+    const places = untrackedLegPlaces(leg, neighbours);
     const times = untrackedLegTimes(leg);
     const what = places ? `${untrackedLegTitle(leg)}, ${places}` : untrackedLegTitle(leg);
     return times ? `${what} · ${times}` : what;
@@ -79,9 +86,10 @@ function legNowText(leg: JourneyLegDetail): string {
 
 /** Where the current leg ends, by name and code ("York (YRK)"), or its
  * place name for an untracked leg. `null` when nothing names it. */
-function legEndText(leg: JourneyLegDetail): string | null {
+function legEndText(leg: JourneyLegDetail, neighbours: UntrackedLegNeighbours = {}): string | null {
   if (leg.destinationCrs) return stationLabel(leg.destinationCrs, leg.destinationName);
-  return leg.destinationName?.trim() || leg.trackedTrainState?.scheduleDestinationName || null;
+  const place = isUntrackedLeg(leg) ? untrackedLegPlaceNames(leg, neighbours).destinationName : leg.destinationName;
+  return place?.trim() || leg.trackedTrainState?.scheduleDestinationName || null;
 }
 
 /** "arrive 15:22" (reported) or "arrive est. 15:22" for the current leg's
@@ -124,7 +132,8 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
   const leg = currentLeg(detail, now);
   const legIndex = leg === null ? -1 : detail.legs.indexOf(leg);
   const isLastLeg = legIndex === detail.legs.length - 1;
-  const end = leg === null ? null : legEndText(leg);
+  const neighbours = { previous: detail.legs[legIndex - 1], next: detail.legs[legIndex + 1] };
+  const end = leg === null ? null : legEndText(leg, neighbours);
   const arrival = leg === null ? null : legArrivalText(leg);
   const endFact = [end, arrival].filter((part): part is string => part !== null).join(', ');
   const reliance = leg === null ? null : nextLateDepartureReliance(detail, leg, now);
@@ -164,7 +173,7 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
               <dt>{detail.legs.length > 1 ? `Now, leg ${legIndex + 1} of ${detail.legs.length}` : 'Now'}</dt>
               <dd>
                 <Group gap="xs" wrap="wrap">
-                  <span>{legNowText(leg)}</span>
+                  <span>{legNowText(leg, neighbours)}</span>
                   <LegStatus leg={leg} headline={headline} />
                 </Group>
               </dd>

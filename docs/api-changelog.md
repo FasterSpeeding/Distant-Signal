@@ -3,6 +3,23 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-11-01: a walk to a `TfL` station says the station's modes
+
+Additive. On `/Trips/plan`, a walk between a National Rail station and a
+`TfL` station (`kind: "transfer"`, `mode: "WALK"`, `transitWalk` with
+`network: "tfl"`) now carries the station's `tfl_stops` modes as
+`transitWalk.stop.modes` (`["tube"]`, `["dlr"]`, `["tram"]`, or more than
+one), as an access leg's `originStop`/`destinationStop` already do. Left
+out when none are known (a Metrolink stop). The web app uses it to say
+which end of the walk is which ("Walk VXH · Vauxhall (National Rail) to
+Vauxhall (Tube)") instead of "Vauxhall to Vauxhall", and a saved
+journey's walk now stores its place names that way ("Vauxhall (National
+Rail)", "Vauxhall (Tube)"; DS-239). DS-MCP: no change needed to read it;
+to stop its own plan text reading "Vauxhall to Vauxhall", it can add each
+end's kind the same way (the stop's modes, else its id: `940GZZLU` Tube,
+`940GZZDL` DLR, `940GZZCR` tram), and "(National Rail)" on the station
+end when the two names match.
+
 ## 2026-11-01: timetabled untracked legs (`transitNetwork`, `timetable`)
 
 Additive (DS-237). A Tube, DLR, London tram or Metrolink ride saved from a
@@ -71,6 +88,29 @@ plans longer (Uxbridge to Heathrow by the Piccadilly, a train every 20
 to 24 minutes from Uxbridge: about 88 to 91 minutes, was 78 to 84); a
 frequent trunk about the same or a minute shorter. A date the timetable
 does not cover keeps the flat waits.
+
+## 2026-11-01: a `TRANSFER` that is a Tube hop is a Tube leg
+
+Additive, following the `transfer` leg below (#95). A timetable
+`TRANSFER` link between two different stations is now known to be a Tube
+hop when London Underground runs it (its `operator` is `LT`: the pair also
+has a `TUBE` link) or both its ends are Tube stops.
+
+- **`/Trips/plan`**: such a `TRANSFER` leg (`kind: "transfer"`, `mode:
+  "TRANSFER"`) between two stations that both map to a Tube stop now
+  carries `originStop` and `destinationStop`, as a `TUBE` leg does, and
+  `line` when the two stops share exactly one. With only one end a Tube
+  stop it carries neither, as before. `mode` is unchanged.
+- **Replan suggestions** (`/Journeys/{journeyId}/legs/{legId}/alternatives`,
+  the break's stored set): a known Tube hop is an untracked leg with `transitMode:
+  "tube"` (with the stops' ids and names when the plan has them), not
+  `transfer`. Any other `TRANSFER` between stations is still `transfer`.
+- **Ranking**: a `TRANSFER` between two stations now counts as a Tube or
+  bus ride (the "no Tube" pick and the transfer weight), as `TUBE`, `BUS`
+  and `METRO` links do. A change within one station still does not.
+
+DS-MCP: no change needed. A client saving a plan's `TRANSFER` leg can
+save a Tube hop as `tube` by the same rule (the web planner does).
 
 ## 2026-10-31: one transit disruption, `GET /public/transit/{network}/situations/{situationId}`
 

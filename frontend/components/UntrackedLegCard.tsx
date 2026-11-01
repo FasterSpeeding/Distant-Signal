@@ -5,7 +5,14 @@ import { StateBadge } from './StateBadge';
 import { TextLink } from './TextLink';
 import { TimetabledLegDetails } from './TimetabledLegDetails';
 import { formatDate } from '@/lib/dateFormat';
-import { UNTRACKED_STATUS_LABEL, untrackedLegPlaces, untrackedLegTimes, untrackedLegTitle } from '@/lib/untrackedLeg';
+import {
+  UNTRACKED_STATUS_LABEL,
+  untrackedLegPlaceNames,
+  untrackedLegPlaces,
+  untrackedLegTimes,
+  untrackedLegTitle,
+  type UntrackedLegNeighbours,
+} from '@/lib/untrackedLeg';
 import { stopPageHref } from '@/lib/transitStops';
 import type { JourneyLegDetail } from '@/lib/types';
 
@@ -24,11 +31,15 @@ export function UntrackedLegCard({
   leg,
   isOwner,
   isOnlyLeg,
+  neighbours,
 }: {
   journeyId: number;
   leg: JourneyLegDetail;
   isOwner: boolean;
   isOnlyLeg: boolean;
+  /** The legs either side, which can say what kind of station each end
+   * is when its names read alike (DS-239). */
+  neighbours?: UntrackedLegNeighbours | undefined;
 }) {
   const times = untrackedLegTimes(leg);
   const status = leg.untrackedStatus ?? 'planned';
@@ -40,7 +51,7 @@ export function UntrackedLegCard({
             <Text fw={600} size="lg">
               {untrackedLegTitle(leg)}
             </Text>
-            <UntrackedLegPlaces leg={leg} />
+            <UntrackedLegPlaces leg={leg} neighbours={neighbours} />
           </Stack>
           <Group gap="xs">
             {leg.timetable && <StateBadge tone="neutral">Scheduled</StateBadge>}
@@ -69,8 +80,14 @@ export function UntrackedLegCard({
  * page: a Metrolink station's (`9400ZZMA...`) on the transit pages, a TfL
  * stop's (`940G...`, London trams included) on `/tfl/stops`. Plain text
  * for free-text places. */
-function UntrackedLegPlaces({ leg }: { leg: JourneyLegDetail }) {
-  const places = untrackedLegPlaces(leg);
+function UntrackedLegPlaces({
+  leg,
+  neighbours,
+}: {
+  leg: JourneyLegDetail;
+  neighbours?: UntrackedLegNeighbours | undefined;
+}) {
+  const places = untrackedLegPlaces(leg, neighbours);
   if (!places) return null;
   const originHref = stopPageHref(leg.originStopId);
   const destinationHref = stopPageHref(leg.destinationStopId);
@@ -83,8 +100,9 @@ function UntrackedLegPlaces({ leg }: { leg: JourneyLegDetail }) {
     ) : (
       name
     );
-  const origin = leg.originName ? place(leg.originName, originHref) : null;
-  const destination = leg.destinationName ? place(leg.destinationName, destinationHref) : null;
+  const names = untrackedLegPlaceNames(leg, neighbours);
+  const origin = names.originName ? place(names.originName, originHref) : null;
+  const destination = names.destinationName ? place(names.destinationName, destinationHref) : null;
   return (
     <Text size="sm">
       {origin && destination ? (

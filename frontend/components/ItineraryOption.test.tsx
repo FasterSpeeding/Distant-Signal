@@ -250,6 +250,39 @@ describe('ItineraryOption', () => {
     expect(screen.getByText(byVisibleText('Tube (Victoria line) VXH to EUS, 22 min'))).toBeInTheDocument();
   });
 
+  // #95: the card said "Change" for a TRANSFER between two stations, which
+  // saves as a "Transfer" leg (or a Tube one, when it is a known Tube hop).
+  it('says Transfer for a TRANSFER between stations, Tube for a known Tube hop, Change within a station', () => {
+    const victoria = { id: '940GZZLUVIC', name: 'Victoria', modes: ['tube'], lines: [] };
+    const euston = { id: '940GZZLUEUS', name: 'Euston', modes: ['tube'], lines: [] };
+    const card = (leg: TripPlanItinerary['legs'][number]) => {
+      const view = renderWithMantine(
+        <ItineraryOption
+          itinerary={{ legs: [leg], changeCount: 0, totalDurationMinutes: leg.kind === 'transfer' ? leg.minutes : 0 }}
+          selected={false}
+          onSelect={vi.fn()}
+        />,
+      );
+      return view;
+    };
+    const base = { kind: 'transfer' as const, mode: 'TRANSFER', originCrs: 'EUS', destinationCrs: 'VIC', minutes: 19 };
+
+    let view = card(base);
+    expect(screen.getByText(byVisibleText('Transfer EUS to VIC, 19 min'))).toBeInTheDocument();
+    view.unmount();
+
+    view = card({ ...base, operator: 'LT', line: 'Victoria' });
+    expect(screen.getByText(byVisibleText('Tube (Victoria line) EUS to VIC, 19 min'))).toBeInTheDocument();
+    view.unmount();
+
+    view = card({ ...base, originStop: euston, destinationStop: victoria });
+    expect(screen.getByText(byVisibleText('Tube EUS to VIC, 19 min'))).toBeInTheDocument();
+    view.unmount();
+
+    card({ ...base, destinationCrs: 'EUS', minutes: 5 });
+    expect(screen.getByText(byVisibleText('Change EUS to EUS, 5 min'))).toBeInTheDocument();
+  });
+
   it('falls back to bare codes for an end whose name did not resolve, without mixing forms', () => {
     // Only EUS resolved -- per `codeRouteLabel`'s own "never mix" rule
     // (mirroring `routeLabel`'s), BOTH ends must render as bare codes
@@ -557,7 +590,93 @@ describe('ItineraryOption: station groups (2026-10-07)', () => {
         screen.getByText(byVisibleText("08:14 Tube (Victoria) King's Cross St. Pancras to Brixton 08:22")),
       ).toBeInTheDocument();
       expect(container.querySelector('[data-service-mode="tube"]')?.textContent).toBe('Tube');
-      expect(screen.getByText(/Walk to King's Cross St\. Pancras \(TfL\), 6 min/)).toBeInTheDocument();
+      expect(screen.getByText("Walk KGX to King's Cross St. Pancras (Tube), 6 min")).toBeInTheDocument();
+    });
+
+    // DS-239: a walk between a National Rail station and its TfL station
+    // never reads "Vauxhall to Vauxhall".
+    describe('a walk between a National Rail station and a TfL station', () => {
+      const walk = (stop: { id: string; name: string; modes?: string[] }, crs: string): TripPlanLeg => ({
+        kind: 'transfer',
+        mode: 'WALK',
+        originCrs: crs,
+        destinationCrs: null,
+        minutes: 4,
+        transitWalk: { network: 'tfl', stop, towardsStop: true, walkMinutes: 2, estimated: true },
+      });
+      const render = (leg: TripPlanLeg, names: [string, string][]) =>
+        renderPlan({ ...RAIL_TRAM_RAIL, legs: [TRAIN_INTO_MAN, leg] }, new Map(names));
+
+      it('says which end is National Rail and which the Tube when the names are the same', () => {
+        render(walk({ id: '940GZZLUVXL', name: 'Vauxhall', modes: ['tube'] }, 'VXH'), [['VXH', 'Vauxhall']]);
+        expect(screen.getByText('Walk VXH · Vauxhall (National Rail) to Vauxhall (Tube), 4 min')).toBeInTheDocument();
+      });
+
+      it('treats "London Euston" and "Euston" as alike', () => {
+        render(walk({ id: '940GZZLUEUS', name: 'Euston', modes: ['tube'] }, 'EUS'), [['EUS', 'London Euston']]);
+        expect(
+          screen.getByText('Walk EUS · London Euston (National Rail) to Euston (Tube), 4 min'),
+        ).toBeInTheDocument();
+      });
+
+      it('names a DLR-only station DLR, never the Tube, from its id when the api sends no modes', () => {
+        render(walk({ id: '940GZZDLSTD', name: 'Stratford' }, 'SRA'), [['SRA', 'Stratford']]);
+        expect(screen.getByText('Walk SRA · Stratford (National Rail) to Stratford (DLR), 4 min')).toBeInTheDocument();
+      });
+
+      it('names a London tram stop a tram stop', () => {
+        render(walk({ id: '940GZZCRWMB', name: 'Wimbledon', modes: ['tram'] }, 'WIM'), [['WIM', 'Wimbledon']]);
+        expect(screen.getByText('Walk WIM · Wimbledon (National Rail) to Wimbledon (tram), 4 min')).toBeInTheDocument();
+      });
+
+      it('leaves the National Rail end plain when the names differ', () => {
+        render(walk({ id: '940GZZLUKSX', name: "King's Cross St. Pancras", modes: ['tube'] }, 'KGX'), [
+          ['KGX', 'London Kings Cross'],
+        ]);
+        expect(
+          screen.getByText("Walk KGX · London Kings Cross to King's Cross St. Pancras (Tube), 4 min"),
+        ).toBeInTheDocument();
+      });
+
+      it('tags an access walk from a TfL stop From when the names match', () => {
+        render(
+          {
+            kind: 'transfer',
+            mode: 'WALK',
+            originCrs: null,
+            destinationCrs: 'VXH',
+            minutes: 4,
+            originStop: { id: '940GZZLUVXL', name: 'Vauxhall', modes: ['tube'], lines: [] },
+            access: { end: 'origin', basis: 'hub', distanceMetres: 0 },
+          },
+          [['VXH', 'Vauxhall']],
+        );
+        expect(screen.getByText('Walk Vauxhall (Tube) to VXH · Vauxhall (National Rail), 4 min')).toBeInTheDocument();
+      });
+
+      it('a walk between two TfL stations of one hub says each mode', () => {
+        render(
+          {
+            kind: 'transfer',
+            mode: 'WALK',
+            originCrs: null,
+            destinationCrs: null,
+            minutes: 2,
+            originStop: { id: '940GZZDLCGT', name: 'Canning Town', modes: ['dlr'], lines: [] },
+            destinationStop: { id: '940GZZLUCGT', name: 'Canning Town', modes: ['tube'], lines: [] },
+          },
+          [],
+        );
+        expect(screen.getByText('Walk Canning Town (DLR) to Canning Town (Tube), 2 min')).toBeInTheDocument();
+      });
+
+      it('a walk between two National Rail stations is unchanged', () => {
+        render({ kind: 'transfer', mode: 'WALK', originCrs: 'EUS', destinationCrs: 'KGX', minutes: 12 }, [
+          ['EUS', 'London Euston'],
+          ['KGX', 'London Kings Cross'],
+        ]);
+        expect(screen.getByText('Walk EUS · London Euston to KGX · London Kings Cross, 12 min')).toBeInTheDocument();
+      });
     });
 
     it('names a replacement bus, which has no line', () => {
@@ -593,9 +712,9 @@ describe('ItineraryOption: station groups (2026-10-07)', () => {
 
     it('names the tram stop on a walk to or from it, with the estimate', () => {
       renderPlan(RAIL_TRAM_RAIL, new Map([['MAN', 'Manchester Piccadilly']]));
-      expect(screen.getByText('Walk to Piccadilly tram stop, 6 min')).toBeInTheDocument();
+      expect(screen.getByText('Walk MAN · Manchester Piccadilly to Piccadilly tram stop, 6 min')).toBeInTheDocument();
       expect(screen.getByText('About 4 min walk, estimated')).toBeInTheDocument();
-      expect(screen.getByText('Walk from Victoria tram stop, 5 min')).toBeInTheDocument();
+      expect(screen.getByText('Walk Victoria tram stop to MCV, 5 min')).toBeInTheDocument();
       expect(screen.getByText('About 3 min walk, estimated')).toBeInTheDocument();
     });
 

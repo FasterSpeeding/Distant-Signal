@@ -1,8 +1,9 @@
 import dayjs from 'dayjs';
 import { LONDON_TZ } from './londonWallClock';
-import { transferLineName } from './displayLabels';
+import { isCrossStationTransfer, transferLegMode, transferLineName } from './displayLabels';
 import { isTiplocCode } from './stationLabel';
 import { canHaveStopId } from './untrackedLeg';
+import { labelPlaceEnds, RAIL_PLACE, stopPlaceKind } from './placeKinds';
 import type { TransitMode, TripPlanItinerary, TripPlanLeg, TripPlanTransitLeg } from './types';
 
 type TrainLeg = Extract<TripPlanLeg, { kind: 'train' }>;
@@ -52,14 +53,13 @@ const TRANSFER_MODES: Record<string, TransitMode> = {
   FERRY: 'ferry',
 };
 
-/** A `TRANSFER` link's mode: `transfer` when its two ends are different
- * stations, `undefined` for a change within one station (both ends the
- * same code, or neither known). */
+/** A `TRANSFER` link's mode: `tube` when it joins two different stations
+ * and is a known Tube hop (`transferLegMode`), `transfer` for any other
+ * between two stations, `undefined` for a change within one station (both
+ * ends the same code, or neither known). */
 function crossStationTransferMode(leg: TransferLeg): TransitMode | undefined {
-  if (leg.mode.toUpperCase() !== 'TRANSFER') return undefined;
-  const origin = leg.originCrs?.toUpperCase() ?? null;
-  const destination = leg.destinationCrs?.toUpperCase() ?? null;
-  return origin === destination ? undefined : 'transfer';
+  if (!isCrossStationTransfer(leg)) return undefined;
+  return transferLegMode(leg) === 'TUBE' ? 'tube' : 'transfer';
 }
 
 /** The ONE place a planner transfer becomes an untracked leg's mode and
@@ -89,15 +89,28 @@ export function transferAsUntracked(
   const walk = leg.transitWalk;
   const originTram = walk && !walk.towardsStop ? walk.stop : undefined;
   const destinationTram = walk?.towardsStop ? walk.stop : undefined;
-  const originName = leg.originStop?.name ?? originTram?.name ?? place(leg.originCrs);
-  const destinationName = leg.destinationStop?.name ?? destinationTram?.name ?? place(leg.destinationCrs);
+  const end = (stop: { id: string; name: string; modes?: string[] } | undefined, code: string | null) => {
+    if (stop) return { name: stop.name, kind: stopPlaceKind(stop) };
+    const name = place(code);
+    return name === undefined ? undefined : { name, kind: isTiplocCode(code) ? undefined : RAIL_PLACE };
+  };
+  const origin = end(leg.originStop ?? originTram, leg.originCrs);
+  const destination = end(leg.destinationStop ?? destinationTram, leg.destinationCrs);
+  // Each end says what kind of station it is where the two would otherwise
+  // read alike, or, on a walk or transfer, are different kinds (DS-239): "Vauxhall (National Rail)
+  // to Vauxhall (Tube)", "London Euston to Euston (Tube)". The names carry
+  // it: a walk keeps no stop id to tell it later.
+  const [originName, destinationName] =
+    origin && destination
+      ? labelPlaceEnds(origin, destination, { onlyWhenAlike: transitMode !== 'walk' && transitMode !== 'transfer' })
+      : [origin?.name, destination?.name];
   // Each end's stop id only where the leg's mode can have one: a walk to a
   // Tube or tram stop is named after the stop, but the api refuses its id
   // on a walk ("Only a tube, dlr, tram, metro leg can have a stop id.").
   const stopId = (id: string | undefined) => (id && canHaveStopId(transitMode, id) ? id : undefined);
   const originStopId = stopId(leg.originStop?.id ?? originTram?.id);
   const destinationStopId = stopId(leg.destinationStop?.id ?? destinationTram?.id);
-  const lineName = transferLineName(leg.mode, leg.line);
+  const lineName = transferLineName(transferLegMode(leg), leg.line);
   return {
     transitMode,
     ...(originName ? { originName } : {}),

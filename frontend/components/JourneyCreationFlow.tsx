@@ -263,7 +263,12 @@ export function JourneyCreationFlow({
                 <Text size="sm">
                   Leg {index + 1}:{' '}
                   {isUntrackedLeg(leg)
-                    ? [untrackedLegTitle(leg), untrackedLegPlaces(leg)].filter(Boolean).join(', ')
+                    ? [
+                        untrackedLegTitle(leg),
+                        untrackedLegPlaces(leg, { previous: journey.legs[index - 1], next: journey.legs[index + 1] }),
+                      ]
+                        .filter(Boolean)
+                        .join(', ')
                     : routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName)}
                 </Text>
                 <Text size="sm" c="dimmed">
