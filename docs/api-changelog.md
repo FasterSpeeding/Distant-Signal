@@ -985,6 +985,11 @@ docs/superpowers/specs/2026-10-24-trips-plan-max-changes-12-design.md.
 DS-MCP: its own default of 4 now matches DS. Its schema's ceiling of 24
 is above DS's 12; values 13 to 24 are a 400 from DS.
 
+Correction (2026-11-01): DS-MCP's ceiling is now 12 as well (its
+fix-max-changes-12 release), so its schema and DS agree and no value it
+accepts is a 400 from DS. The paragraph above describes DS-MCP as it was
+on 2026-10-24.
+
 ## 2026-10-26: station code and TfL stop id lists
 
 Additive: two new public, unauthenticated routes for the web app's
