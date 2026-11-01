@@ -32,6 +32,8 @@ mod journey_history_order_db_tests;
 pub mod journey_itinerary;
 pub mod journey_replan;
 pub mod journey_templates;
+#[cfg(test)]
+mod journey_timetable_db_tests;
 pub mod journeys;
 #[cfg(test)]
 mod leg_validation_db_tests;

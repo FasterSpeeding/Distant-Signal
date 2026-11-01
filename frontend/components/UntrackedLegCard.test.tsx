@@ -164,4 +164,72 @@ describe('UntrackedLegCard stop links', () => {
     expect(screen.getByRole('link', { name: 'Canning Town (DLR)' })).toHaveAttribute('href', '/tfl/stops/940GZZDLCGT');
     expect(screen.getByRole('link', { name: 'Canning Town (Tube)' })).toHaveAttribute('href', '/tfl/stops/940GZZLUCGT');
   });
+
+  it('shows a timetabled leg as scheduled, with its line, stops and any change, never as live', () => {
+    renderWithMantine(
+      <UntrackedLegCard
+        journeyId={1}
+        leg={leg({
+          transitNetwork: 'tfl',
+          transitLineId: 'victoria',
+          headsign: 'Brixton',
+          originStopId: '940GZZLUKSX',
+          destinationStopId: '940GZZLUVIC',
+          timetable: {
+            network: 'tfl',
+            line: { id: 'tfl:victoria', name: 'Victoria line', colour: '#0098d4', mode: 'tube' },
+            state: 'retimed',
+            scheduledDeparture: '2026-10-21T07:06:00Z',
+            scheduledArrival: '2026-10-21T07:21:00Z',
+            headsign: 'Brixton',
+            calls: [
+              {
+                stopId: '940GZZLUKSX',
+                name: "King's Cross St. Pancras",
+                platform: 'Southbound',
+                scheduledArrival: null,
+                scheduledDeparture: '2026-10-21T07:06:00Z',
+              },
+              {
+                stopId: '940GZZLUVIC',
+                name: 'Victoria',
+                platform: null,
+                scheduledArrival: '2026-10-21T07:21:00Z',
+                scheduledDeparture: null,
+              },
+            ],
+            headwayMinutes: 2,
+            notices: [
+              {
+                kind: 'disruption',
+                lineId: 'tfl:victoria',
+                severity: 9,
+                description: 'Minor Delays',
+                message: 'Disruption reported on the Victoria line',
+                reason: 'Signal failure.',
+              },
+            ],
+          },
+        })}
+        isOwner={false}
+        isOnlyLeg={false}
+      />,
+    );
+    expect(screen.getByText('Scheduled')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Victoria line' })).toHaveAttribute('href', '/transit/tfl/lines/victoria');
+    expect(screen.getByText('Towards Brixton')).toBeInTheDocument();
+    expect(screen.getByText('Disruption reported on the Victoria line')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'More about this disruption' })).toHaveAttribute(
+      'href',
+      '/lines/tfl-victoria',
+    );
+    expect(screen.getByText('The timetable now has this train at 08:06 to 08:21.')).toBeInTheDocument();
+    expect(screen.getByText('Timetabled stops')).toBeInTheDocument();
+    expect(screen.getAllByText(/King's Cross St. Pancras/).length).toBeGreaterThan(0);
+    expect(
+      screen.getByText("Times from TfL's timetable, not live. Trains usually run every 2 minutes."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Times are planned. We have no live data for this leg.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/on time|expected|delayed/i)).not.toBeInTheDocument();
+  });
 });

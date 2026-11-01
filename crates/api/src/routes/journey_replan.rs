@@ -1797,6 +1797,23 @@ async fn post_revert(
                     ) else {
                         continue;
                     };
+                    // Its stops and network ride as that plan had them
+                    // (DS-237; a revision from before keeps none). The
+                    // timetable CHECK wants both stops with a network.
+                    let timetable = match (&old.transit_network, &old.transit_line_id) {
+                        (Some(network), Some(line_id))
+                            if old.origin_stop_id.is_some()
+                                && old.destination_stop_id.is_some() =>
+                        {
+                            Some(Box::new(journeys::LegTimetableFields {
+                                network: network.clone(),
+                                line_id: line_id.clone(),
+                                headsign: old.headsign.clone(),
+                                hint: None,
+                            }))
+                        }
+                        _ => None,
+                    };
                     legs.push(journeys::ItineraryLeg::Untracked(journeys::UntrackedLeg {
                         transit_mode: mode.clone(),
                         origin_place: old.origin_place.clone(),
@@ -1804,8 +1821,9 @@ async fn post_revert(
                         line_name: old.line_name.clone(),
                         planned_departure: departure,
                         planned_arrival: arrival,
-                        origin_stop_id: None,
-                        destination_stop_id: None,
+                        origin_stop_id: old.origin_stop_id.clone(),
+                        destination_stop_id: old.destination_stop_id.clone(),
+                        timetable,
                     }));
                 }
             }

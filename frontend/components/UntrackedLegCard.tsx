@@ -3,6 +3,7 @@ import { EditUntrackedLegButton } from './EditUntrackedLegButton';
 import { RemoveJourneyLegButton } from './RemoveJourneyLegButton';
 import { StateBadge } from './StateBadge';
 import { TextLink } from './TextLink';
+import { TimetabledLegDetails } from './TimetabledLegDetails';
 import { formatDate } from '@/lib/dateFormat';
 import {
   UNTRACKED_STATUS_LABEL,
@@ -16,13 +17,15 @@ import { stopPageHref } from '@/lib/transitStops';
 import type { JourneyLegDetail } from '@/lib/types';
 
 /** One untracked leg's card on a journey page: a Tube ride, a bus, a walk,
- * anything we have no live or timetable data for (spec
+ * anything we have no live data for (spec
  * docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md
  * §2.3). Its mode and line, its places, its planned times and its state
  * from the clock alone ("Planned", "In progress (not live tracked)",
  * "Done", computed by the api). No stop list, no progress line and no
  * "Change train": there is nothing live to show, and it says so. The
- * owner can remove it like any other leg. */
+ * owner can remove it like any other leg. A timetabled leg (DS-237), a
+ * Tube, DLR or tram ride saved from a plan, also shows what its network's
+ * timetable says about it (`TimetabledLegDetails`), still scheduled only. */
 export function UntrackedLegCard({
   journeyId,
   leg,
@@ -51,6 +54,7 @@ export function UntrackedLegCard({
             <UntrackedLegPlaces leg={leg} neighbours={neighbours} />
           </Stack>
           <Group gap="xs">
+            {leg.timetable && <StateBadge tone="neutral">Scheduled</StateBadge>}
             <StateBadge tone="neutral">{UNTRACKED_STATUS_LABEL[status]}</StateBadge>
             {isOwner && <EditUntrackedLegButton journeyId={journeyId} leg={leg} />}
             {isOwner && <RemoveJourneyLegButton journeyId={journeyId} legId={leg.id} isOnlyLeg={isOnlyLeg} />}
@@ -60,9 +64,13 @@ export function UntrackedLegCard({
           {formatDate(leg.plannedDeparture ?? `${leg.serviceDate}T12:00:00Z`)}
           {times ? `, ${times}` : ''}
         </Text>
-        <Text size="xs" c="dimmed">
-          Times are planned. We have no live data for this leg.
-        </Text>
+        {leg.timetable ? (
+          <TimetabledLegDetails leg={leg} timetable={leg.timetable} />
+        ) : (
+          <Text size="xs" c="dimmed">
+            Times are planned. We have no live data for this leg.
+          </Text>
+        )}
       </Stack>
     </Card>
   );

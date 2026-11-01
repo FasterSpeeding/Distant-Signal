@@ -26,6 +26,11 @@ export type ItineraryLegBody =
       destinationStopId?: string;
       plannedDeparture: string;
       plannedArrival: string;
+      /** A timetabled ride's network, line and headsign (DS-237), so the
+       * journey page finds it in the network's timetable. */
+      transitNetwork?: string;
+      transitLineId?: string;
+      headsign?: string;
     };
 
 /** What an untracked leg takes from a transfer: its mode, place names,
@@ -179,6 +184,27 @@ function transitAsUntracked(leg: TripPlanTransitLeg): ItineraryLegBody | null {
     ...(canHaveStopId(transitMode, destinationStopId) ? { destinationStopId } : {}),
     plannedDeparture: departure.toISOString(),
     plannedArrival: arrival.toISOString(),
+    ...timetabledRide(leg, transitMode),
+  };
+}
+
+/** The network ride a transit leg is (DS-237): its network, its line's
+ * local id (`tfl:victoria` to `victoria`) and its headsign, so the
+ * journey page can find it in the network's timetable. None for a
+ * replacement bus (no line) or a ride without both stop ids. */
+function timetabledRide(
+  leg: TripPlanTransitLeg,
+  transitMode: TransitMode,
+): { transitNetwork: string; transitLineId: string; headsign?: string } | Record<string, never> {
+  const prefix = `${leg.network}:`;
+  if (leg.serviceMode === 'replacementBus' || !leg.line?.id.startsWith(prefix)) return {};
+  if (!canHaveStopId(transitMode, leg.originStop.id) || !canHaveStopId(transitMode, leg.destinationStop.id)) {
+    return {};
+  }
+  return {
+    transitNetwork: leg.network,
+    transitLineId: leg.line.id.slice(prefix.length),
+    ...(leg.headsign ? { headsign: leg.headsign } : {}),
   };
 }
 
