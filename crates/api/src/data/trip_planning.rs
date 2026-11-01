@@ -607,8 +607,13 @@ pub struct GraphMarker {
 /// by the marker that publish writes when it completes. The live overlay is
 /// not affected: it is its own snapshot (`TRIP_PLAN_LIVE_SNAPSHOT_TTL_SECONDS`).
 ///
-/// At most `capacity` dates are kept (least recently used evicted); each is
-/// on the order of 100 MB, so the default is 2 (today and tomorrow).
+/// At most `capacity` dates are kept (least recently used evicted); the
+/// default is 2 (today and tomorrow), which the prewarm keeps built, so two
+/// graphs are the steady state (since #107). Each is about 27.5 MB for the
+/// rail day and 44 MB with Metrolink and `TfL` (DS-225's budget bench). The
+/// stop and trip codes they hold are interned in a process-wide table that
+/// is never freed, outside these figures; `api_trip_plan_interned_codes`
+/// ([`record_interned_codes`]) tracks it.
 /// `capacity` 0 disables caching. Builds run one at a time, in a spawned
 /// task: concurrent misses for one date build it once, and a client that
 /// disconnects mid-build doesn't abandon a build that another request will
