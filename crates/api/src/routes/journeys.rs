@@ -2019,7 +2019,7 @@ async fn build_journey_detail_response(
     // Absent on every leg when it couldn't be worked out.
     let timings = journey_feasibility::journey_timings(
         &app.database,
-        &leg_inputs(&leg_rows, &leg_states),
+        &leg_inputs(&leg_rows, &leg_states, &timetables),
         now,
     )
     .await;
@@ -2211,19 +2211,37 @@ async fn build_journey_detail_response(
 /// Every leg as `journey_feasibility` judges it (each leg's `connection`,
 /// and the mid-journey break logic): a train leg's stations are its own,
 /// else its train's pin, else the train's own route, as the frontend's
-/// connector reads them.
+/// connector reads them. A timetabled leg (DS-237, `timetables`, one per
+/// leg) brings its line's rides, so a late arrival re-times it to the next
+/// one; its times are the timetable's ride when it found one.
 pub(crate) fn leg_inputs<'a>(
     leg_rows: &'a [journeys::JourneyLegWithNamesRow],
     leg_states: &'a [Option<train_tracking::TrackedTrainState>],
+    timetables: &[Option<crate::data::timetabled_legs::LegTimetable>],
 ) -> Vec<journey_feasibility::LegInput<'a>> {
     leg_rows
         .iter()
         .zip(leg_states)
-        .map(|(leg, state)| {
+        .enumerate()
+        .map(|(index, (leg, state))| {
             if leg.kind == journeys::LEG_KIND_UNTRACKED {
+                let timetable = timetables.get(index).and_then(Option::as_ref);
                 return journey_feasibility::LegInput::Untracked {
-                    departure: leg.planned_departure,
-                    arrival: leg.planned_arrival,
+                    departure: timetable
+                        .and_then(|t| t.scheduled_departure)
+                        .or(leg.planned_departure),
+                    arrival: timetable
+                        .and_then(|t| t.scheduled_arrival)
+                        .or(leg.planned_arrival),
+                    rides: timetable.map_or_else(Vec::new, |t| {
+                        t.rides
+                            .iter()
+                            .map(|ride| journey_feasibility::TimetabledRide {
+                                departure: ride.departure,
+                                arrival: ride.arrival,
+                            })
+                            .collect()
+                    }),
                 };
             }
             let state = state.as_ref();

@@ -198,6 +198,10 @@ impl Analysis {
         let next = self.timing(index);
         let (arrival, from_crs) = match timings.timings.get(previous)? {
             LegTiming::Train(t) => (t.live_arr, Some(t.alight_crs.as_str())),
+            // A timetabled leg (DS-237): its re-timed arrival.
+            LegTiming::Untracked { rides, .. } if !rides.is_empty() => {
+                ((*timings.ready_after.get(previous)?)?, None)
+            }
             LegTiming::Untracked {
                 arrival: Some(arrival),
                 ..
@@ -235,7 +239,14 @@ pub(crate) async fn analyse(
     for (index, state) in indexes.into_iter().zip(built) {
         leg_states[index] = Some(state);
     }
-    let inputs = crate::routes::journeys::leg_inputs(&legs, &leg_states);
+    // Timetabled legs as the journey page reads them (DS-237), so the sweep
+    // and the page judge the same re-timed changes.
+    let keys: Vec<_> = legs
+        .iter()
+        .map(journeys::JourneyLegWithNamesRow::timetable_key)
+        .collect();
+    let timetables = crate::data::timetabled_legs::resolve_all(&app.database, &keys).await;
+    let inputs = crate::routes::journeys::leg_inputs(&legs, &leg_states, &timetables);
     let timings = journey_feasibility::journey_timings(&app.database, &inputs, now).await;
     let leg_ids: Vec<i64> = legs.iter().map(|leg| leg.id).collect();
     let mut conn = app.database.acquire().await?;

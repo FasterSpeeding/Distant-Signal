@@ -608,6 +608,7 @@ mod tests {
             minimum_change_minutes: Some(5),
             state,
             relies_on_late_departure: None,
+            next_timetabled: None,
         })
     }
 

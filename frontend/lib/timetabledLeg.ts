@@ -1,6 +1,6 @@
 import { formatTime } from './dateFormat';
 import { transitIncidentHref, transitNetworkName } from './transitStops';
-import type { LegTimetable, TransitMode, TripPlanTransitNotice } from './types';
+import type { JourneyLegDetail, LegTimetable, TransitMode, TripPlanTransitNotice } from './types';
 
 // A timetabled leg (DS-237): a Tube, DLR or tram ride saved from a plan,
 // found in its network's timetable on every read. Its times are the
@@ -77,4 +77,21 @@ export function timetabledLineHref(timetable: LegTimetable): string | null {
   if (!id?.startsWith(`${timetable.network}:`)) return null;
   const local = id.slice(timetable.network.length + 1);
   return `/transit/${encodeURIComponent(timetable.network)}/lines/${encodeURIComponent(local)}`;
+}
+
+/** Under the change onto a timetabled leg the traveller can't make as
+ * planned (DS-237): the ride its timetable has next once they get there,
+ * which the changes after it are judged from. `null` when they make the
+ * planned ride. */
+export function nextTimetabledNote(next: JourneyLegDetail): string | null {
+  const ride = next.connection?.nextTimetabled;
+  if (!ride) return null;
+  const vehicle = vehicleNoun(next.transitMode);
+  return `On the timetable, the next ${vehicle} once you get there leaves at ${formatTime(ride.departure)} and gets in at ${formatTime(ride.arrival)}.`;
+}
+
+/** When a timetabled leg now gets in: its re-timed ride's arrival when
+ * the traveller can't make the planned one, else `null`. */
+export function retimedArrival(leg: JourneyLegDetail): string | null {
+  return leg.connection?.nextTimetabled?.arrival ?? null;
 }

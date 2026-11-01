@@ -3,6 +3,20 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-11-01: timetabled legs re-timed after a late train (`nextTimetabled`)
+
+Additive (DS-237, phase B). On `GET /Journeys/{id}`, the `connection`
+onto a timetabled leg (one with `timetable`) can gain `nextTimetabled`,
+`{departure, arrival}`. That is the first ride on the leg's line between
+its stops that leaves once the traveller gets there, when it is not the
+planned one: after a late train, or when the timetable has moved the
+ride. The change after the leg is then judged from that ride's
+arrival, not from the planned ride shifted by the delay. A
+timetabled leg's own `connection` stays `ok`: the traveller takes the
+next ride. Scheduled times only. The mid-journey break sweep judges the
+same way, so a late train before a Tube ride can now break the change
+after it when the timetable says the next ride gets in too late.
+
 ## 2026-11-01: timetabled untracked legs (`transitNetwork`, `timetable`)
 
 Additive (DS-237). A Tube, DLR, London tram or Metrolink ride saved from a

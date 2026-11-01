@@ -73,6 +73,21 @@ pub struct LegConnection {
     /// expected. See [`trip_plan_live::LateDepartureReliance`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relies_on_late_departure: Option<trip_plan_live::LateDepartureReliance<DateTime<Utc>>>,
+    /// Onto a timetabled leg (DS-237, additive; absent otherwise): the
+    /// ride its timetable has first from when the traveller gets there,
+    /// when that is not the planned one (the traveller arrives late, or
+    /// the timetable has moved it). The changes after it are judged from
+    /// its arrival. Scheduled times, never live.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_timetabled: Option<TimetabledRide>,
+}
+
+/// A ride of a timetabled leg, by its scheduled times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimetabledRide {
+    pub departure: DateTime<Utc>,
+    pub arrival: DateTime<Utc>,
 }
 
 /// One train leg's boarding and alighting calls, timetabled and live.
@@ -95,10 +110,14 @@ pub struct TrainLegTiming {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LegTiming {
     Train(TrainLegTiming),
-    /// A Tube ride, bus or walk: its planned times.
+    /// A Tube ride, bus or walk: its planned times. A timetabled leg
+    /// (DS-237) also has its line's rides between its two stops around
+    /// then, in departure order (else empty): the traveller takes the
+    /// first one leaving once they get there.
     Untracked {
         departure: Option<DateTime<Utc>>,
         arrival: Option<DateTime<Utc>>,
+        rides: Vec<TimetabledRide>,
     },
     /// A train leg with no train picked yet, or whose calls aren't known.
     Unknown,
@@ -214,37 +233,78 @@ fn late_departure_reliance(
     })
 }
 
+/// The ride of a timetabled leg the traveller takes when ready at
+/// `ready` (`None`: at the start of the journey): the first leaving at or
+/// after the later of then and the planned departure. `None` with no
+/// rides, or none that late (the leg then shifts as any untracked leg).
+fn ride_taken(
+    rides: &[TimetabledRide],
+    departure: DateTime<Utc>,
+    ready: Option<DateTime<Utc>>,
+) -> Option<TimetabledRide> {
+    let from = ready.map_or(departure, |at| at.max(departure));
+    rides.iter().find(|ride| ride.departure >= from).copied()
+}
+
 /// Every leg's [`LegConnection`] (`None` for the first), in order. Pure.
 ///
 /// An untracked leg is never missed: it starts when the traveller gets
 /// there, keeping its planned duration, and the change after it is judged
-/// from that shifted arrival (spec §5.1). A change involving a leg with
-/// unknown times, or a train cancelled at either end, is
-/// [`ConnectionState::Unknown`]; the cancellation shows on the leg itself.
+/// from that shifted arrival (spec §5.1). A timetabled one (DS-237) is
+/// re-timed instead: the traveller takes its line's first ride leaving
+/// once they are there, and the change after it is judged from that
+/// ride's arrival. A change involving a leg with unknown times, or a train
+/// cancelled at either end, is [`ConnectionState::Unknown`]; the
+/// cancellation shows on the leg itself.
 pub fn evaluate_connections(
     legs: &[LegTiming],
     interchange: &InterchangeData,
 ) -> Vec<Option<LegConnection>> {
+    evaluate(legs, interchange).0
+}
+
+/// [`evaluate_connections`], and when the traveller is ready after each
+/// leg (`None` where unknown): a train's live arrival, an untracked leg's
+/// shifted or re-timed arrival.
+fn evaluate(
+    legs: &[LegTiming],
+    interchange: &InterchangeData,
+) -> (Vec<Option<LegConnection>>, Vec<Option<DateTime<Utc>>>) {
     let unknown = |gap_minutes: Option<i64>| LegConnection {
         gap_minutes,
         minimum_change_minutes: None,
         state: ConnectionState::Unknown,
         relies_on_late_departure: None,
+        next_timetabled: None,
     };
     let mut out = Vec::with_capacity(legs.len());
+    let mut ready_after = Vec::with_capacity(legs.len());
     let mut ready: Option<Ready> = None;
     for (index, leg) in legs.iter().enumerate() {
         let connection = match (index, &ready, leg) {
             (0, _, _) => None,
             (_, _, LegTiming::Unknown) | (_, None, _) => Some(unknown(None)),
-            (_, Some(r), LegTiming::Untracked { departure, .. }) => {
-                let gap = departure.map(|d| whole_minutes(r.at, d));
+            (
+                _,
+                Some(r),
+                LegTiming::Untracked {
+                    departure,
+                    arrival,
+                    rides,
+                },
+            ) => {
+                let taken = departure.and_then(|d| ride_taken(rides, d, Some(r.at)));
+                let boards = taken.map(|ride| ride.departure).or(*departure);
+                let gap = boards.map(|d| whole_minutes(r.at, d));
                 Some(match gap {
                     Some(gap) => LegConnection {
                         gap_minutes: Some(gap),
                         minimum_change_minutes: None,
                         state: ConnectionState::Ok,
                         relies_on_late_departure: None,
+                        next_timetabled: taken.filter(|ride| {
+                            Some(ride.departure) != *departure || Some(ride.arrival) != *arrival
+                        }),
                     },
                     None => unknown(None),
                 })
@@ -261,6 +321,7 @@ pub fn evaluate_connections(
                             minimum_change_minutes: Some(required),
                             state: classify(gap, planned_gap, required),
                             relies_on_late_departure: late_departure_reliance(r, next, required),
+                            next_timetabled: None,
                         },
                         None => unknown(Some(gap)),
                     }
@@ -280,10 +341,17 @@ pub fn evaluate_connections(
             LegTiming::Untracked {
                 departure: Some(departure),
                 arrival: Some(arrival),
+                rides,
             } => {
-                let start = ready.as_ref().map_or(*departure, |r| r.at.max(*departure));
+                let at = ride_taken(rides, *departure, ready.as_ref().map(|r| r.at)).map_or_else(
+                    || {
+                        let start = ready.as_ref().map_or(*departure, |r| r.at.max(*departure));
+                        start + (*arrival - *departure)
+                    },
+                    |ride| ride.arrival,
+                );
                 Some(Ready {
-                    at: start + (*arrival - *departure),
+                    at,
                     sched_at: *arrival,
                     crs: None,
                     train: None,
@@ -293,8 +361,9 @@ pub fn evaluate_connections(
             // No times: nothing to start the next leg from.
             LegTiming::Untracked { .. } | LegTiming::Unknown => None,
         };
+        ready_after.push(ready.as_ref().map(|r| r.at));
     }
-    out
+    (out, ready_after)
 }
 
 /// One call of a train, as the leg needs it: its TIPLOC and the minutes
@@ -415,6 +484,9 @@ pub enum LegInput<'a> {
     Untracked {
         departure: Option<DateTime<Utc>>,
         arrival: Option<DateTime<Utc>>,
+        /// A timetabled leg's rides (DS-237), in departure order; empty
+        /// otherwise.
+        rides: Vec<TimetabledRide>,
     },
 }
 
@@ -476,6 +548,10 @@ pub async fn journey_connections(
 pub struct JourneyTimings {
     pub timings: Vec<LegTiming>,
     pub connections: Vec<Option<LegConnection>>,
+    /// When the traveller is ready after each leg (`None` where unknown):
+    /// a train's live arrival, an untracked leg's shifted arrival, a
+    /// timetabled leg's re-timed one.
+    pub ready_after: Vec<Option<DateTime<Utc>>>,
     pub interchange: Arc<InterchangeData>,
 }
 
@@ -564,9 +640,17 @@ pub async fn journey_timings(
         .iter()
         .zip(&resolved)
         .map(|(leg, resolved)| match (leg, resolved) {
-            (LegInput::Untracked { departure, arrival }, _) => LegTiming::Untracked {
+            (
+                LegInput::Untracked {
+                    departure,
+                    arrival,
+                    rides,
+                },
+                _,
+            ) => LegTiming::Untracked {
                 departure: *departure,
                 arrival: *arrival,
+                rides: rides.clone(),
             },
             (LegInput::Train { .. }, Some((train, board, alight))) => train_leg_timing(
                 train.uid,
@@ -580,10 +664,11 @@ pub async fn journey_timings(
             (LegInput::Train { .. }, None) => LegTiming::Unknown,
         })
         .collect();
-    let connections = evaluate_connections(&timings, &interchange);
+    let (connections, ready_after) = evaluate(&timings, &interchange);
     Some(JourneyTimings {
         timings,
         connections,
+        ready_after,
         interchange,
     })
 }
@@ -866,6 +951,7 @@ mod tests {
             LegTiming::Untracked {
                 departure: Some(at(605)),
                 arrival: Some(at(620)),
+                rides: Vec::new(),
             },
             train("B1", ("EUS", "EUSTON"), "MAN", 628, 628, 760, 760, true),
         ];
@@ -877,6 +963,88 @@ mod tests {
                 Some((Some(3), Some(5), ConnectionState::Missed)),
             ]
         );
+    }
+
+    /// A timetabled Tube leg planned 10:05-10:20, its line every five
+    /// minutes from 10:05 (DS-237).
+    fn timetabled_tube() -> LegTiming {
+        LegTiming::Untracked {
+            departure: Some(at(605)),
+            arrival: Some(at(620)),
+            rides: (0..6)
+                .map(|n| TimetabledRide {
+                    departure: at(605 + 5 * n),
+                    arrival: at(620 + 5 * n),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_late_train_re_times_a_timetabled_leg_to_its_next_ride() {
+        // Into KGX at 10:12, twelve late: the 10:05 Tube is gone, the next
+        // is 10:15, in at 10:30, so the 10:33 from Euston (MSN 5) is
+        // missed. Shifting the planned ride (10:12 to 10:27) would have
+        // called it at risk.
+        let legs = [
+            train("A1", ("YRK", "YORK"), "KGX", 480, 480, 600, 612, true),
+            timetabled_tube(),
+            train("B1", ("EUS", "EUSTON"), "MAN", 633, 633, 760, 760, true),
+        ];
+        assert_eq!(
+            states(&legs),
+            vec![
+                None,
+                Some((Some(3), None, ConnectionState::Ok)),
+                Some((Some(3), Some(5), ConnectionState::Missed)),
+            ]
+        );
+        let connections = evaluate_connections(&legs, &interchange());
+        assert_eq!(
+            connections[1].as_ref().unwrap().next_timetabled,
+            Some(TimetabledRide {
+                departure: at(615),
+                arrival: at(630),
+            }),
+            "the ride taken, not the planned one"
+        );
+        let (_, ready) = evaluate(&legs, &interchange());
+        assert_eq!(ready[1], Some(at(630)));
+    }
+
+    #[test]
+    fn on_time_a_timetabled_leg_is_its_planned_ride() {
+        let legs = [
+            train("A1", ("YRK", "YORK"), "KGX", 480, 480, 600, 600, true),
+            timetabled_tube(),
+            train("B1", ("EUS", "EUSTON"), "MAN", 633, 633, 760, 760, true),
+        ];
+        let connections = evaluate_connections(&legs, &interchange());
+        let onto_tube = connections[1].as_ref().unwrap();
+        assert_eq!(onto_tube.gap_minutes, Some(5));
+        assert_eq!(
+            onto_tube.next_timetabled, None,
+            "the planned ride: nothing to say"
+        );
+        assert_eq!(
+            connections[2].as_ref().unwrap().state,
+            ConnectionState::Ok,
+            "13 minutes from 10:20"
+        );
+    }
+
+    #[test]
+    fn past_its_last_ride_a_timetabled_leg_shifts_like_any_untracked_leg() {
+        // In at 11:00: no ride read leaves that late, so the 15-minute
+        // ride shifts to end 11:15.
+        let legs = [
+            train("A1", ("YRK", "YORK"), "KGX", 480, 480, 600, 660, true),
+            timetabled_tube(),
+            train("B1", ("EUS", "EUSTON"), "MAN", 700, 700, 760, 760, true),
+        ];
+        let (connections, ready) = evaluate(&legs, &interchange());
+        assert_eq!(ready[1], Some(at(675)));
+        assert_eq!(connections[1].as_ref().unwrap().next_timetabled, None);
     }
 
     fn stop(crs: &str, tiploc: &str, arr: Option<u32>, dep: Option<u32>) -> JourneyStop {
