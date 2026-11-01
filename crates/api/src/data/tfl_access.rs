@@ -35,12 +35,28 @@
 //! **Estimates.** Each time is a conservative model, documented here and
 //! echoed in the response:
 //!
-//! - A ride is [`RIDE_ENTRY_MINUTES`] (walking in and the average wait)
-//!   plus its minutes on the train plus [`RIDE_EXIT_MINUTES`] (from the
-//!   platform to the National Rail station), as a curated link's minutes
-//!   include the walks at both ends (`reference-data/
+//! - A ride is [`RIDE_ENTRY_WALK_MINUTES`] (walking in) plus the wait for
+//!   the train plus its minutes on the train plus [`RIDE_EXIT_MINUTES`]
+//!   (from the platform to the National Rail station), as a curated link's
+//!   minutes include the walks at both ends (`reference-data/
 //!   supplementary-fixed-links.csv`). The planner still adds the station's
 //!   minimum change time before the train, as it does after any link.
+//! - The wait (DS-234, [`Headways`]) is what a traveller turning up at a
+//!   random moment of the plan's window waits on average for a train that
+//!   calls at both stops in turn, by the `tfl` transit network's timetable
+//!   for the plan's date: half the headway on a regular service, more on
+//!   an uneven one (the mean of the squared gaps over twice their mean),
+//!   at most [`MAX_WAIT_MINUTES`]. The window is the [`WAIT_WINDOW_MINUTES`]
+//!   from a `departAfter` time or up to an `arriveBy` time, else the whole
+//!   service day ([`ALL_DAY_WAIT_WINDOW`]); a ride into the stop end uses
+//!   the same window (the train before it is not known yet). The
+//!   Piccadilly leaves Uxbridge every 20 to 24 minutes all day, so about
+//!   11 minutes' wait; the Circle and Hammersmith & City together leave
+//!   Paddington for Liverpool Street every 5 or so. Where the network has
+//!   no timetable for the date (not imported, or outside its horizon), or
+//!   no train leaves the stop on the line in the window, the wait is
+//!   [`RIDE_WAIT_MINUTES`] (so [`RIDE_ENTRY_MINUTES`] in all, as before
+//!   DS-234).
 //! - The minutes on the train are `TfL`'s timetabled running times along
 //!   the route (DS-206, `tfl_line_routes.step_seconds`: the mean time
 //!   between each two stops of the line's timetabled stopping patterns,
@@ -59,7 +75,11 @@
 //!   route to the end share a stop, the ride may change trains there (the
 //!   junction, the shared stop that makes the ride shortest:
 //!   Harrow-on-the-Hill from Uxbridge to Rickmansworth), and costs
-//!   [`BRANCH_CHANGE_MINUTES`] plus [`BRANCH_CHANGE_WAIT_MINUTES`] more: it
+//!   [`BRANCH_CHANGE_MINUTES`] plus the wait there more (the timetable's
+//!   for a train from the junction to the far stop, as above, else
+//!   [`BRANCH_CHANGE_WAIT_MINUTES`]; the junction is chosen with that
+//!   constant, and its own wait taken after, so only the junctions chosen
+//!   are looked up): it
 //!   is taken where no one train goes, or where its minutes, the change's
 //!   included, are fewer than the one train's (DS-191: the Circle's
 //!   trains from Paddington run round by Victoria to Liverpool Street,
@@ -90,10 +110,11 @@
 //!   Tube is not modelled); walks at any time.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use chrono::NaiveDate;
 use common::tfl_stops::TflStopLine;
 use schedule_query::{ChangeTime, InterchangeData, minimum_change_time};
 use serde::Serialize;
@@ -114,12 +135,28 @@ pub const NEAREST_MAX_METRES: f64 = 3_000.0;
 pub const NEAREST_COUNT: usize = 3;
 /// From a Tube stop to the National Rail station at the same hub.
 pub const HUB_WALK_MINUTES: i32 = 5;
-/// Walking in to the platform, and the average wait for a train. Kept at
-/// 5 with `TfL`'s timetables in hand (DS-206): the trunks run every 2 to 5
-/// minutes, but an outer branch far less often (the Piccadilly from
-/// Uxbridge every 20 or so off-peak), so this is short there; DS does not
-/// model headways.
-pub const RIDE_ENTRY_MINUTES: i32 = 5;
+/// Walking in to the platform, and the average wait for a train, where
+/// the timetable gives no wait ([`Headways`]): [`RIDE_ENTRY_WALK_MINUTES`]
+/// and [`RIDE_WAIT_MINUTES`].
+pub const RIDE_ENTRY_MINUTES: i32 = RIDE_ENTRY_WALK_MINUTES + RIDE_WAIT_MINUTES;
+/// Walking in to the platform (DS-234): before the wait.
+pub const RIDE_ENTRY_WALK_MINUTES: i32 = 2;
+/// The wait for the first train where the timetable gives none: the trunks
+/// run every 2 to 5 minutes, an outer branch far less often (the
+/// Piccadilly from Uxbridge every 20 or so), so this is a middling guess.
+pub const RIDE_WAIT_MINUTES: i32 = 3;
+/// The longest wait counted (DS-234), for the first train or at a branch
+/// change: a traveller looks up a train that runs every half hour or less
+/// often, rather than turn up at random. Also the wait when trains leave
+/// the stop on the line but none of them reaches the other stop in the
+/// window ([`Headways`]).
+pub const MAX_WAIT_MINUTES: f64 = 15.0;
+/// How long a stretch of the day the waits are averaged over (DS-234): the
+/// two hours from a `departAfter` time, or up to an `arriveBy` time.
+pub const WAIT_WINDOW_MINUTES: i32 = 120;
+/// The stretch a plan with no time averages over: the service day (the
+/// Night Tube is not modelled).
+pub const ALL_DAY_WAIT_WINDOW: (i32, i32) = (5 * 60 + 30, 24 * 60);
 /// From the platform at the far end to the National Rail station.
 pub const RIDE_EXIT_MINUTES: i32 = 3;
 /// A longer ride is not offered.
@@ -135,10 +172,11 @@ pub const MAX_CANDIDATES: usize = 16;
 /// minimum change time at the junction (a walk along or across the
 /// platform, as `TfL`'s own planner allows for a cross-platform change).
 pub const BRANCH_CHANGE_MINUTES: i32 = 5;
-/// ... and the extra wait there: a branch runs less often than the trunk
-/// (the Metropolitan's Amersham branch every 15 minutes or so, its trunk
-/// far more often), so the second train is waited for again. Half a
-/// branch's typical 10-minute headway: `TfL`'s timetable (DS-206) has the
+/// ... and the extra wait there, where the timetable gives none
+/// ([`Headways`]): a branch runs less often than the trunk (the
+/// Metropolitan's Amersham branch every 15 minutes or so, its trunk far
+/// more often), so the second train is waited for again. Half a branch's
+/// typical 10-minute headway: `TfL`'s timetable (DS-206) has the
 /// Piccadilly to Heathrow every 10 to 12 minutes off-peak at Acton Town.
 pub const BRANCH_CHANGE_WAIT_MINUTES: i32 = 5;
 /// The no-routes fallback ([`line_graph`]) links two ends of its spanning
@@ -604,6 +642,9 @@ impl Route {
 #[derive(Debug, Clone, Default)]
 pub struct LineRoutes {
     by_line: HashMap<String, Vec<Route>>,
+    /// DS-234: the trains of the plan's window, for the waits; empty (the
+    /// constant waits) unless [`LineRoutes::with_headways`].
+    headways: Headways,
 }
 
 /// One `tfl_line_routes` row: the line id, its stop ids in running order,
@@ -675,7 +716,275 @@ impl LineRoutes {
                 by_line.entry(row.line_id.clone()).or_default().push(route);
             }
         }
-        Self { by_line }
+        Self {
+            by_line,
+            headways: Headways::default(),
+        }
+    }
+
+    /// These routes, their rides waiting by `headways` (DS-234).
+    #[must_use]
+    pub fn with_headways(self, headways: Headways) -> Self {
+        Self { headways, ..self }
+    }
+}
+
+/// When a plan's access rides are taken (DS-234): the plan's date and its
+/// time, for the waits ([`Headways`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RideTime {
+    /// The service date planned.
+    pub date: NaiveDate,
+    pub clock: RideClock,
+}
+
+/// The plan's time on its service date's clock, in minutes (past 1440 for
+/// the small hours of the next day, as `dayOffset=1` gives).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RideClock {
+    DepartAfter(u32),
+    ArriveBy(u32),
+    /// No time asked for: the waits are the service day's average.
+    AnyTime,
+}
+
+impl RideClock {
+    /// The window the waits are averaged over, in seconds on the service
+    /// date's clock, `[from, to)`: see the module doc.
+    pub fn window(self) -> (i32, i32) {
+        let minutes = |m: u32| i32::try_from(m).unwrap_or(i32::MAX / 120);
+        let (from, to) = match self {
+            RideClock::DepartAfter(at) => (minutes(at), minutes(at) + WAIT_WINDOW_MINUTES),
+            RideClock::ArriveBy(at) => (minutes(at) - WAIT_WINDOW_MINUTES, minutes(at)),
+            RideClock::AnyTime => ALL_DAY_WAIT_WINDOW,
+        };
+        (from * 60, to * 60)
+    }
+}
+
+/// One call of a train ([`Headways`]): the stop (an index into the
+/// request's stops), when it leaves there (seconds on the plan's service
+/// date's clock), and whether it takes up and sets down there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Call {
+    stop: usize,
+    at: i32,
+    board: bool,
+    alight: bool,
+}
+
+/// The trains of the plan's window, each its calls in order, with where
+/// each may be boarded and left.
+#[derive(Debug, Clone, Default)]
+struct Trains {
+    all: Vec<Vec<Call>>,
+    /// Stop -> `(train, call)` of every call that takes up there.
+    boarding: HashMap<usize, Vec<(usize, usize)>>,
+    /// Stop -> `(train, call)` of every call that sets down there.
+    alighting: HashMap<usize, Vec<(usize, usize)>>,
+}
+
+/// Which end of the rides [`Trains::waits`] fixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum WaitEnd {
+    /// Rides from the stop, to every other.
+    From,
+    /// Rides to the stop, from every other.
+    Into,
+}
+
+/// The waits for the rides from (or to) one stop ([`Trains::waits`]).
+#[derive(Debug, Clone, Default)]
+struct Waits {
+    /// The boarding stops with a train leaving in the window, of the
+    /// trains counted.
+    served: Vec<usize>,
+    /// The other stop -> the wait (minutes) at the boarding stop.
+    wait: HashMap<usize, f64>,
+}
+
+impl Trains {
+    fn new(trains: Vec<Vec<Call>>) -> Self {
+        let mut boarding: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+        let mut alighting: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+        for (t, calls) in trains.iter().enumerate() {
+            for (c, call) in calls.iter().enumerate() {
+                if call.board {
+                    boarding.entry(call.stop).or_default().push((t, c));
+                }
+                if call.alight {
+                    alighting.entry(call.stop).or_default().push((t, c));
+                }
+            }
+        }
+        Self {
+            all: trains,
+            boarding,
+            alighting,
+        }
+    }
+
+    /// The waits over `window` ([`expected_wait`]) for every ride a train
+    /// gives from `stop` (later in its calls, before it comes back to
+    /// `stop`, and setting down there), or to it for [`WaitEnd::Into`]
+    /// (boarded earlier). Only the trains leaving the boarding stop in the
+    /// window, or in the [`TRAIN_TRAIL_SECONDS`] after it, count.
+    fn waits(&self, stop: usize, end: WaitEnd, window: (i32, i32)) -> Waits {
+        let mut out = Waits::default();
+        let mut leaving: HashMap<usize, Vec<i32>> = HashMap::new();
+        let counts = |at: i32| at >= window.0 && at < window.1.saturating_add(TRAIN_TRAIL_SECONDS);
+        // A stop passed twice (the Circle's) gives the same time twice:
+        // `expected_wait` counts it once.
+        match end {
+            WaitEnd::From => {
+                for &(t, c) in self.boarding.get(&stop).into_iter().flatten() {
+                    let calls = &self.all[t];
+                    let at = calls[c].at;
+                    if !counts(at) {
+                        continue;
+                    }
+                    if at < window.1 && out.served.is_empty() {
+                        out.served.push(stop);
+                    }
+                    for call in &calls[c + 1..] {
+                        if call.stop == stop {
+                            break;
+                        }
+                        if call.alight {
+                            leaving.entry(call.stop).or_default().push(at);
+                        }
+                    }
+                }
+            }
+            WaitEnd::Into => {
+                for &(t, c) in self.alighting.get(&stop).into_iter().flatten() {
+                    for call in self.all[t][..c].iter().rev() {
+                        if call.stop == stop {
+                            break;
+                        }
+                        if !call.board || !counts(call.at) {
+                            continue;
+                        }
+                        if call.at < window.1 && !out.served.contains(&call.stop) {
+                            out.served.push(call.stop);
+                        }
+                        leaving.entry(call.stop).or_default().push(call.at);
+                    }
+                }
+            }
+        }
+        out.wait = leaving
+            .into_iter()
+            .filter_map(|(other, mut times)| Some((other, expected_wait(&mut times, window)?)))
+            .collect();
+        out
+    }
+}
+
+/// The mean wait, in minutes and at most [`MAX_WAIT_MINUTES`], of a
+/// traveller who turns up at a random moment of `window` (seconds,
+/// `[from, to)`) for the first of the trains leaving at `times` (seconds,
+/// any order, repeats allowed): each gap between trains weighs by its
+/// length, so `Σgap² / 2Σgap` for gaps wholly inside it (half the headway
+/// on a regular service). A moment after the last train (none later) is
+/// left out; `None` when every moment is (no train leaves in or after the
+/// window).
+fn expected_wait(times: &mut Vec<i32>, window: (i32, i32)) -> Option<f64> {
+    let (from, to) = (f64::from(window.0), f64::from(window.1));
+    times.sort_unstable();
+    times.dedup();
+    let mut previous = from;
+    let mut covered = 0.0;
+    let mut total = 0.0;
+    for &time in times.iter() {
+        let time = f64::from(time);
+        if time < from {
+            continue;
+        }
+        if previous >= to {
+            break;
+        }
+        // Turning up in [previous, end), the wait is `time - moment`.
+        let end = time.min(to);
+        let span = end - previous;
+        if span > 0.0 {
+            total += span * (time - end) + span * span / 2.0;
+            covered += span;
+        }
+        previous = time;
+    }
+    (covered > 0.0).then(|| (total / covered / 60.0).min(MAX_WAIT_MINUTES))
+}
+
+/// The `tfl` transit network's trains on the lines of a plan's `TfL` stop
+/// ends, in the plan's window (DS-234; [`load_headways`]): what the waits
+/// for an access ride's train and at a branch change are read from (see the
+/// module doc). The lines' trains are pooled: a ride on one line may take
+/// another's train that calls at both stops (the Circle's or the
+/// Hammersmith & City's from Paddington to Liverpool Street, whichever
+/// comes first). Empty when the network has no timetable for the date:
+/// then every wait is the constant one.
+#[derive(Debug, Default)]
+pub struct Headways {
+    trains: Trains,
+    /// Seconds on the plan's service date's clock, `[from, to)`.
+    window: (i32, i32),
+    /// [`Trains::waits`] by stop, as they are asked for.
+    waits: Mutex<WaitsCache>,
+}
+
+type WaitsCache = HashMap<(usize, WaitEnd), Arc<Waits>>;
+
+impl Clone for Headways {
+    fn clone(&self) -> Self {
+        Self {
+            trains: self.trains.clone(),
+            window: self.window,
+            waits: Mutex::new(self.cached().clone()),
+        }
+    }
+}
+
+impl Headways {
+    fn cached(&self) -> std::sync::MutexGuard<'_, WaitsCache> {
+        self.waits.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn waits(&self, stop: usize, end: WaitEnd) -> Arc<Waits> {
+        self.cached()
+            .entry((stop, end))
+            .or_insert_with(|| Arc::new(self.trains.waits(stop, end, self.window)))
+            .clone()
+    }
+
+    /// The wait at `from` for a train on to `to` (minutes): `None` when no
+    /// train leaves `from` in the window (no timetable, or no service
+    /// then), [`MAX_WAIT_MINUTES`] when trains do but none reaches `to`.
+    /// Worked out for every `to` at once: ask for one `from` many times.
+    fn wait_from(&self, from: usize, to: usize) -> Option<f64> {
+        if self.trains.all.is_empty() {
+            return None;
+        }
+        let waits = self.waits(from, WaitEnd::From);
+        waits
+            .served
+            .contains(&from)
+            .then(|| waits.wait.get(&to).copied().unwrap_or(MAX_WAIT_MINUTES))
+    }
+
+    /// [`Headways::wait_from`], worked out for every `from` at once: ask
+    /// for one `to` many times.
+    fn wait_into(&self, from: usize, to: usize) -> Option<f64> {
+        if self.trains.all.is_empty() {
+            return None;
+        }
+        let waits = self.waits(to, WaitEnd::Into);
+        if waits.served.contains(&from) {
+            return Some(waits.wait.get(&from).copied().unwrap_or(MAX_WAIT_MINUTES));
+        }
+        // No train from `from` to `to` in the window: whether any leaves
+        // `from` at all decides between no wait and the longest.
+        self.wait_from(from, to)
     }
 }
 
@@ -700,6 +1009,12 @@ struct Ride {
     /// without a timetabled time at the line's speed); `None` on routes
     /// with no times, where the ride is its distance at the line's speed.
     timed: Option<f64>,
+    /// DS-234: the wait for the (first) train, in minutes, by the
+    /// timetable's headways; `None` for [`RIDE_WAIT_MINUTES`].
+    board_wait: Option<f64>,
+    /// ... and for the second train at `change_at`; `None` for
+    /// [`BRANCH_CHANGE_WAIT_MINUTES`].
+    change_wait: Option<f64>,
 }
 
 /// `metres` at `speed_kmh`, in minutes: the estimate where `TfL`'s
@@ -716,23 +1031,58 @@ impl Ride {
     }
 
     /// The ride's own minutes at `speed_kmh` (or by the timetable), with a
-    /// branch change's.
+    /// branch change's (and its wait); the wait for the first train is
+    /// [`Ride::board_minutes`].
     fn minutes(&self, speed_kmh: f64) -> i32 {
         let change = if self.change_at.is_some() {
-            BRANCH_CHANGE_MINUTES + BRANCH_CHANGE_WAIT_MINUTES
+            BRANCH_CHANGE_MINUTES + wait_minutes(self.change_wait, BRANCH_CHANGE_WAIT_MINUTES)
         } else {
             0
         };
         whole(self.riding(speed_kmh)) + change
     }
+
+    /// The wait for the first train, in whole minutes.
+    fn board_minutes(&self) -> i32 {
+        wait_minutes(self.board_wait, RIDE_WAIT_MINUTES)
+    }
+
+    /// [`Ride::minutes`] with the wait for the first train: what rides to
+    /// one stop are compared by.
+    fn minutes_waiting(&self, speed_kmh: f64) -> i32 {
+        self.minutes(speed_kmh) + self.board_minutes()
+    }
+
+    /// The minutes the ride takes, waits included, unrounded.
+    fn cost(&self, speed_kmh: f64) -> f64 {
+        let change = if self.change_at.is_some() {
+            f64::from(BRANCH_CHANGE_MINUTES)
+                + self
+                    .change_wait
+                    .unwrap_or(f64::from(BRANCH_CHANGE_WAIT_MINUTES))
+        } else {
+            0.0
+        };
+        self.riding(speed_kmh) + change + self.board_wait.unwrap_or(f64::from(RIDE_WAIT_MINUTES))
+    }
 }
 
-/// Keeps `ride` for `stop` in `best` if it is quicker (then shorter) than
-/// what is there.
+/// A wait in whole minutes, the nearest: `fallback` when the timetable
+/// gives none.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a wait is at most MAX_WAIT_MINUTES"
+)]
+fn wait_minutes(wait: Option<f64>, fallback: i32) -> i32 {
+    wait.map_or(fallback, |minutes| minutes.round() as i32)
+}
+
+/// Keeps `ride` for `stop` in `best` if it is quicker, waits included
+/// (then shorter), than what is there.
 fn keep_shorter(best: &mut BTreeMap<usize, Ride>, stop: usize, ride: Ride, speed_kmh: f64) {
     let better = |kept: &Ride| {
-        ride.riding(speed_kmh)
-            .total_cmp(&kept.riding(speed_kmh))
+        ride.cost(speed_kmh)
+            .total_cmp(&kept.cost(speed_kmh))
             .then(ride.metres.total_cmp(&kept.metres))
             .is_lt()
     };
@@ -747,6 +1097,10 @@ fn keep_shorter(best: &mut BTreeMap<usize, Ride>, stop: usize, ride: Ride, speed
 /// one change at the best shared stop when no route has or the change is
 /// quicker, else none), on the spanning tree for the rest (see the module
 /// doc).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one search: rides without a change, with one, and the tree's"
+)]
 fn rides(
     stops: &[StopRecord],
     routes: &LineRoutes,
@@ -766,6 +1120,8 @@ fn rides(
                         stops: None,
                         change_at: None,
                         timed: None,
+                        board_wait: None,
+                        change_wait: None,
                     },
                 )
             })
@@ -796,19 +1152,35 @@ fn rides(
     let between = |r: usize, i: usize, j: usize| -> Option<f64> {
         timed[r].as_ref().map(|along| along[j] - along[i])
     };
+    // DS-234: the wait for a train from `a` to `b`, the way the ride runs
+    // here (into `from` for `Toward::In`: from `b` to `a` on the track).
+    // DS-234: the wait for a train between `from` and `b`, `b` any stop:
+    // from `from` going out, from `b` coming in (each worked out for every
+    // `b` at once).
+    let headways = &routes.headways;
+    let end_wait = |b: usize| match toward {
+        Toward::Out => headways.wait_from(from, b),
+        Toward::In => headways.wait_into(b, from),
+    };
 
     // No change: one route has `from`, then the other stop.
     let mut best: BTreeMap<usize, Ride> = BTreeMap::new();
     for (r, route) in line_routes.iter().enumerate() {
         for i in route.positions(from) {
             for j in i + 1..route.stops.len() {
+                let to = route.stops[j];
+                if to == from {
+                    continue;
+                }
                 let ride = Ride {
                     metres: route.along[j] - route.along[i],
                     stops: Some(j - i),
                     change_at: None,
                     timed: between(r, i, j),
+                    board_wait: end_wait(to),
+                    change_wait: None,
                 };
-                keep_shorter(&mut best, route.stops[j], ride, speed_kmh);
+                keep_shorter(&mut best, to, ride, speed_kmh);
             }
         }
     }
@@ -846,21 +1218,37 @@ fn rides(
                         first.riding(speed_kmh)
                             + second.unwrap_or_else(|| distance_minutes(metres, speed_kmh))
                     });
+                    // The wait at `from`'s end is `first`'s: the first
+                    // train's going out, the second's coming in. The one at
+                    // the far end waits for the junction to be chosen (by
+                    // the constant there), below.
+                    let (board_wait, change_wait) = match toward {
+                        Toward::Out => (first.board_wait, None),
+                        Toward::In => (None, first.board_wait),
+                    };
                     let ride = Ride {
                         metres: first.metres + metres,
                         stops: first.stops.map(|n| n + m - k),
                         change_at: Some(junction),
                         timed,
+                        board_wait,
+                        change_wait,
                     };
                     keep_shorter(&mut changed, to, ride, speed_kmh);
                 }
             }
         }
     }
-    for (to, ride) in changed {
+    for (to, mut ride) in changed {
+        if let Some(junction) = ride.change_at {
+            match toward {
+                Toward::Out => ride.change_wait = headways.wait_from(junction, to),
+                Toward::In => ride.board_wait = headways.wait_into(to, junction),
+            }
+        }
         let quicker = best
             .get(&to)
-            .is_none_or(|kept| ride.minutes(speed_kmh) < kept.minutes(speed_kmh));
+            .is_none_or(|kept| ride.minutes_waiting(speed_kmh) < kept.minutes_waiting(speed_kmh));
         if quicker {
             best.insert(to, ride);
         }
@@ -948,9 +1336,11 @@ struct EndRide<'a> {
 }
 
 impl EndRide<'_> {
-    /// The walk to (or from) `end`, [`RIDE_ENTRY_MINUTES`] and the ride.
+    /// The walk to (or from) `end`, [`RIDE_ENTRY_WALK_MINUTES`], the wait
+    /// for the train ([`RIDE_WAIT_MINUTES`] without headways, so
+    /// [`RIDE_ENTRY_MINUTES`] with the walk in) and the ride.
     fn minutes(&self) -> i32 {
-        self.walk + RIDE_ENTRY_MINUTES + self.ride.minutes(line_mode(self.line).1)
+        self.walk + RIDE_ENTRY_WALK_MINUTES + self.ride.minutes_waiting(line_mode(self.line).1)
     }
 
     /// As a candidate for `crs`, at `minutes`, `stops[at]` being the stop
@@ -1350,6 +1740,156 @@ async fn load_stops(pool: &PgPool) -> Result<Vec<StopRecord>> {
         .collect())
 }
 
+/// The transit network whose timetable gives the waits (DS-234).
+const HEADWAYS_NETWORK: &str = "tfl";
+
+/// A train's calls are read from this long before the window: the longest
+/// Tube run end to end (the Piccadilly's Uxbridge to Cockfosters) is under
+/// two hours.
+const TRAIN_LEAD_SECONDS: i32 = 2 * 3600;
+/// ... and after it, for the first train after its end.
+const TRAIN_TRAIL_SECONDS: i32 = 3600;
+
+/// `9400ZZLUUXB1` (a platform of the network's timetable) -> `940GZZLUUXB`
+/// (the stop area `tfl_stops` keys): the first eleven characters, the
+/// access-node spelling turned into the stop-area one.
+fn stop_area_of(platform: &str) -> Option<String> {
+    let rest = platform.strip_prefix("9400")?.get(..7)?;
+    Some(format!("940G{rest}"))
+}
+
+/// The `tfl` network's trains on `lines` around `time`'s window (see
+/// [`Headways`]): its active timetable's trips of the date (and the day
+/// before, past midnight), each with its calls at `stops`. Empty when the
+/// network has no active timetable or no trips that day; an error reading
+/// it is logged and is empty too (the constant waits), as the plan does
+/// not depend on it.
+pub async fn load_headways(
+    pool: &PgPool,
+    stops: &[StopRecord],
+    lines: &[String],
+    time: RideTime,
+) -> Headways {
+    match read_headways(pool, stops, lines, time).await {
+        Ok(headways) => headways,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "couldn't read the TfL timetable's headways; Tube access rides wait the constant"
+            );
+            Headways::default()
+        }
+    }
+}
+
+async fn read_headways(
+    pool: &PgPool,
+    stops: &[StopRecord],
+    lines: &[String],
+    time: RideTime,
+) -> Result<Headways> {
+    let window = time.clock.window();
+    let mut headways = Headways {
+        window,
+        ..Headways::default()
+    };
+    if lines.is_empty() {
+        return Ok(headways);
+    }
+    let Some(Some(feed_version)): Option<Option<String>> =
+        sqlx::query_scalar("SELECT active_feed_version FROM transit_networks WHERE network = $1")
+            .bind(HEADWAYS_NETWORK)
+            .fetch_optional(pool)
+            .await?
+    else {
+        return Ok(headways);
+    };
+    // Each trip's start on the plan's date's clock: the day before's a day
+    // earlier.
+    let trips: Vec<(String, i32)> = sqlx::query_as(
+        r"
+        SELECT t.pattern_id,
+               t.start_s - CASE WHEN d.service_date = $3 THEN 0 ELSE 86400 END AS start_s
+        FROM transit_trips t
+        JOIN transit_service_days d
+          ON d.network = t.network AND d.feed_version = t.feed_version
+         AND d.service_id = t.service_id
+        WHERE t.network = $1 AND t.feed_version = $2 AND t.line_id = ANY($4)
+          AND NOT t.replacement_bus
+          AND d.service_date BETWEEN $3::date - 1 AND $3::date
+          AND t.start_s - CASE WHEN d.service_date = $3 THEN 0 ELSE 86400 END
+              BETWEEN $5 AND $6
+        ",
+    )
+    .bind(HEADWAYS_NETWORK)
+    .bind(&feed_version)
+    .bind(time.date)
+    .bind(lines)
+    .bind(window.0 - TRAIN_LEAD_SECONDS)
+    .bind(window.1 + TRAIN_TRAIL_SECONDS)
+    .fetch_all(pool)
+    .await?;
+    if trips.is_empty() {
+        return Ok(headways);
+    }
+    let mut pattern_ids: Vec<&str> = trips.iter().map(|(p, _)| p.as_str()).collect();
+    pattern_ids.sort_unstable();
+    pattern_ids.dedup();
+    let pattern_rows: Vec<(String, String, i32, i16, i16)> = sqlx::query_as(
+        r"
+        SELECT pattern_id, stop_id, dep_offset_s, pickup, drop_off
+        FROM transit_pattern_stops
+        WHERE network = $1 AND feed_version = $2 AND pattern_id = ANY($3)
+        ORDER BY pattern_id, seq
+        ",
+    )
+    .bind(HEADWAYS_NETWORK)
+    .bind(&feed_version)
+    .bind(&pattern_ids)
+    .fetch_all(pool)
+    .await?;
+    let index: HashMap<&str, usize> = stops
+        .iter()
+        .enumerate()
+        .map(|(i, stop)| (stop.summary.id.as_str(), i))
+        .collect();
+    // Each pattern's calls at the request's stops, as offsets: GTFS's 1 is
+    // "no pick-up" (or "no drop-off").
+    let mut patterns: HashMap<String, Vec<Call>> = HashMap::new();
+    for (pattern_id, stop_id, offset, pickup, drop_off) in pattern_rows {
+        let calls = patterns.entry(pattern_id).or_default();
+        let Some(&stop) = stop_area_of(&stop_id)
+            .as_deref()
+            .and_then(|id| index.get(id))
+        else {
+            continue;
+        };
+        calls.push(Call {
+            stop,
+            at: offset,
+            board: pickup != 1,
+            alight: drop_off != 1,
+        });
+    }
+    let mut trains: Vec<Vec<Call>> = Vec::with_capacity(trips.len());
+    for (pattern_id, start) in trips {
+        let Some(calls) = patterns.get(&pattern_id).filter(|c| c.len() >= 2) else {
+            continue;
+        };
+        trains.push(
+            calls
+                .iter()
+                .map(|call| Call {
+                    at: start.saturating_add(call.at),
+                    ..*call
+                })
+                .collect(),
+        );
+    }
+    headways.trains = Trains::new(trains);
+    Ok(headways)
+}
+
 /// Every `tfl_line_routes` row (about 80), with its running times.
 async fn load_routes(pool: &PgPool) -> Result<Vec<RouteRow>> {
     Ok(sqlx::query_as(
@@ -1480,11 +2020,13 @@ async fn stations_near(
 /// codes: a stop id ([`is_tfl_stop_id`]) is a stop end, anything else a
 /// station end (a CRS there may add a [`station_ride`] to the other end's
 /// candidates). `Ok(Err(..))` for an unknown stop or one with no candidate
-/// at all.
+/// at all. The rides wait by the timetable's headways at `time` (DS-234,
+/// [`load_headways`]).
 pub async fn load_access(
     pool: &PgPool,
     origin: &str,
     destination: &str,
+    time: RideTime,
 ) -> Result<Result<AccessEnds, AccessError>> {
     let codes = [origin, destination];
     let [origin, destination] = codes.map(|code| is_tfl_stop_id(code).then(|| code.trim()));
@@ -1499,14 +2041,32 @@ pub async fn load_access(
     };
     let others = [station(codes[1]), station(codes[0])];
     let stops = load_stops(pool).await?;
-    let routes = LineRoutes::timed(&stops, &load_routes(pool).await?);
-    let mut indices = [None, None];
-    let mut ends = [None, None];
+    let mut found = [None, None];
     for (slot, id) in [origin, destination].into_iter().enumerate() {
         let Some(id) = id else { continue };
         let Some(index) = stops.iter().position(|stop| stop.summary.id == id) else {
             return Ok(Err(AccessError::UnknownStop(id.to_owned())));
         };
+        found[slot] = Some((id, index));
+    }
+    // The lines ridden from (or into) either end and its siblings: their
+    // trains give the waits.
+    let mut lines: Vec<String> = Vec::new();
+    for (_, at) in found.iter().flatten() {
+        for (end, _) in with_siblings(&stops, *at) {
+            for line in &stops[end].summary.lines {
+                if !lines.contains(&line.id) {
+                    lines.push(line.id.clone());
+                }
+            }
+        }
+    }
+    let headways = load_headways(pool, &stops, &lines, time).await;
+    let routes = LineRoutes::timed(&stops, &load_routes(pool).await?).with_headways(headways);
+    let mut indices = [None, None];
+    let mut ends = [None, None];
+    for (slot, found) in found.into_iter().enumerate() {
+        let Some((id, index)) = found else { continue };
         let stations = match stops[index].position {
             Some(position) => stations_near(pool, position, NEAREST_MAX_METRES).await?,
             None => Vec::new(),
@@ -2791,6 +3351,8 @@ mod tests {
                                 stops: None,
                                 change_at: None,
                                 timed: None,
+                                board_wait: None,
+                                change_wait: None,
                             };
                             assert!(
                                 ride.minutes(speed_kmh) < one.minutes(speed_kmh),
@@ -2933,6 +3495,8 @@ mod tests {
                         stops: None,
                         change_at: None,
                         timed: None,
+                        board_wait: None,
+                        change_wait: None,
                     };
                     assert!(ride.minutes(30.0) < one.minutes(30.0), "{a} to {b}");
                 }
@@ -3172,6 +3736,8 @@ mod tests {
                             stops: None,
                             change_at: None,
                             timed: None,
+                            board_wait: None,
+                            change_wait: None,
                         }
                         .minutes(30.0);
                         let best_change = (0..stops.len())
@@ -3183,6 +3749,8 @@ mod tests {
                                     stops: None,
                                     change_at: Some(0),
                                     timed: None,
+                                    board_wait: None,
+                                    change_wait: None,
                                 }
                                 .minutes(30.0)
                             })
@@ -3367,5 +3935,199 @@ mod tests {
         // As a candidate (Heathrow's station from Uxbridge), the same.
         let ride = station_ride(&stops, &routes, uxb, Toward::Out, "HXX").unwrap();
         assert_eq!(id_of(ride.change_at.as_ref()), Some("940GACT"));
+    }
+
+    #[test]
+    fn a_wait_is_half_a_regular_headway_and_more_for_an_uneven_one() {
+        let window = (36_000, 43_200);
+        let every =
+            |minutes: i32| -> Vec<i32> { (0..30).map(|i| 34_000 + i * minutes * 60).collect() };
+        // Every 10 minutes: 5. Every 20: 10 (each twice: counted once).
+        assert_eq!(expected_wait(&mut every(10), window), Some(5.0));
+        let mut twice = every(20);
+        twice.extend(every(20));
+        assert_eq!(expected_wait(&mut twice, window), Some(10.0));
+        // Gaps of 20 and 24 minutes in turn (the Piccadilly from Uxbridge),
+        // three of each: (20² + 24²) / (2 × 44), more than half of 22.
+        let mut uneven: Vec<i32> = (0..=6)
+            .map(|i| 36_000 + (i / 2) * 44 * 60 + (i % 2) * 20 * 60)
+            .collect();
+        let wait = expected_wait(&mut uneven, (36_000, 36_000 + 3 * 44 * 60)).unwrap();
+        assert!((wait - 976.0 / 88.0).abs() < 1e-9, "{wait}");
+        // Every hour: at most MAX_WAIT_MINUTES.
+        assert_eq!(
+            expected_wait(&mut every(60), window),
+            Some(MAX_WAIT_MINUTES)
+        );
+        // No train in or after the window: no wait.
+        assert_eq!(expected_wait(&mut vec![30_000, 35_000], window), None);
+        assert_eq!(expected_wait(&mut Vec::new(), window), None);
+        // After the last train, the window is left out.
+        let wait = expected_wait(&mut vec![36_000, 36_600, 37_200], window).unwrap();
+        assert!((wait - 5.0).abs() < 1e-9, "{wait}");
+    }
+
+    #[test]
+    fn a_plans_time_gives_the_waits_window() {
+        assert_eq!(RideClock::DepartAfter(600).window(), (36_000, 43_200));
+        assert_eq!(RideClock::ArriveBy(600).window(), (28_800, 36_000));
+        // After midnight, on the service date's clock.
+        assert_eq!(RideClock::DepartAfter(1_460).window(), (87_600, 94_800));
+        assert_eq!(RideClock::AnyTime.window(), (19_800, 86_400));
+    }
+
+    #[test]
+    fn a_timetable_platform_is_its_stop_area() {
+        assert_eq!(stop_area_of("9400ZZLUUXB1").as_deref(), Some("940GZZLUUXB"));
+        assert_eq!(stop_area_of("9400ZZLUPAH2").as_deref(), Some("940GZZLUPAH"));
+        assert_eq!(stop_area_of("9400ZZDLBEC").as_deref(), Some("940GZZDLBEC"));
+        assert_eq!(stop_area_of("940GZZLUUXB"), None);
+        assert_eq!(stop_area_of("9400ZZ"), None);
+    }
+
+    /// One pattern of [`piccadilly_headways`]: its stops (after `940G`),
+    /// the minutes from the first to each, the first departure (minutes
+    /// past midnight) and every so many minutes, until 23:00.
+    type Pattern = (&'static [&'static str], &'static [i32], i32, i32);
+
+    /// Uxbridge's trains every 20 minutes each way, Heathrow Terminal 5's
+    /// every 5 from there and every 10 to it; none to Terminal 4.
+    const PICCADILLY_TRAINS: [Pattern; 4] = [
+        (
+            &["UXB", "ICK", "RUI", "RLN", "SHA", "ALP", "ACT", "HSD"],
+            &[0, 3, 6, 10, 14, 20, 30, 36],
+            6 * 60,
+            20,
+        ),
+        (
+            &["HSD", "ACT", "ALP", "SHA", "RLN", "RUI", "ICK", "UXB"],
+            &[0, 6, 16, 22, 26, 30, 33, 36],
+            6 * 60 + 5,
+            20,
+        ),
+        (
+            &["HR5", "HRC", "HTX", "HNE", "ACT", "HSD"],
+            &[0, 3, 7, 13, 21, 27],
+            6 * 60 + 2,
+            5,
+        ),
+        (
+            &["HSD", "ACT", "HNE", "HTX", "HRC", "HR5"],
+            &[0, 6, 14, 20, 24, 27],
+            6 * 60,
+            10,
+        ),
+    ];
+
+    /// [`PICCADILLY_TRAINS`] on [`piccadilly`]'s stops, `window` (seconds)
+    /// the plan's (DS-234).
+    fn piccadilly_headways(stops: &[StopRecord], window: (i32, i32)) -> Headways {
+        let mut trains = Vec::new();
+        for (ids, minutes, first, every) in PICCADILLY_TRAINS {
+            let last = ids.len() - 1;
+            let mut start = first;
+            while start <= 23 * 60 {
+                trains.push(
+                    ids.iter()
+                        .zip(minutes)
+                        .enumerate()
+                        .map(|(i, (id, at))| Call {
+                            stop: index(stops, &format!("940G{id}")),
+                            at: (start + at) * 60,
+                            board: i != last,
+                            alight: i != 0,
+                        })
+                        .collect(),
+                );
+                start += every;
+            }
+        }
+        Headways {
+            trains: Trains::new(trains),
+            window,
+            ..Headways::default()
+        }
+    }
+
+    fn piccadilly_ride(
+        stops: &[StopRecord],
+        routes: &LineRoutes,
+        end: &str,
+        other: &str,
+        toward: Toward,
+    ) -> Ride {
+        rides(
+            stops,
+            routes,
+            &line("piccadilly"),
+            index(stops, end),
+            toward,
+        )
+        .into_iter()
+        .find(|(i, _)| *i == index(stops, other))
+        .unwrap()
+        .1
+    }
+
+    #[test]
+    fn rides_wait_longer_on_a_sparse_branch_than_on_the_trunk() {
+        let (stops, constant) = piccadilly();
+        let at_ten = RideClock::DepartAfter(600).window();
+        let routes = constant
+            .clone()
+            .with_headways(piccadilly_headways(&stops, at_ten));
+        let (uxb, hrc, act, hsd) = (
+            index(&stops, "940GUXB"),
+            index(&stops, "940GHRC"),
+            index(&stops, "940GACT"),
+            index(&stops, "940GHSD"),
+        );
+
+        // Out of Uxbridge: 10 minutes for its train (every 20), 5 at Acton
+        // Town for Heathrow's (every 10).
+        let out = piccadilly_ride(&stops, &routes, "940GUXB", "940GHRC", Toward::Out);
+        assert_eq!(out.change_at, Some(act), "{out:?}");
+        assert_eq!((out.board_wait, out.change_wait), (Some(10.0), Some(5.0)));
+        // Into Uxbridge from Heathrow: 2.5 for Heathrow's train (every 5),
+        // 10 at the change.
+        let into = piccadilly_ride(&stops, &routes, "940GUXB", "940GHRC", Toward::In);
+        assert_eq!(into.change_at, Some(act), "{into:?}");
+        assert_eq!((into.board_wait, into.change_wait), (Some(2.5), Some(10.0)));
+        // The constant waits are 3 and 5: 7 more out (10 and 5), 5 more
+        // back (3, rounded, and 10).
+        for (from, to, more) in [(uxb, hrc, 7), (hrc, uxb, 5)] {
+            let before = direct_ride(&stops, &constant, from, to).unwrap();
+            let after = direct_ride(&stops, &routes, from, to).unwrap();
+            assert_eq!(after.minutes, before.minutes + more, "{after:?}");
+        }
+
+        // The trunk: Uxbridge's and Heathrow's trains both run from Acton
+        // Town to Hammersmith, so the wait is shorter than either's.
+        let trunk = piccadilly_ride(&stops, &routes, "940GACT", "940GHSD", Toward::Out);
+        assert!(trunk.board_wait.unwrap() < 3.0, "{trunk:?}");
+        let before = direct_ride(&stops, &constant, act, hsd).unwrap();
+        let after = direct_ride(&stops, &routes, act, hsd).unwrap();
+        assert!(after.minutes <= before.minutes, "{after:?} {before:?}");
+
+        // Trains leave Acton Town, but none for Terminal 4: the longest
+        // wait at the change.
+        let terminal_four = piccadilly_ride(&stops, &routes, "940GUXB", "940GHR4", Toward::Out);
+        assert_eq!(
+            terminal_four.change_wait,
+            Some(MAX_WAIT_MINUTES),
+            "{terminal_four:?}"
+        );
+
+        // Before the first train (03:00 to 05:00): the constants.
+        let night = constant.clone().with_headways(piccadilly_headways(
+            &stops,
+            RideClock::DepartAfter(180).window(),
+        ));
+        let ride = piccadilly_ride(&stops, &night, "940GUXB", "940GHRC", Toward::Out);
+        assert_eq!((ride.board_wait, ride.change_wait), (None, None));
+        assert_eq!(
+            direct_ride(&stops, &night, uxb, hrc).unwrap().minutes,
+            direct_ride(&stops, &constant, uxb, hrc).unwrap().minutes
+        );
     }
 }

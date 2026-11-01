@@ -12,6 +12,21 @@ station added or renamed is found within five minutes. The `?stops=true`
 bus stops and ferry terminals are still read per request. DS-MCP needs no
 change.
 
+## 2026-11-01: Tube access rides wait by the timetable's headways
+
+No new fields. `/Trips/plan`'s Tube, DLR and tram access legs (a `TfL`
+stop end planned without the transit networks) now count the wait for
+the train from the `TfL` timetable for the plan's date and time (DS-234):
+a ride's `minutes` (and its candidate's in `access`) are 2 minutes'
+walk in plus the average wait for a train calling at both stops over the
+two hours from `departAfter` (or up to `arriveBy`; the whole service day
+with neither), at most 15, instead of a flat 5; a branch change's wait is
+the same model's at the junction instead of a flat 5. A sparse branch
+plans longer (Uxbridge to Heathrow by the Piccadilly, a train every 20
+to 24 minutes from Uxbridge: about 88 to 91 minutes, was 78 to 84); a
+frequent trunk about the same or a minute shorter. A date the timetable
+does not cover keeps the flat waits.
+
 ## 2026-10-31: one transit disruption, `GET /public/transit/{network}/situations/{situationId}`
 
 New, unauthenticated, cached for a minute like the other transit reads
