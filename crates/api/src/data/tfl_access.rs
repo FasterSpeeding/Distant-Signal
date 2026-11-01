@@ -4111,8 +4111,12 @@ mod tests {
 
         // Trains leave Acton Town, but none for Terminal 4: the longest
         // wait at the change.
-        let hr4 = piccadilly_ride(&stops, &routes, "940GUXB", "940GHR4", Toward::Out);
-        assert_eq!(hr4.change_wait, Some(MAX_WAIT_MINUTES), "{hr4:?}");
+        let terminal_four = piccadilly_ride(&stops, &routes, "940GUXB", "940GHR4", Toward::Out);
+        assert_eq!(
+            terminal_four.change_wait,
+            Some(MAX_WAIT_MINUTES),
+            "{terminal_four:?}"
+        );
 
         // Before the first train (03:00 to 05:00): the constants.
         let night = constant.clone().with_headways(piccadilly_headways(
