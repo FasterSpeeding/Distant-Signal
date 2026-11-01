@@ -330,7 +330,8 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
   // stop id only on a ride.
   expect(legs[1]).toMatchObject({ kind: 'untracked', destinationName: 'Piccadilly' });
   expect(legs[1]).not.toHaveProperty('destinationStopId');
-  // The tram's own timetabled times (07:02 to 07:27 BST), its line and stations.
+  // The tram's own timetabled times (07:02 to 07:27 BST), its line, stations
+  // and network ride.
   expect(legs[2]).toEqual({
     kind: 'untracked',
     transitMode: 'tram',
@@ -341,6 +342,10 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
     destinationStopId: '9400ZZMAECC',
     plannedDeparture: '2026-09-17T06:02:00.000Z',
     plannedArrival: '2026-09-17T06:27:00.000Z',
+    // Its network ride, to find it in the timetable again (DS-237).
+    transitNetwork: 'metrolink',
+    transitLineId: 'blue',
+    headsign: 'Eccles',
   });
   expect(legs[3]).toMatchObject({ kind: 'untracked', originName: 'Eccles' });
   expect(legs[3]).not.toHaveProperty('originStopId');
