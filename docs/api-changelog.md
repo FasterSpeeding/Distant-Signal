@@ -3,6 +3,29 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-11-01: a `TRANSFER` that is a Tube hop is a Tube leg
+
+Additive, following the `transfer` leg below (#95). A timetable
+`TRANSFER` link between two different stations is now known to be a Tube
+hop when London Underground runs it (its `operator` is `LT`: the pair also
+has a `TUBE` link) or both its ends are Tube stops.
+
+- **`/Trips/plan`**: such a `TRANSFER` leg (`kind: "transfer"`, `mode:
+  "TRANSFER"`) between two stations that both map to a Tube stop now
+  carries `originStop` and `destinationStop`, as a `TUBE` leg does, and
+  `line` when the two stops share exactly one. With only one end a Tube
+  stop it carries neither, as before. `mode` is unchanged.
+- **Replan suggestions** (`/Journeys/{journeyId}/legs/{legId}/alternatives`,
+  the break's stored set): a known Tube hop is an untracked leg with `transitMode:
+  "tube"` (with the stops' ids and names when the plan has them), not
+  `transfer`. Any other `TRANSFER` between stations is still `transfer`.
+- **Ranking**: a `TRANSFER` between two stations now counts as a Tube or
+  bus ride (the "no Tube" pick and the transfer weight), as `TUBE`, `BUS`
+  and `METRO` links do. A change within one station still does not.
+
+DS-MCP: no change needed. A client saving a plan's `TRANSFER` leg can
+save a Tube hop as `tube` by the same rule (the web planner does).
+
 ## 2026-10-31: one transit disruption, `GET /public/transit/{network}/situations/{situationId}`
 
 New, unauthenticated, cached for a minute like the other transit reads
