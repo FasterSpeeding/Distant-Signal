@@ -1899,6 +1899,7 @@ Used only when `postgresql.enabled` is `false`.
 | `api.tripPlanGraphCache.dates` | `2` | Service dates whose connections graph `/Trips/plan` keeps built (about 27.5 MB each for rail, 44 MB with Metrolink and `tfl`; the prewarm keeps both built). The interned stop and trip codes are never freed: watch `api_trip_plan_interned_codes` level off. `0` disables the cache. |
 | `api.tripPlanGraphCache.maxAgeSecs` | `21600` | Rebuild a cached graph after this long even with no new schedule publish or transit feed (both rebuild it at once): a safety net for a publish cycle that failed a product and wrote no marker, and for reference data no marker covers. `600` until DS-225. |
 | `api.tripPlanGraphCache.prewarmIntervalSecs` | `60` | How often the api checks today's and tomorrow's graphs and builds any that are missing or stale, before a request has to (one at a time, only with a planning slot free, never evicting a graph used in the last 15 minutes). `0` turns it off. |
+| `api.tripPlanGraphCache.snapshot` | `false` | DS-235: build one timetable snapshot per schedule publish or transit feed in the prewarm loop (a minute or so of reads, one api process at a time under an advisory lock), store it in `planner_snapshots` (gzip JSON, tens of MB; the newest two kept) and build every date's graph from it instead of a ~490k-row read. Rebuilt after `maxAgeSecs`. Needs `prewarmIntervalSecs` above 0. |
 | `api.tripPlanMaxWaypoints` | `20` | Most `?waypoints=` one `/Trips/plan` request may name (clamped to 1-20). |
 | `api.tripPlanRoadWaterChangeMinutes` | `5` | Extra minutes `/Trips/plan` adds to a change on each bus or ferry side of it (clamped to 0-30): bus-to-train +N, bus-to-bus +2N, never at the start or end of the journey. |
 | `api.tripPlanTransitNetworks` | `[]` | Transit networks whose trams `/Trips/plan` plans with (`API_TRIP_PLAN_TRANSIT_NETWORKS`). Empty: the graph, its cache key and every response are as before. Listed, the tram and metro trips join each cached day graph (about 5 MB a date for Metrolink, 8 MB for `tfl`) and a request plans with them when it sends `transit=true` or names a tram stop (a TfL stop only with `transit=true`). `metrolink` or `tfl`; the render fails on anything else. Rollout: docs/transit-networks.md, "Trip planning". |
@@ -2696,7 +2697,7 @@ separate top-level values (`pollerIrishRailGtfs`, `pollerIrishRailLive`,
 | `pollers.ldbws.trackedStopArrivals.consumerKeyKey` | `consumer-key` | Its key with the consumer key, sent as `x-apikey` (`LDBWS_ARRIVALS_CONSUMER_KEY`). |
 | `pollers.ldbws.trackedStopArrivals.consumerSecretKey` | `consumer-secret` | Its key with the consumer secret (`LDBWS_ARRIVALS_CONSUMER_SECRET`, optional): wired but not sent, as RDM API products authenticate with the consumer key alone. |
 | `pollers.ldbws.internalReads.database.maxConnections` | `1` | ldbws only: its Postgres pool under `db` (`DATABASE_MAX_CONNECTIONS`; spec §6.6). |
-| `pollers.tocs.mode` | `deployment` | tocs only: `deployment` (an always-on pod) or `cronjob` (a CronJob, `cron` below: each run polls once with `RUN_ONCE`, waits for its snapshot to reach the stream, and exits). Exactly one renders. As a CronJob it has no `/metrics`, so its DistantSignalPollerStale rule is off and DistantSignalPollerFailing can't see it; the scheduled-job alerts and the `tocs` ingest_freshness source cover it. Other pollers refuse `cronjob` until their binaries wait for their writes. See `docs/scheduled-jobs.md`. |
+| `pollers.tocs.mode` | `deployment` | tocs only: `deployment` (an always-on pod) or `cronjob` (a CronJob, `cron` below: each run polls once with `RUN_ONCE`, waits for its snapshot to reach the stream, and exits). Exactly one renders. As a CronJob it has no `/metrics`, so its DistantSignalPollerStale rule is off and DistantSignalPollerFailing can't see it; the scheduled-job alerts and the `tocs` ingest_freshness source cover it. `pollers.stations.mode` is the same for poller-stations; the other pollers refuse `cronjob` until their binaries wait for their writes. See `docs/scheduled-jobs.md`. |
 | `pollers.tocs.cron.schedule` | `"40 4 * * *"` | tocs only, `mode: cronjob`: the run's schedule (daily, clear of the 03:00 and 05:00 UTC backups). |
 | `pollers.tocs.cron.timeZone` | `Etc/UTC` | The schedule's time zone. Required. |
 | `pollers.tocs.cron.suspend` | `false` | Suspend the CronJob (a run already going is not stopped). |
@@ -2708,6 +2709,18 @@ separate top-level values (`pollerIrishRailGtfs`, `pollerIrishRailLive`,
 | `pollers.tocs.cron.ttlSecondsAfterFinished` | `86400` | A finished Job and its pod are deleted this long after it ends. |
 | `pollers.tocs.cron.skipIfFresherThanSecs` | `43200` | `RUN_ONCE_SKIP_IF_FRESHER_THAN_SECS`: a run finding the TOC list landed less than this long ago fetches nothing, so a doubled or manual run spends no RDM request. `0` always fetches. |
 | `pollers.tocs.cron.resources` | requests `5m`/`16Mi`/ephemeral `16Mi`, limits `128Mi`/ephemeral `256Mi` | The run's container resources (`pollers.tocs.resources` is the Deployment's). |
+| `pollers.stations.mode` | `deployment` | stations only: as `pollers.tocs.mode`. Its write is one awaited transaction inside the run, so a run exits once its stations are committed. As a CronJob the `stations` ingest_freshness source (48h) and the scheduled-job alerts cover it. |
+| `pollers.stations.cron.schedule` | `"20 4 * * *"` | stations only, `mode: cronjob`: the run's schedule (daily; clear of the 03:00 and 05:00 UTC backups and the other scheduled pollers). |
+| `pollers.stations.cron.timeZone` | `Etc/UTC` | The schedule's time zone. Required. |
+| `pollers.stations.cron.suspend` | `false` | Suspend the CronJob. |
+| `pollers.stations.cron.startingDeadlineSeconds` | `3600` | A start missed by more than this is skipped. |
+| `pollers.stations.cron.activeDeadlineSeconds` | `1800` | Kill a run, or one still Pending, after this long: the fetch plus the write's 15-minute retry budget. |
+| `pollers.stations.cron.backoffLimit` | `2` | Retries of a run that failed transiently (exit 1). Exit 3 (the write refused the data) and 137 (OOMKilled) fail the Job at once. |
+| `pollers.stations.cron.successfulJobsHistoryLimit` | `1` | Finished Jobs kept. |
+| `pollers.stations.cron.failedJobsHistoryLimit` | `3` | Failed Jobs kept. |
+| `pollers.stations.cron.ttlSecondsAfterFinished` | `86400` | A finished Job and its pod are deleted this long after it ends. |
+| `pollers.stations.cron.skipIfFresherThanSecs` | `43200` | `RUN_ONCE_SKIP_IF_FRESHER_THAN_SECS`: a run finding the stations landed less than this long ago fetches nothing. `0` always fetches. |
+| `pollers.stations.cron.resources` | requests `5m`/`128Mi`/ephemeral `16Mi`, limits `256Mi`/ephemeral `256Mi` | The run's container resources (the feed's parse peaked at 168Mi). |
 
 ### pollerIrishRailGtfs
 
@@ -2872,6 +2885,18 @@ spec's §15.1.
 | `pollerTransitSchedule.networks.tfl.affinity` | `{}` | Pod affinity rules. |
 | `pollerTransitSchedule.networks.tfl.podAnnotations` | `{}` | Pod annotations. |
 | `pollerTransitSchedule.networks.tfl.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
+| `pollerTransitSchedule.networks.tfl.timetableMode` | `deployment` | tfl only: `deployment` (one always-on pod, `TRANSIT_LOOPS=both`) or `cronjob` (a CronJob, `timetableCron`, whose run fetches and publishes one timetable and exits: `TRANSIT_LOOPS=timetable`, `RUN_ONCE`). Exactly one renders. tfl has no situations loop, so nothing of it stays always on; the chart refuses `cronjob` with `situationsEnabled` (and for the other networks: Metrolink's split is a later step). As a CronJob its DistantSignalPollerStale rules are off and DistantSignalTransitFeedRefused can't see it (no `/metrics`): the scheduled-job alerts (a refused feed exits 3 and fails the Job) and its `transit-tfl-timetable` ingest_freshness source (36h) cover it. See `docs/scheduled-jobs.md`. |
+| `pollerTransitSchedule.networks.tfl.timetableCron.schedule` | `"0 4 * * *"` | The run's schedule: after the 03:00 UTC dump, before the 05:00 UTC backups, apart from the other scheduled pollers. |
+| `pollerTransitSchedule.networks.tfl.timetableCron.timeZone` | `Etc/UTC` | The schedule's time zone. Required. |
+| `pollerTransitSchedule.networks.tfl.timetableCron.suspend` | `false` | Suspend the CronJob. |
+| `pollerTransitSchedule.networks.tfl.timetableCron.startingDeadlineSeconds` | `3600` | A start missed by more than this is skipped (the freshness alert allows 36h). |
+| `pollerTransitSchedule.networks.tfl.timetableCron.activeDeadlineSeconds` | `1800` | Kill a run, or one still Pending (it needs 448Mi of free requests on the node), after this long. A run is about 20 s. |
+| `pollerTransitSchedule.networks.tfl.timetableCron.backoffLimit` | `2` | Retries of a run that failed transiently (exit 1). Exit 3 (the feed guard refused the timetable) and 137 (OOMKilled) fail the Job at once. |
+| `pollerTransitSchedule.networks.tfl.timetableCron.successfulJobsHistoryLimit` | `1` | Finished Jobs kept. |
+| `pollerTransitSchedule.networks.tfl.timetableCron.failedJobsHistoryLimit` | `3` | Failed Jobs kept. |
+| `pollerTransitSchedule.networks.tfl.timetableCron.ttlSecondsAfterFinished` | `86400` | A finished Job and its pod are deleted this long after it ends. |
+| `pollerTransitSchedule.networks.tfl.timetableCron.skipIfFresherThanSecs` | `43200` | `RUN_ONCE_SKIP_IF_FRESHER_THAN_SECS`: a run finding a timetable commit on the stream newer than this fetches nothing; an unanswered `timetableRefresh` token overrides it. |
+| `pollerTransitSchedule.networks.tfl.timetableCron.resources` | requests `100m`/`448Mi`/ephemeral `192Mi`, limits `1Gi`/ephemeral `768Mi` | The run's container resources: as the Deployment's (332 MiB parse peak), plus ephemeral storage for the 141 MB zip in `/work`. |
 
 ### scheduleFeed
 

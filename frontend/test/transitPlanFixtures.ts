@@ -130,3 +130,78 @@ export const WALK_TO_TUBE: TransferLeg = {
     estimated: true,
   },
 };
+
+/** Wimbledon to Milton Keynes Central by the District line: production's
+ * `GET /Trips/plan?origin=WIM&destination=MKC&results=options&transit=true`
+ * for 2026-11-02, its second option, trimmed. A walk into the TfL station,
+ * a timetabled District ride, a walk out to West Brompton, then two trains.
+ * Each walk names the TfL stop at its Tube end. */
+export const WIM_MKC_BY_DISTRICT: TripPlanItinerary = {
+  legs: [
+    {
+      kind: 'transfer',
+      mode: 'WALK',
+      originCrs: 'WIM',
+      destinationCrs: null,
+      minutes: 4,
+      transitWalk: {
+        network: 'tfl',
+        stop: { id: '940GZZLUWIM', name: 'Wimbledon' },
+        towardsStop: true,
+        walkMinutes: 2,
+        estimated: true,
+      },
+    },
+    {
+      ...TUBE_LEG,
+      serviceDate: '2026-11-02',
+      scheduledDeparture: '09:09:00',
+      scheduledArrival: '09:25:00',
+      line: { id: 'tfl:district', name: 'District', colour: '#13843f' },
+      originStop: { id: '940GZZLUWIM', name: 'Wimbledon', platform: null },
+      destinationStop: { id: '940GZZLUWBN', name: 'West Brompton', platform: null },
+      headwayMinutes: 4,
+    },
+    {
+      kind: 'transfer',
+      mode: 'WALK',
+      originCrs: null,
+      destinationCrs: 'WBP',
+      minutes: 4,
+      transitWalk: {
+        network: 'tfl',
+        stop: { id: '940GZZLUWBN', name: 'West Brompton' },
+        towardsStop: false,
+        walkMinutes: 2,
+        estimated: true,
+      },
+    },
+    {
+      kind: 'train',
+      trainUid: 'W29235',
+      serviceDate: '2026-11-02',
+      originCrs: 'WBP',
+      destinationCrs: 'WFJ',
+      scheduledDeparture: '09:47:00',
+      scheduledArrival: '10:24:00',
+      publicDeparture: '09:47:00',
+      publicArrival: '10:24:00',
+      arrivalDayOffset: 0,
+    },
+    {
+      kind: 'train',
+      trainUid: 'W33964',
+      serviceDate: '2026-11-02',
+      originCrs: 'WFJ',
+      destinationCrs: 'MKC',
+      scheduledDeparture: '10:30:00',
+      scheduledArrival: '10:50:00',
+      publicDeparture: '10:30:00',
+      publicArrival: '10:50:00',
+      arrivalDayOffset: 0,
+    },
+  ],
+  changeCount: 2,
+  totalDurationMinutes: 110,
+  scheduledOnly: false,
+};

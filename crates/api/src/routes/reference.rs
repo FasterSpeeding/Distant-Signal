@@ -70,7 +70,7 @@ async fn search_stations(
     let Some(q) = sanitize_query(&query.q) else {
         return Ok(Json(Vec::new()));
     };
-    let mut results = reference::search_stations(&app.database, q, SUGGESTION_LIMIT)
+    let mut results = reference::search_stations_cached(&app.database, q, SUGGESTION_LIMIT)
         .await
         .map_err(internal_error)?;
     let include_stops = query

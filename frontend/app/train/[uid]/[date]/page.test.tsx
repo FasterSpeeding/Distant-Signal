@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import TrackedTrainByUidPage, { toJourneyState, trainStatusSummary, generateMetadata } from './page';
+import TrackedTrainByUidPage, { toJourneyState, trainPageDescription, generateMetadata } from './page';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import type { PublicTrainState, TrackedTrainListItem } from '@/lib/types';
@@ -553,22 +553,26 @@ describe('generateMetadata', () => {
     expect(metadata.title).toBe('Train W12345');
   });
 
-  it('describes an en-route train with its last reported location and delay', async () => {
+  // Evergreen (docs/style-guide.md "Live link previews"): the live state is
+  // in the card image only, so a chat app's hours-old unfurl never says a
+  // delay or a location that has moved on.
+  it("describes the page, not the train's live state", async () => {
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
       publicTrainState({ lastReportedLocation: 'Woking', delayMinutes: 5 }),
     );
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
-    expect(metadata.description).toBe('Last reported: Woking. 5 min late');
-    expect(metadata.openGraph?.description).toBe('Last reported: Woking. 5 min late');
+    expect(metadata.description).toBe('19:32 WAT to WOK, Mon 31 Aug: calling points, platforms and live running.');
+    expect(metadata.openGraph?.description).toBe(
+      '19:32 WAT to WOK, Mon 31 Aug: calling points, platforms and live running.',
+    );
+    expect(metadata.description).not.toMatch(/late|Woking/);
   });
 
-  it('describes a cancelled train', async () => {
+  it('says the same for a cancelled train or one cut short', async () => {
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState({ status: 'cancelled' }));
-    const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
-    expect(metadata.description).toBe('This train was cancelled.');
-  });
+    const cancelled = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
+    expect(cancelled.description).toBe('19:32 WAT to WOK, Mon 31 Aug: calling points, platforms and live running.');
 
-  it('describes a train cut short, with its reason (DS-181)', async () => {
     const raynes = { crs: 'RAY', name: 'Raynes Park', stopIndex: 5 };
     const waterloo = { crs: 'WAT', name: 'London Waterloo', stopIndex: 11 };
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
@@ -586,8 +590,16 @@ describe('generateMetadata', () => {
         },
       }),
     );
+    const cutShort = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
+    expect(cutShort.description).toBe('19:32 WAT to WOK, Mon 31 Aug: calling points, platforms and live running.');
+  });
+
+  it('names an untitled train by its UID', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
+      publicTrainState({ originCrs: null, originName: null, destinationCrs: null, destinationName: null }),
+    );
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
-    expect(metadata.description).toBe('Terminates at Raynes Park: driver.');
+    expect(metadata.description).toBe('Train W12345, Mon 31 Aug: calling points, platforms and live running.');
   });
 
   it('calls notFound() on ApiNotFoundError, matching the page component', async () => {
@@ -608,39 +620,25 @@ describe('generateMetadata', () => {
   });
 });
 
-describe('trainStatusSummary', () => {
-  it('summarizes a pending train', () => {
+describe('trainPageDescription', () => {
+  it('says what the page has, with the date', () => {
     expect(
-      trainStatusSummary(toJourneyState(publicTrainState({ originCrs: null, trainId: null, status: null }))),
-    ).toMatch(/Waiting to hear from Network Rail/);
+      trainPageDescription('13:42 Woking to London Waterloo', {
+        serviceDate: '2026-11-01',
+        serviceMode: 'train',
+        liveTracking: true,
+      }),
+    ).toBe('13:42 Woking to London Waterloo, Sun 1 Nov: calling points, platforms and live running.');
   });
 
-  it('summarizes a schedule-matched train', () => {
+  it('a service never tracked live has its timetable only', () => {
     expect(
-      trainStatusSummary(toJourneyState(publicTrainState({ trainId: null, status: null, destinationName: 'Woking' }))),
-    ).toBe('Matched to a scheduled service. Waiting for live tracking to begin.');
-  });
-
-  it('summarizes a train awaiting its first movement report', () => {
-    expect(trainStatusSummary(toJourneyState(publicTrainState({ status: 'awaiting_activation' })))).toBe(
-      'Matched to a timetabled train. Waiting for its first movement report.',
-    );
-  });
-
-  it('summarizes a completed train with a known destination', () => {
-    expect(
-      trainStatusSummary(toJourneyState(publicTrainState({ status: 'completed', destinationName: 'Woking' }))),
-    ).toBe('This train has arrived at Woking.');
-  });
-
-  it('summarizes an on-time en-route train', () => {
-    expect(
-      trainStatusSummary(toJourneyState(publicTrainState({ lastReportedLocation: 'Woking', delayMinutes: 0 }))),
-    ).toBe('Last reported: Woking. On time');
-  });
-
-  it('flags a may-have-arrived train as an inference', () => {
-    expect(trainStatusSummary(toJourneyState(publicTrainState({ mayHaveArrived: true })))).toMatch(/may have arrived/i);
+      trainPageDescription('13:42 Woking to Guildford', {
+        serviceDate: '2026-11-01',
+        serviceMode: 'replacementBus',
+        liveTracking: false,
+      }),
+    ).toBe('13:42 Woking to Guildford, Sun 1 Nov: calling points and timetabled times.');
   });
 });
 
@@ -767,12 +765,12 @@ describe('TrackedTrainByUidPage: buses and ferries', () => {
     expect(screen.getByText('UID W12345')).toBeInTheDocument();
   });
 
-  it('the summary and metadata say a bus is timetabled only', async () => {
+  it('the metadata says a bus or ferry has its timetable only', async () => {
     const state = toJourneyState(bus('bus'));
     expect(state.serviceMode).toBe('bus');
-    expect(trainStatusSummary(state)).toBe("Bus service: Timetabled only. Buses and ferries aren't tracked live.");
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(bus('ferry'));
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'C30818', date: '2026-08-31' }) });
-    expect(metadata.description).toBe("Ferry: Timetabled only. Buses and ferries aren't tracked live.");
+    expect(metadata.description).toMatch(/: calling points and timetabled times\.$/);
+    expect(metadata.description).not.toMatch(/live/);
   });
 });

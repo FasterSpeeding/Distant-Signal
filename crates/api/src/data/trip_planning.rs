@@ -678,6 +678,11 @@ impl<T: Send + Sync + 'static> GraphCache<T> {
         self.capacity
     }
 
+    /// How long an entry is used before it is rebuilt (see the type doc).
+    pub fn max_age(&self) -> Duration {
+        self.max_age
+    }
+
     /// Why `date`'s entry can't serve `marker`, `None` when it can.
     fn stale_reason(
         &self,

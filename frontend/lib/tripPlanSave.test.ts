@@ -1,8 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { itineraryLegsForSaving, transferAsUntracked } from './tripPlanSave';
 import { trainLegsForTracking } from './tripPlan';
+import type { ItineraryLegBody } from './tripPlanSave';
 import type { TripPlanItinerary, TripPlanLeg } from './types';
-import { RAIL_TRAM_RAIL, REPLACEMENT_BUS_LEG, TRAM_ONLY, TUBE_LEG } from '@/test/transitPlanFixtures';
+import {
+  RAIL_TRAM_RAIL,
+  REPLACEMENT_BUS_LEG,
+  TRAM_LEG,
+  TRAM_ONLY,
+  TUBE_LEG,
+  WALK_FROM_TRAM,
+  WALK_TO_TRAM,
+  WALK_TO_TUBE,
+  WIM_MKC_BY_DISTRICT,
+} from '@/test/transitPlanFixtures';
 
 const NAMES = new Map([
   ['EUS', 'London Euston'],
@@ -100,7 +111,7 @@ describe('itineraryLegsForSaving', () => {
         transitMode: 'walk',
         originName: 'London Euston',
         destinationName: 'Euston',
-        destinationStopId: '940GZZLUEUS',
+        // The walk to the stop is named after it; only a ride can have its id.
         plannedDeparture: '2026-10-21T08:30:00.000Z',
         plannedArrival: '2026-10-21T08:35:00.000Z',
       },
@@ -475,7 +486,8 @@ describe('itineraryLegsForSaving with a tram leg', () => {
         transitMode: 'walk',
         originName: 'Manchester Piccadilly',
         destinationName: 'Piccadilly',
-        destinationStopId: '9400ZZMAPIC',
+        // A walk has no stop id (the api takes one only on a ride); the
+        // stop's name is its place.
         plannedDeparture: '2026-11-04T08:00:00.000Z',
         plannedArrival: '2026-11-04T08:06:00.000Z',
       },
@@ -496,7 +508,6 @@ describe('itineraryLegsForSaving with a tram leg', () => {
         transitMode: 'walk',
         originName: 'Victoria',
         destinationName: 'Manchester Victoria',
-        originStopId: '9400ZZMAVIC',
         // The walk follows the tram it leaves, not the train before it.
         plannedDeparture: '2026-11-04T08:22:00.000Z',
         plannedArrival: '2026-11-04T08:27:00.000Z',
@@ -524,5 +535,126 @@ describe('itineraryLegsForSaving with a tram leg', () => {
 
   it('a tram-only plan has no train to track', () => {
     expect(trainLegsForTracking([TRAM_ONLY])).toEqual([]);
+  });
+});
+
+/** `POST /Journeys/itinerary` refuses a stop id on a leg whose mode can't
+ * have one (`journeys::attach_untracked_stops`: a TfL stop only on a tube,
+ * dlr, tram or metro leg; a trip-planner tram station only on a tram or
+ * bus leg), failing the whole save: "Only a tube, dlr, tram, metro leg can
+ * have a stop id." */
+describe('itineraryLegsForSaving sends stop ids only where the api takes them', () => {
+  const TFL_STOP_MODES: string[] = ['tube', 'dlr', 'tram', 'metro'];
+  const TRANSIT_STOP_MODES: string[] = ['tram', 'bus'];
+  const accepted = (leg: ItineraryLegBody) => {
+    if (!('kind' in leg)) return true;
+    return [leg.originStopId, leg.destinationStopId].every(
+      (id) =>
+        id === undefined || (id.startsWith('9400') ? TRANSIT_STOP_MODES : TFL_STOP_MODES).includes(leg.transitMode),
+    );
+  };
+  const wimName = (code: string) =>
+    new Map([
+      ['WIM', 'Wimbledon'],
+      ['WBP', 'West Brompton'],
+    ]).get(code);
+
+  it('saves Wimbledon to Milton Keynes by the District line: walks by name, the Tube ride with its stops', () => {
+    const legs = itineraryLegsForSaving([WIM_MKC_BY_DISTRICT], wimName);
+    expect(legs).toEqual([
+      {
+        kind: 'untracked',
+        transitMode: 'walk',
+        originName: 'Wimbledon',
+        destinationName: 'Wimbledon',
+        plannedDeparture: '2026-11-02T09:05:00.000Z',
+        plannedArrival: '2026-11-02T09:09:00.000Z',
+      },
+      {
+        kind: 'untracked',
+        transitMode: 'tube',
+        originName: 'Wimbledon',
+        destinationName: 'West Brompton',
+        lineName: 'District',
+        originStopId: '940GZZLUWIM',
+        destinationStopId: '940GZZLUWBN',
+        plannedDeparture: '2026-11-02T09:09:00.000Z',
+        plannedArrival: '2026-11-02T09:25:00.000Z',
+      },
+      {
+        kind: 'untracked',
+        transitMode: 'walk',
+        originName: 'West Brompton',
+        destinationName: 'West Brompton',
+        plannedDeparture: '2026-11-02T09:25:00.000Z',
+        plannedArrival: '2026-11-02T09:29:00.000Z',
+      },
+      { trainUid: 'W29235', serviceDate: '2026-11-02', originCrs: 'WBP', destinationCrs: 'WFJ' },
+      { trainUid: 'W33964', serviceDate: '2026-11-02', originCrs: 'WFJ', destinationCrs: 'MKC' },
+    ]);
+    expect(legs.every(accepted)).toBe(true);
+  });
+
+  it('every leg type: walks to a TfL or tram stop, transfers by every mode, every transit ride', () => {
+    const euston = { id: '940GZZLUEUS', name: 'Euston', modes: ['tube'], lines: [] };
+    const victoria = { id: '940GZZLUVIC', name: 'Victoria', modes: ['tube'], lines: [] };
+    const transfers: TripPlanLeg[] = ['WALK', 'TUBE', 'METRO', 'BUS', 'FERRY', 'TRANSFER'].map((mode) => ({
+      kind: 'transfer',
+      mode,
+      originCrs: 'EUS',
+      destinationCrs: 'VIC',
+      minutes: 10,
+      originStop: euston,
+      destinationStop: victoria,
+    }));
+    // A TRANSFER between two stations with a Tube stop at one end only is
+    // no known Tube hop: a plain transfer, which can't have a stop id.
+    transfers.push({
+      kind: 'transfer',
+      mode: 'TRANSFER',
+      originCrs: 'EUS',
+      destinationCrs: 'VIC',
+      minutes: 10,
+      originStop: euston,
+    });
+    const rides: TripPlanLeg[] = [
+      TUBE_LEG,
+      { ...TUBE_LEG, serviceMode: 'dlr' },
+      { ...TUBE_LEG, serviceMode: 'tram' },
+      // A replacement bus on the TfL network would carry TfL stops.
+      { ...TUBE_LEG, serviceMode: 'replacementBus', line: null },
+      TRAM_LEG,
+      REPLACEMENT_BUS_LEG,
+    ];
+    const first = train('A1', 'MKC', 'EUS', '07:00', '07:40');
+    const legs = itineraryLegsForSaving(
+      [itinerary([first, WALK_TO_TUBE, WALK_TO_TRAM, WALK_FROM_TRAM, ...transfers, ...rides])],
+      nameFor,
+    );
+    const untracked = legs.filter((leg) => 'kind' in leg);
+    expect(untracked).toHaveLength(16);
+    for (const leg of untracked) expect(accepted(leg), JSON.stringify(leg)).toBe(true);
+    // The legs that can have their stops keep them: the TRANSFER with a Tube
+    // stop at both ends is a known Tube hop, saved as a tube ride with both.
+    expect(untracked.filter((leg) => leg.originStopId !== undefined).map((leg) => leg.transitMode)).toEqual([
+      'tube',
+      'metro',
+      'tube',
+      'tube',
+      'dlr',
+      'tram',
+      'tram',
+      'bus',
+    ]);
+    // The TUBE link and the TRANSFER Tube hop, each with both stops.
+    const eustonTube = untracked.filter((leg) => leg.transitMode === 'tube' && leg.originName === 'Euston');
+    expect(eustonTube).toHaveLength(2);
+    for (const leg of eustonTube) {
+      expect(leg).toMatchObject({ originStopId: '940GZZLUEUS', destinationStopId: '940GZZLUVIC' });
+    }
+    const plain = untracked.filter((leg) => leg.transitMode === 'transfer');
+    expect(plain).toHaveLength(1);
+    expect(plain[0]).not.toHaveProperty('originStopId');
+    expect(plain[0]).not.toHaveProperty('destinationStopId');
   });
 });

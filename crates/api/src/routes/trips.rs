@@ -19,8 +19,8 @@ use serde::Deserialize;
 use crate::app::App;
 use crate::data::station_groups::{self, StationChoice};
 use crate::data::{
-    operator_groups, planner_operators, tfl_access, transit_planning, trip_plan_live,
-    trip_planning, trip_planning_itinerary,
+    operator_groups, planner_operators, planner_snapshot, tfl_access, transit_planning,
+    trip_plan_live, trip_planning, trip_planning_itinerary,
 };
 
 /// Hard cap on `?waypoints=`, enforced before any database read (2026-09-25
@@ -935,8 +935,23 @@ async fn plan_trip_request(
     // A `TfL` stop end (DS-135): its access candidates, read before the
     // permit like the other checks (a few hundred `tfl_stops` rows). A tram
     // stop end of a planner network is a graph node instead (spec §12.2).
+    // DS-234: the access rides wait by the Tube's headways at the plan's
+    // time (the whole day's when no time is asked for).
+    let ride_time = tfl_access::RideTime {
+        date: params.date,
+        clock: match time {
+            _ if params.depart_after.is_none() && params.arrive_by.is_none() => {
+                tfl_access::RideClock::AnyTime
+            }
+            trip_planning_itinerary::TimeBound::DepartAfter(at) => {
+                tfl_access::RideClock::DepartAfter(at)
+            }
+            trip_planning_itinerary::TimeBound::ArriveBy(at) => tfl_access::RideClock::ArriveBy(at),
+        },
+    };
     let access = load_access_ends(
         &app,
+        ride_time,
         if transit_ends[0].is_some() {
             ""
         } else {
@@ -1248,6 +1263,7 @@ async fn plan_trip_request(
 /// National Rail station near it, and the same stop at both ends are 400s.
 async fn load_access_ends(
     app: &App,
+    time: tfl_access::RideTime,
     origin: &str,
     destination: &str,
 ) -> Result<Option<tfl_access::AccessEnds>, (StatusCode, String)> {
@@ -1260,7 +1276,7 @@ async fn load_access_ends(
             "origin and destination must differ".to_string(),
         ));
     }
-    tfl_access::load_access(&app.database, origin, destination)
+    tfl_access::load_access(&app.database, origin, destination, time)
         .await
         .map_err(internal_error("read the TfL stops"))?
         .map(Some)
@@ -1367,6 +1383,7 @@ const GRAPH_BUILD_PHASES: [&str; 3] = ["read", "cpu", "total"];
 /// [`GRAPH_BUILD_SECONDS_METRIC`]'s phases, so the first build after a
 /// restart is visible to `increase()`.
 pub fn register_graph_metrics() {
+    planner_snapshot::register_metrics();
     for reason in trip_planning::BuildReason::ALL {
         for trigger in BuildTrigger::ALL {
             metrics::counter!(
@@ -1410,9 +1427,10 @@ async fn load_graph_in(
     let pool = app.database.clone();
     // Read here, not in the build: the build may run on another task.
     let transit_networks = transit_planning::enabled_networks();
+    let build_marker = marker.clone();
     let cached = cache
         .get_or_build(date, marker, move || async move {
-            build_planning_graph(&pool, date, &transit_networks).await
+            build_planning_graph(&pool, date, &transit_networks, &build_marker).await
         })
         .await?;
     let Some((graph, outcome)) = cached else {
@@ -1444,9 +1462,34 @@ async fn build_planning_graph(
     pool: &sqlx::PgPool,
     date: NaiveDate,
     transit_networks: &[String],
+    marker: &trip_planning::GraphMarker,
 ) -> anyhow::Result<Option<trip_planning::PlanningGraph>> {
     let started = std::time::Instant::now();
-    let Some(mut calling_points) = trip_planning::fetch_calling_points_for_date(pool, date).await?
+    // The date's own inputs: from the timetable snapshot when one is
+    // installed for this marker and spans the date (DS-235), else read.
+    let snapshot = planner_snapshot::current(marker, transit_networks);
+    let source = if snapshot.is_some() {
+        "snapshot"
+    } else {
+        "postgres"
+    };
+    let from_snapshot = match snapshot {
+        Some(installed) => {
+            let networks = transit_networks.to_vec();
+            tokio::task::spawn_blocking(move || installed.snapshot.day(date, &networks)).await?
+        }
+        None => None,
+    };
+    let inputs = match from_snapshot {
+        Some(inputs) => inputs,
+        None => read_day_inputs(pool, date, transit_networks).await?,
+    };
+    let Some(planner_snapshot::DayInputs {
+        mut calling_points,
+        operators,
+        modes,
+        transit,
+    }) = inputs
     else {
         return Ok(None);
     };
@@ -1458,16 +1501,7 @@ async fn build_planning_graph(
     // instead (spec §5.1); no other request ever sees them.
     let positions = planner_operators::fetch_tube_station_positions(pool, &interchange).await?;
     planner_operators::add_tube_stand_in_walks(&mut interchange, &positions);
-    let operators = planner_operators::OperatorTable::fetch(pool, date).await?;
     let road_or_water = trip_planning::fetch_road_or_water_tiplocs(pool).await?;
-    // Per-UID published modes; an error degrades to the bus-stop
-    // heuristic for every UID rather than failing the plan.
-    let modes = crate::data::schedule_services::all_modes_for_date(pool, date)
-        .await
-        .unwrap_or_else(|err| {
-            tracing::warn!(error = ?err, %date, "could not read service modes");
-            std::collections::HashMap::new()
-        });
     interchange.modal_change = trip_planning::modal_change_buffer(
         &calling_points,
         &modes,
@@ -1475,14 +1509,11 @@ async fn build_planning_graph(
         trip_planning::road_water_change_minutes(),
     );
     // The transit networks' trips join the trains before the one
-    // sort (DS-164); with the switch empty, nothing is read.
-    let transit_days = if transit_networks.is_empty() {
-        None
-    } else {
-        let (days, skipped) = transit_planning::read_days(pool, transit_networks, date).await;
+    // sort (DS-164); with the switch empty, there are none.
+    let transit_days = transit.map(|(days, skipped)| {
         calling_points.extend(transit_planning::calling_points(&days));
-        Some((days, skipped))
-    };
+        (days, skipped)
+    });
     let read = started.elapsed();
     // The sort over every calling point of the day, on the blocking
     // pool (bound 4 in `get_trip_plan`'s doc comment), and the
@@ -1528,6 +1559,7 @@ async fn build_planning_graph(
     record_build_phase("total", total);
     tracing::info!(
         %date,
+        source,
         connections = connections.len(),
         read_ms = read.as_millis(),
         total_ms = total.as_millis(),
@@ -1540,6 +1572,40 @@ async fn build_planning_graph(
         transit,
         operators,
         running,
+    }))
+}
+
+/// `date`'s planning inputs read from Postgres (the per-date reads the
+/// timetable snapshot stands in for): `None` when no calling points are
+/// published for `date`.
+async fn read_day_inputs(
+    pool: &sqlx::PgPool,
+    date: NaiveDate,
+    transit_networks: &[String],
+) -> anyhow::Result<Option<planner_snapshot::DayInputs>> {
+    let Some(calling_points) = trip_planning::fetch_calling_points_for_date(pool, date).await?
+    else {
+        return Ok(None);
+    };
+    let operators = planner_operators::OperatorTable::fetch(pool, date).await?;
+    // Per-UID published modes; an error degrades to the bus-stop
+    // heuristic for every UID rather than failing the plan.
+    let modes = crate::data::schedule_services::all_modes_for_date(pool, date)
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = ?err, %date, "could not read service modes");
+            std::collections::HashMap::new()
+        });
+    let transit = if transit_networks.is_empty() {
+        None
+    } else {
+        Some(transit_planning::read_days(pool, transit_networks, date).await)
+    };
+    Ok(Some(planner_snapshot::DayInputs {
+        calling_points,
+        operators,
+        modes,
+        transit,
     }))
 }
 
@@ -1846,6 +1912,17 @@ async fn prewarm_once(
 ) -> anyhow::Result<Vec<(NaiveDate, trip_planning::BuildReason)>> {
     let transit_networks = transit_planning::enabled_networks();
     let marker = read_graph_marker(&app.database, &transit_networks).await?;
+    // The timetable snapshot first (DS-235), so today's and tomorrow's
+    // graphs are built from it. A failure leaves the graphs to Postgres.
+    if planner_snapshot::enabled() {
+        let outcome =
+            planner_snapshot::ensure(&app.database, &marker, &transit_networks, cache.max_age())
+                .await;
+        if let Err(err) = &outcome {
+            tracing::warn!(error = ?err, "trip-plan timetable snapshot failed");
+        }
+        planner_snapshot::count_outcome(outcome.as_ref().map(|o| *o).map_err(|_| ()));
+    }
     let mut built = Vec::new();
     for date in [Some(today), today.succ_opt()].into_iter().flatten() {
         if cache
@@ -3684,6 +3761,7 @@ mod db_tests {
     mod operator_rule;
     mod tfl_access;
     mod tfl_access_times;
+    mod tfl_access_waits;
 
     use axum::body::Body;
     use axum::http::Request;

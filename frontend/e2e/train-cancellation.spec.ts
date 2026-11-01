@@ -26,9 +26,10 @@ test('a train cut short says where it terminates, why, and which calls are cance
   await expect(york).not.toContainText('Cancelled');
   await expect(york.locator('[data-cancelled]')).toHaveCount(0);
 
-  // The page's description says the same, for a shared link.
+  // The page's description is evergreen (the live state is in its preview
+  // card), so a shared link's unfurl never goes stale.
   await expect(page.locator('meta[name="description"]')).toHaveAttribute(
     'content',
-    'Terminates at York: points failure (including no fault found).',
+    /, Thu 3 Dec: calling points, platforms and live running\.$/,
   );
 });

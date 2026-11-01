@@ -2,6 +2,7 @@ import dayjs from 'dayjs';
 import { LONDON_TZ } from './londonWallClock';
 import { isCrossStationTransfer, transferLegMode, transferLineName } from './displayLabels';
 import { isTiplocCode } from './stationLabel';
+import { canHaveStopId } from './untrackedLeg';
 import type { TransitMode, TripPlanItinerary, TripPlanLeg, TripPlanTransitLeg } from './types';
 
 type TrainLeg = Extract<TripPlanLeg, { kind: 'train' }>;
@@ -84,8 +85,12 @@ export function transferAsUntracked(
   const destinationTram = walk?.towardsStop ? walk.stop : undefined;
   const originName = leg.originStop?.name ?? originTram?.name ?? place(leg.originCrs);
   const destinationName = leg.destinationStop?.name ?? destinationTram?.name ?? place(leg.destinationCrs);
-  const originStopId = leg.originStop?.id ?? originTram?.id;
-  const destinationStopId = leg.destinationStop?.id ?? destinationTram?.id;
+  // Each end's stop id only where the leg's mode can have one: a walk to a
+  // Tube or tram stop is named after the stop, but the api refuses its id
+  // on a walk ("Only a tube, dlr, tram, metro leg can have a stop id.").
+  const stopId = (id: string | undefined) => (id && canHaveStopId(transitMode, id) ? id : undefined);
+  const originStopId = stopId(leg.originStop?.id ?? originTram?.id);
+  const destinationStopId = stopId(leg.destinationStop?.id ?? destinationTram?.id);
   const lineName = transferLineName(transferLegMode(leg), leg.line);
   return {
     transitMode,
@@ -146,14 +151,18 @@ function transitAsUntracked(leg: TripPlanTransitLeg): ItineraryLegBody | null {
   const arrival = transitInstant(leg, 'arrival');
   if (departure === null || arrival === null) return null;
   const lineName = leg.line?.name;
+  const transitMode = TRANSIT_LEG_MODES[leg.serviceMode] ?? 'tram';
+  const originStopId = leg.originStop.id;
+  const destinationStopId = leg.destinationStop.id;
   return {
     kind: 'untracked',
-    transitMode: TRANSIT_LEG_MODES[leg.serviceMode] ?? 'tram',
+    transitMode,
     originName: leg.originStop.name,
     destinationName: leg.destinationStop.name,
     ...(lineName ? { lineName } : {}),
-    originStopId: leg.originStop.id,
-    destinationStopId: leg.destinationStop.id,
+    // A replacement bus between TfL stations has no stop ids to send.
+    ...(canHaveStopId(transitMode, originStopId) ? { originStopId } : {}),
+    ...(canHaveStopId(transitMode, destinationStopId) ? { destinationStopId } : {}),
     plannedDeparture: departure.toISOString(),
     plannedArrival: arrival.toISOString(),
   };

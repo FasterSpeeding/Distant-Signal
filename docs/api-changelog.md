@@ -3,6 +3,30 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-11-01: station search answered from memory
+
+`GET /public/stations?q=` now matches against a list of every station
+the api keeps in memory and reads again every five minutes, instead of an
+`ILIKE` scan per request. The matches and their order are the same; a
+station added or renamed is found within five minutes. The `?stops=true`
+bus stops and ferry terminals are still read per request. DS-MCP needs no
+change.
+
+## 2026-11-01: Tube access rides wait by the timetable's headways
+
+No new fields. `/Trips/plan`'s Tube, DLR and tram access legs (a `TfL`
+stop end planned without the transit networks) now count the wait for
+the train from the `TfL` timetable for the plan's date and time (DS-234):
+a ride's `minutes` (and its candidate's in `access`) are 2 minutes'
+walk in plus the average wait for a train calling at both stops over the
+two hours from `departAfter` (or up to `arriveBy`; the whole service day
+with neither), at most 15, instead of a flat 5; a branch change's wait is
+the same model's at the junction instead of a flat 5. A sparse branch
+plans longer (Uxbridge to Heathrow by the Piccadilly, a train every 20
+to 24 minutes from Uxbridge: about 88 to 91 minutes, was 78 to 84); a
+frequent trunk about the same or a minute shorter. A date the timetable
+does not cover keeps the flat waits.
+
 ## 2026-11-01: a `TRANSFER` that is a Tube hop is a Tube leg
 
 Additive, following the `transfer` leg below (#95). A timetable
@@ -998,6 +1022,11 @@ docs/superpowers/specs/2026-10-24-trips-plan-max-changes-12-design.md.
 
 DS-MCP: its own default of 4 now matches DS. Its schema's ceiling of 24
 is above DS's 12; values 13 to 24 are a 400 from DS.
+
+Correction (2026-11-01): DS-MCP's ceiling is now 12 as well (its
+fix-max-changes-12 release), so its schema and DS agree and no value it
+accepts is a 400 from DS. The paragraph above describes DS-MCP as it was
+on 2026-10-24.
 
 ## 2026-10-26: station code and TfL stop id lists
 

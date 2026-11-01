@@ -963,7 +963,7 @@ describe('GroupDetailPage', () => {
       expect(screen.queryByText(/more leg/)).not.toBeInTheDocument();
     });
 
-    it('asks for a train, not a red "Unmatched", for a leg with no train picked yet', async () => {
+    it('asks the owner for a train, not a red "Unmatched", for a leg with no train picked yet', async () => {
       // `resolutionStatus` is null on the wire when the summarised leg is
       // still an open search. It used to be coalesced to 'unresolved' and
       // read as a red "Unmatched"; the owner's journey list says it needs
@@ -971,11 +971,27 @@ describe('GroupDetailPage', () => {
       vi.mocked(getGroupJourneys).mockResolvedValue([
         journey({ kind: 'train', resolutionStatus: null, status: null, delayMinutes: null, trainUid: null }),
       ]);
-      await renderAsViewer('user-other', 'member');
+      await renderAsViewer(SHARER, 'member');
 
       expect(screen.getByText('Needs a train picked')).toBeInTheDocument();
       expect(screen.queryByText('Unmatched')).not.toBeInTheDocument();
       expect(screen.queryByText('null')).not.toBeInTheDocument();
+    });
+
+    // DS-199's rule, as on the Journeys and home lists: only the owner or a
+    // follower can pick the train, so only they are asked to.
+    it('a member who does not follow it reads "No train picked yet"; a follower is asked', async () => {
+      const open = { kind: 'train' as const, resolutionStatus: null, status: null, delayMinutes: null, trainUid: null };
+      vi.mocked(getGroupJourneys).mockResolvedValue([
+        journey({ ...open, journeyId: 701, customName: 'Not followed' }),
+        journey({ ...open, journeyId: 702, customName: 'Followed', following: true }),
+      ]);
+      await renderAsViewer('user-other', 'member');
+
+      const card = (name: string) => screen.getByRole('link', { name }).closest('.mantine-Card-root') as HTMLElement;
+      expect(within(card('Not followed')).getByText('No train picked yet')).toBeInTheDocument();
+      expect(within(card('Not followed')).queryByText('Needs a train picked')).not.toBeInTheDocument();
+      expect(within(card('Followed')).getByText('Needs a train picked')).toBeInTheDocument();
     });
 
     it('a walk-and-Tube journey shows its leg clock state, not "Unmatched"', async () => {

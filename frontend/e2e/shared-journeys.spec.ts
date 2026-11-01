@@ -7,7 +7,8 @@ import AxeBuilder from '@axe-core/playwright';
 // picked) and "Fixture shared train to pick" (900112, no train picked yet).
 // fixture-owner, the session here, doesn't follow either. The home page
 // lists them under "Shared with you", and both lists show the owner's
-// train; "Needs a train picked" asks only the owner or a follower.
+// train; "Needs a train picked" asks only the owner or a follower, on
+// those lists and the group page.
 // Serial, and every follow and journey made here is undone: other specs
 // and the visual screenshots read the same rows.
 
@@ -105,6 +106,16 @@ test.describe('journeys shared with you', () => {
     await expect(toPick.getByText('Needs a train picked')).toHaveCount(0);
   });
 
+  test('the group page asks no one but the owner or a follower to pick a train', async ({ page }) => {
+    await page.goto(`/groups/${GROUP_ID}`);
+    const main = page.getByRole('main');
+    const toPick = card(page, main, SHARED_TO_PICK);
+    await expect(toPick.getByText('No train picked yet')).toBeVisible();
+    await expect(toPick.getByText('Needs a train picked')).toHaveCount(0);
+    const withTrain = card(page, main, SHARED_TRAIN);
+    await expect(withTrain.getByText('No train picked yet')).toHaveCount(0);
+  });
+
   test('followed, a journey with no train asks for one, and joins the caller’s own on the home page', async ({
     page,
     request,
@@ -128,6 +139,11 @@ test.describe('journeys shared with you', () => {
     const headingBox = await upcoming.getByRole('heading', { level: 3, name: 'Shared with you' }).boundingBox();
     const rowBox = await homeRow.boundingBox();
     expect(headingBox && rowBox && rowBox.y < headingBox.y).toBe(true);
+
+    // The group page asks a follower too.
+    await page.goto(`/groups/${GROUP_ID}`);
+    const groupRow = card(page, page.getByRole('main'), SHARED_TO_PICK);
+    await expect(groupRow.getByText('Needs a train picked')).toBeVisible();
 
     await unfollow(request, SHARED_TO_PICK);
   });

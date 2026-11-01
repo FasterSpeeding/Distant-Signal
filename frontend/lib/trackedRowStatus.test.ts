@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   groupJourneyRowStatus,
+  viewerCanPickGroupJourneyTrain,
   journeyListItemCancellation,
   journeyRowStatus,
   trackedTrainRowStatus,
@@ -176,15 +177,32 @@ describe('groupJourneyRowStatus: a group row says what the owner sees', () => {
   }
 
   it('a running train reads like a lone train', () => {
-    expect(groupJourneyRowStatus(shared(), TODAY)).toEqual(
+    expect(groupJourneyRowStatus(shared(), TODAY, 'user-2')).toEqual(
       trackedTrainRowStatus(train({ status: 'en_route', delayMinutes: 6, trackingPhase: null }), TODAY),
     );
   });
 
-  it('a leg with no train picked asks for one', () => {
-    expect(groupJourneyRowStatus(shared({ resolutionStatus: null, status: null }), TODAY)).toMatchObject({
+  // DS-199's rule, as on the Journeys and home lists.
+  it('a leg with no train picked asks only the owner or a follower for one', () => {
+    const open = { resolutionStatus: null, status: null };
+    expect(groupJourneyRowStatus(shared(open), TODAY, 'user-2')).toMatchObject({ kind: 'unmatched' });
+    expect(groupJourneyRowStatus(shared({ ...open, following: true }), TODAY, 'user-3')).toMatchObject({
       kind: 'unmatched',
     });
+    expect(groupJourneyRowStatus(shared(open), TODAY, 'user-3')).toMatchObject({
+      kind: 'noTrainPickedYet',
+      finished: false,
+    });
+    expect(groupJourneyRowStatus(shared({ ...open, following: false }), TODAY, null).kind).toBe('noTrainPickedYet');
+    // Past, it says what anyone would: none was picked.
+    expect(groupJourneyRowStatus(shared({ ...open, serviceDate: PAST }), TODAY, 'user-3').kind).toBe('noTrainPicked');
+  });
+
+  it('viewerCanPickGroupJourneyTrain: the sharer or a follower', () => {
+    expect(viewerCanPickGroupJourneyTrain({ addedBy: 'user-2' }, 'user-2')).toBe(true);
+    expect(viewerCanPickGroupJourneyTrain({ addedBy: 'user-2', following: true }, 'user-3')).toBe(true);
+    expect(viewerCanPickGroupJourneyTrain({ addedBy: 'user-2', following: false }, 'user-3')).toBe(false);
+    expect(viewerCanPickGroupJourneyTrain({ addedBy: 'user-2' }, null)).toBe(false);
   });
 
   it('an untracked-only journey shows its clock state, and completed once done', () => {
@@ -192,10 +210,15 @@ describe('groupJourneyRowStatus: a group row says what the owner sees', () => {
       groupJourneyRowStatus(
         shared({ kind: 'untracked', untrackedStatus: 'inProgress', resolutionStatus: null }),
         TODAY,
+        'user-3',
       ),
     ).toMatchObject({ kind: 'untrackedInProgress', finished: false });
     expect(
-      groupJourneyRowStatus(shared({ kind: 'untracked', untrackedStatus: 'done', resolutionStatus: null }), TODAY),
+      groupJourneyRowStatus(
+        shared({ kind: 'untracked', untrackedStatus: 'done', resolutionStatus: null }),
+        TODAY,
+        'user-3',
+      ),
     ).toMatchObject({ kind: 'completed', finished: true });
   });
 });

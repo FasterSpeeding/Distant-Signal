@@ -159,6 +159,37 @@ test.describe('transit pages', () => {
     expect(missing?.status()).toBe(404);
   });
 
+  test("a pinned tram line's card links its disruption's page", async ({ page, context }) => {
+    const cookie = process.env.E2E_SESSION_COOKIE;
+    test.skip(!cookie, 'set E2E_SESSION_COOKIE to the seed session');
+    const base = new URL(process.env.E2E_BASE_URL ?? 'http://localhost:3000');
+    await context.addCookies([
+      { name: 'distant_signal_session', value: cookie ?? '', domain: base.hostname, path: '/', sameSite: 'Lax' },
+    ]);
+    const headers = { cookie: `distant_signal_session=${cookie}` };
+    const before = (await (await page.request.get('/api/preferences', { headers })).json()) as {
+      pinnedLines: string[];
+    };
+    const pin = (lines: string[]) => page.request.put('/api/preferences/pinned-lines', { headers, data: lines });
+    try {
+      expect((await pin([...before.pinnedLines.filter((id) => id !== 'metrolink:blue'), 'metrolink:blue'])).ok()).toBe(
+        true,
+      );
+      await page.goto('/');
+      const card = page
+        .locator('[data-clickable-card]')
+        .filter({ has: page.getByRole('link', { name: 'Blue Line', exact: true }) });
+      await expect(card.getByRole('link', { name: 'Delays between Piccadilly and Eccles' })).toHaveAttribute(
+        'href',
+        '/transit/metrolink/incidents/E2E-S1',
+      );
+    } finally {
+      // Leave the seed's pins as they were: other specs and the visual
+      // screenshots read the same user.
+      await pin(before.pinnedLines);
+    }
+  });
+
   test('a stop shows its notices, and a line its status', async ({ page }) => {
     await page.goto('/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17');
     await expect(page.getByRole('link', { name: 'MAN', exact: true })).toHaveAttribute('href', '/stations/MAN');
