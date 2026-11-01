@@ -11,7 +11,7 @@ import { TextLink } from './TextLink';
 import { RemoveJourneyLegButton } from './RemoveJourneyLegButton';
 import { LegReplanActions, type LegReplanContext } from './LegReplanActions';
 import { UntrackedLegCard } from './UntrackedLegCard';
-import { isUntrackedLeg } from '@/lib/untrackedLeg';
+import { isUntrackedLeg, type UntrackedLegNeighbours } from '@/lib/untrackedLeg';
 import { legRouteAndTime } from '@/lib/journeyLegLabel';
 import { formatDate } from '@/lib/dateFormat';
 import { routeLabel, stationLabel } from '@/lib/stationLabel';
@@ -155,6 +155,7 @@ export function JourneyLegCard({
   isOwner,
   isOnlyLeg,
   replan,
+  neighbours,
 }: {
   journeyId: number;
   leg: JourneyLegDetail;
@@ -167,6 +168,8 @@ export function JourneyLegCard({
   isOnlyLeg: boolean;
   /** Mid-journey actions ("I missed this train", "Find another way"). */
   replan?: LegReplanContext | undefined;
+  /** The legs either side, for an untracked leg's place names (DS-239). */
+  neighbours?: UntrackedLegNeighbours | undefined;
 }) {
   const router = useRouter();
   const [changingTrain, setChangingTrain] = useState(false);
@@ -187,7 +190,15 @@ export function JourneyLegCard({
   // A Tube ride, bus or walk: no train to pick or show (spec 2026-10-20
   // §2.3). Checked before `trackedTrainState === null`, which it also is.
   if (isUntrackedLeg(leg)) {
-    return <UntrackedLegCard journeyId={journeyId} leg={leg} isOwner={isOwner} isOnlyLeg={isOnlyLeg} />;
+    return (
+      <UntrackedLegCard
+        journeyId={journeyId}
+        leg={leg}
+        isOwner={isOwner}
+        isOnlyLeg={isOnlyLeg}
+        neighbours={neighbours}
+      />
+    );
   }
 
   if (leg.trackedTrainState === null) {

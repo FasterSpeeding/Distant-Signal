@@ -3,6 +3,23 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-11-01: a walk to a `TfL` station says the station's modes
+
+Additive. On `/Trips/plan`, a walk between a National Rail station and a
+`TfL` station (`kind: "transfer"`, `mode: "WALK"`, `transitWalk` with
+`network: "tfl"`) now carries the station's `tfl_stops` modes as
+`transitWalk.stop.modes` (`["tube"]`, `["dlr"]`, `["tram"]`, or more than
+one), as an access leg's `originStop`/`destinationStop` already do. Left
+out when none are known (a Metrolink stop). The web app uses it to say
+which end of the walk is which ("Walk VXH · Vauxhall (National Rail) to
+Vauxhall (Tube)") instead of "Vauxhall to Vauxhall", and a saved
+journey's walk now stores its place names that way ("Vauxhall (National
+Rail)", "Vauxhall (Tube)"; DS-239). DS-MCP: no change needed to read it;
+to stop its own plan text reading "Vauxhall to Vauxhall", it can add each
+end's kind the same way (the stop's modes, else its id: `940GZZLU` Tube,
+`940GZZDL` DLR, `940GZZCR` tram), and "(National Rail)" on the station
+end when the two names match.
+
 ## 2026-11-01: station search answered from memory
 
 `GET /public/stations?q=` now matches against a list of every station
