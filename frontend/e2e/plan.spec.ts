@@ -326,7 +326,10 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
     originCrs: 'ZTA',
     destinationCrs: 'MAN',
   });
-  expect(legs[1]).toMatchObject({ kind: 'untracked', destinationStopId: '9400ZZMAPIC' });
+  // A walk to a stop is named after it, without its id: the api takes a
+  // stop id only on a ride.
+  expect(legs[1]).toMatchObject({ kind: 'untracked', destinationName: 'Piccadilly' });
+  expect(legs[1]).not.toHaveProperty('destinationStopId');
   // The tram's own timetabled times (07:02 to 07:27 BST), its line and stations.
   expect(legs[2]).toEqual({
     kind: 'untracked',
@@ -339,7 +342,8 @@ test('plans a route with a tram in the middle, and saves the tram as an untracke
     plannedDeparture: '2026-09-17T06:02:00.000Z',
     plannedArrival: '2026-09-17T06:27:00.000Z',
   });
-  expect(legs[3]).toMatchObject({ kind: 'untracked', originStopId: '9400ZZMAECC' });
+  expect(legs[3]).toMatchObject({ kind: 'untracked', originName: 'Eccles' });
+  expect(legs[3]).not.toHaveProperty('originStopId');
   expect(legs[4]).toMatchObject({ trainUid: 'E2ETR2', originCrs: 'ZTE', destinationCrs: 'ZTB' });
 });
 
@@ -415,4 +419,113 @@ test('saves a TRANSFER link between two stations as an untracked transfer leg', 
     },
     { trainUid: 'E2EXF2', serviceDate: '2026-09-17', originCrs: 'ZXC', destinationCrs: 'ZEC' },
   ]);
+});
+
+// Wimbledon to Milton Keynes by the District line, as production planned
+// it on 2026-11-02 (made-up codes and times here): a walk into a TfL
+// station, a timetabled Tube ride, a walk out, then a train. The save is
+// answered as the api's validator would (`journeys::attach_untracked_stops`):
+// a stop id on a leg whose mode can't have one is a 400, "Only a tube, dlr,
+// tram, metro leg can have a stop id." Each walk once carried its stop's id
+// and the save failed.
+test('saves a plan with walks to and from a Tube station, the stop ids only on the Tube ride', async ({ page }) => {
+  const walk = (end: 'to' | 'from', crs: string, stop: { id: string; name: string }) => ({
+    kind: 'transfer',
+    mode: 'WALK',
+    originCrs: end === 'to' ? crs : null,
+    destinationCrs: end === 'to' ? null : crs,
+    minutes: 4,
+    transitWalk: { network: 'tfl', stop, towardsStop: end === 'to', walkMinutes: 2, estimated: true },
+  });
+  const testbury = { id: '940GZZLUTST', name: 'Testbury' };
+  const westTest = { id: '940GZZLUWTS', name: 'West Test' };
+  await page.route('**/api/Trips/plan?*', (route) =>
+    route.fulfill({
+      json: {
+        results: 'fastest',
+        segments: [
+          {
+            originCrs: 'ZEA',
+            destinationCrs: 'ZEC',
+            cappedByMaxChanges: false,
+            itineraries: [
+              {
+                legs: [
+                  walk('to', 'ZEA', testbury),
+                  {
+                    kind: 'transit',
+                    network: 'tfl',
+                    serviceMode: 'tube',
+                    liveTracking: false,
+                    realtime: false,
+                    serviceDate: '2026-09-17',
+                    scheduledDeparture: '08:09:00',
+                    scheduledArrival: '08:25:00',
+                    departureDayOffset: 0,
+                    arrivalDayOffset: 0,
+                    line: { id: 'tfl:district', name: 'District', colour: '#13843f' },
+                    headsign: null,
+                    originCrs: null,
+                    destinationCrs: null,
+                    originStop: { ...testbury, platform: null },
+                    destinationStop: { ...westTest, platform: null },
+                    headwayMinutes: 4,
+                    notices: [],
+                  },
+                  walk('from', 'ZWT', westTest),
+                  {
+                    kind: 'train',
+                    trainUid: 'E2EWM1',
+                    serviceDate: '2026-09-17',
+                    originCrs: 'ZWT',
+                    destinationCrs: 'ZEC',
+                    scheduledDeparture: '08:47:00',
+                    scheduledArrival: '09:50:00',
+                    publicDeparture: '08:47:00',
+                    publicArrival: '09:50:00',
+                    arrivalDayOffset: 0,
+                  },
+                ],
+                changeCount: 1,
+                totalDurationMinutes: 110,
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  const RIDES_WITH_TFL_STOPS = ['tube', 'dlr', 'tram', 'metro'];
+  let saved: { legs: Record<string, unknown>[] } | null = null;
+  await page.route('**/api/Journeys/itinerary', async (route) => {
+    saved = route.request().postDataJSON() as { legs: Record<string, unknown>[] };
+    const refused = saved.legs.some(
+      (leg) =>
+        (leg.originStopId !== undefined || leg.destinationStopId !== undefined) &&
+        !RIDES_WITH_TFL_STOPS.includes(String(leg.transitMode)),
+    );
+    await (refused
+      ? route.fulfill({
+          status: 400,
+          json: { error: 'invalid_itinerary', message: 'Only a tube, dlr, tram, metro leg can have a stop id.' },
+        })
+      : route.fulfill({ json: { journeyId: 990003, legId: 1, trackingId: null, resolutionStatus: null } }));
+  });
+  await page.route('**/api/Journeys/990003', (route) => route.fulfill({ status: 404, body: 'Not found' }));
+
+  await openPlan(page, 'origin=ZEA&destination=ZEC&date=2026-09-17&departAfter=07:30');
+  await findRoutes(page);
+  const card = page.locator('[data-plan-entry]').first();
+  await card.getByRole('radio').check({ force: true });
+  await page.getByRole('button', { name: 'Track this journey' }).click();
+  await expect(page.getByText('First leg tracked')).toBeVisible();
+  await expect(page.getByText("Couldn't track this journey")).toHaveCount(0);
+
+  expect(saved).not.toBeNull();
+  expect(saved!.legs.map((leg) => leg.transitMode ?? 'train')).toEqual(['walk', 'tube', 'walk', 'train']);
+  expect(saved!.legs[0]).toMatchObject({ destinationName: 'Testbury' });
+  expect(saved!.legs[0]).not.toHaveProperty('destinationStopId');
+  expect(saved!.legs[1]).toMatchObject({ originStopId: '940GZZLUTST', destinationStopId: '940GZZLUWTS' });
+  expect(saved!.legs[2]).toMatchObject({ originName: 'West Test' });
+  expect(saved!.legs[2]).not.toHaveProperty('originStopId');
 });

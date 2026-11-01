@@ -1369,6 +1369,78 @@ async fn a_delegated_save_may_include_untracked_legs() {
         assert_eq!(refused.error(), "invalid_itinerary");
     }
 
+    // A plan through a Tube station, as `/plan` saves it (Wimbledon to
+    // Milton Keynes by the District line): the walks to and from the stop
+    // by name only, the Tube ride with its stop ids, then the train. A walk
+    // carrying the stop's id is still refused: only a ride has a stop.
+    let walk = |name: &str, at: chrono::DateTime<chrono::Utc>| {
+        json!({
+            "kind": "untracked", "transitMode": "walk",
+            "originName": name, "destinationName": name,
+            "plannedDeparture": at.to_rfc3339(),
+            "plannedArrival": (at + chrono::Duration::minutes(4)).to_rfc3339(),
+        })
+    };
+    let tube = json!({
+        "kind": "untracked", "transitMode": "tube", "lineName": "District",
+        "originName": "Brixton", "originStopId": "940GZZTESTK",
+        "destinationName": "West Brompton",
+        "plannedDeparture": (departure + chrono::Duration::minutes(4)).to_rfc3339(),
+        "plannedArrival": (departure + chrono::Duration::minutes(20)).to_rfc3339(),
+    });
+    let planned = send(
+        &h,
+        "POST",
+        "/Journeys/itinerary",
+        &Auth::Bearer(&all),
+        Some(json!({ "legs": [
+            walk("Brixton", departure),
+            tube,
+            walk("West Brompton", departure + chrono::Duration::minutes(20)),
+            { "trainUid": UIDS[0], "serviceDate": service_date() },
+        ] })),
+        &[("idempotency-key", "u5")],
+    )
+    .await;
+    assert_eq!(planned.status, StatusCode::OK, "{}", planned.text);
+    let planned = planned.json();
+    assert_eq!(planned["legs"][0]["kind"], "untracked");
+    assert_eq!(planned["legs"][3]["kind"], "train");
+    let mut walk_with_stop = walk("Brixton", departure);
+    walk_with_stop["destinationStopId"] = "940GZZTESTK".into();
+    let refused = send(
+        &h,
+        "POST",
+        "/Journeys/itinerary",
+        &Auth::Bearer(&all),
+        Some(json!({ "legs": [
+            walk_with_stop,
+            { "trainUid": UIDS[0], "serviceDate": service_date() },
+        ] })),
+        &[("idempotency-key", "u6")],
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    assert_eq!(refused.error(), "invalid_itinerary");
+    assert!(
+        refused
+            .text
+            .contains("Only a tube, dlr, tram, metro leg can have a stop id."),
+        "{}",
+        refused.text
+    );
+    let planned_id = planned["journeyId"].as_i64().unwrap();
+    let deleted = send(
+        &h,
+        "DELETE",
+        &format!("/Journeys/{planned_id}"),
+        &Auth::Bearer(&all),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+
     // An untracked leg alone is not an itinerary.
     let alone = send(
         &h,
