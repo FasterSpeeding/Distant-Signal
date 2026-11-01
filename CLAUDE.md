@@ -136,7 +136,8 @@ client: it copies RDM's TRUST movements into the `movement-events` stream,
 read by three consumer groups (tracked trains, full-coverage delay stats,
 a backlog for late-tracked trains). The CIF timetable is pushed over SFTP;
 schedule-ingest detects and extracts each delivery, and schedule-reference
-(same pod, shared PVC) publishes the derived tables (STANOX/TIPLOC to CRS,
+(same pod, shared PVC; or a CronJob with `scheduleFeed.reference.mode:
+cronjob`, docs/scheduled-jobs.md) publishes the derived tables (STANOX/TIPLOC to CRS,
 line populations, departures and calling points) through ds-store's publish
 protocol. `aggregator` matches incidents to lines (`common::matcher`, the
 same matcher the ingest uses) and writes `line_status`; `enricher` sends

@@ -19,6 +19,23 @@ to stop its own plan text reading "Vauxhall to Vauxhall", it can add each
 end's kind the same way (the stop's modes, else its id: `940GZZLU` Tube,
 `940GZZDL` DLR, `940GZZCR` tram), and "(National Rail)" on the station
 end when the two names match.
+## 2026-11-01: a timetabled TfL leg's live arrivals filter (`liveArrivals`)
+
+Additive (DS-237, phase C). On `GET /Journeys/{id}`, a timetabled leg on
+`tfl` gains `timetable.liveArrivals`, `{stopId, lineId, destinations}`.
+It says which of `GET /public/tfl/stops/{stopId}/arrivals`' predictions
+are for the leg: the groups whose `lineId` is the leg's line, and in them
+the trains whose `destination` is one of `destinations`, the last
+stations of the line's timetabled patterns that call at the boarding stop
+and then the alighting one. Compare names ignoring case and anything but
+letters and digits. The web app shows them from an hour before the
+planned departure until the planned arrival, as "Next trains at ...
+(live from TfL)". These are indicative: a prediction is never the leg's
+own ride, and the leg's times stay the timetable's. A Northern line train
+can share a destination with the other branch, so a client should say to
+check the train's destination. Absent on Metrolink (no live data) and
+when no pattern serves the two stops.
+
 ## 2026-11-01: timetabled legs re-timed after a late train (`nextTimetabled`)
 
 Additive (DS-237, phase B). On `GET /Journeys/{id}`, the `connection`

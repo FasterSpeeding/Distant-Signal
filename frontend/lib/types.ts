@@ -1572,6 +1572,18 @@ export interface LegTimetable {
   calls: LegTimetableCall[];
   headwayMinutes?: number;
   notices: TripPlanTransitNotice[];
+  /** On TfL (phase C): which of the boarding stop's live predictions are
+   * for this line and reach the alighting stop. Absent elsewhere. */
+  liveArrivals?: LegLiveArrivalsFilter;
+}
+
+/** `LegTimetable.liveArrivals`: the groups of `lineId` at `stopId`
+ * (`GET /public/tfl/stops/{stopId}/arrivals`), and in them the trains
+ * whose destination is one of `destinations`. */
+export interface LegLiveArrivalsFilter {
+  stopId: string;
+  lineId: string;
+  destinations: string[];
 }
 
 /** How a change between two legs stands: `ok`, `atRisk` (little time left

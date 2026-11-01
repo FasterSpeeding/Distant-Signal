@@ -2,6 +2,7 @@ import { Group, Stack, Text } from '@mantine/core';
 import { StateBadge } from './StateBadge';
 import { StatusBadge } from './StatusBadge';
 import { TextLink } from './TextLink';
+import { TimetabledLiveArrivals } from './TimetabledLiveArrivals';
 import { TransitLineSwatch } from './TransitLineSwatch';
 import { formatTime } from '@/lib/dateFormat';
 import { noticeHref, timetableCaption, timetableNote, timetabledLineHref } from '@/lib/timetabledLeg';
@@ -93,6 +94,7 @@ export function TimetabledLegDetails({ leg, timetable }: { leg: JourneyLegDetail
       <Text size="xs" c="dimmed">
         {timetableCaption(timetable, leg.transitMode)}
       </Text>
+      {timetable.liveArrivals && <TimetabledLiveArrivals leg={leg} filter={timetable.liveArrivals} />}
     </Stack>
   );
 }

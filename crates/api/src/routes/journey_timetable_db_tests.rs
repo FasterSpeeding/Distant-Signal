@@ -487,3 +487,73 @@ async fn going_back_to_an_earlier_plan_keeps_its_stops_and_line() {
     cleanup_user(&pool).await;
     cleanup(&pool, NETWORK).await;
 }
+
+/// On a network whose stations are `TfL`'s stops (phase C), a timetabled
+/// leg says which of its boarding stop's live predictions are its line's
+/// and reach its alighting stop: the line, and the last stations of its
+/// rides. Elsewhere it says nothing.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database); --test-threads=1"]
+async fn a_tfl_leg_names_the_live_arrivals_that_reach_its_stop() {
+    const TFL_NETWORK: &str = "test-tfl-arrivals";
+    let _now = crate::routes::pin_london_now_for_tests(
+        Utc.with_ymd_and_hms(2099, 11, 4, 5, 0, 0).unwrap(),
+    );
+    let _switch = set_switch_for_tests(&[TFL_NETWORK, NETWORK]);
+    let pool = connect().await;
+    cleanup_user(&pool).await;
+    seed(&pool, TFL_NETWORK, today()).await;
+    seed(&pool, NETWORK, today()).await;
+    let cookie = session(&pool).await;
+    let router = router(pool.clone());
+    let day = today();
+    let mut tfl_leg = tram_leg(&at(day, "07:00"), &at(day, "07:30"));
+    tfl_leg["transitNetwork"] = json!(TFL_NETWORK);
+    let (status, created) = send(
+        &router,
+        "POST",
+        "/Journeys",
+        &cookie,
+        Some(json!({ "leg": tfl_leg })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let journey_id = created["journeyId"].as_i64().unwrap();
+    let (status, added) = send(
+        &router,
+        "POST",
+        &format!("/Journeys/{journey_id}/legs"),
+        &cookie,
+        Some(tram_leg(&at(day, "07:00"), &at(day, "07:30"))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{added}");
+    let (_, detail) = send(
+        &router,
+        "GET",
+        &format!("/Journeys/{journey_id}"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(
+        detail["legs"][0]["timetable"]["liveArrivals"],
+        json!({
+            "stopId": "940GZZTTAAA",
+            "lineId": "blue",
+            "destinations": ["Bbb"],
+        }),
+        "{detail}"
+    );
+    assert_eq!(
+        detail["legs"][0]["timetable"]["calls"][0]["stopId"], "940GZZTTAAA",
+        "TfL's spelling"
+    );
+    assert!(
+        detail["legs"][1]["timetable"].get("liveArrivals").is_none(),
+        "no live arrivals off TfL: {detail}"
+    );
+    cleanup_user(&pool).await;
+    cleanup(&pool, TFL_NETWORK).await;
+    cleanup(&pool, NETWORK).await;
+}
