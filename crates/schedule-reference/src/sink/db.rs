@@ -16,6 +16,8 @@
 //! | `services` | `post_schedule_services` | `schedule::services::replace_for_date`, then `schedule::turnarounds::replace_inferred_for_date` (no api route; best effort) |
 //! | `associations` | none | `schedule::associations::replace_for_date` (DS-152; best effort, logged by the caller) |
 //! | `record_completed_publish`, `last_completed_publish` | `/schedule-reference-publishes` | `schedule::{insert,last_completed}_schedule_reference_publish` |
+//! | `try_lock_run`, `unlock_run` | none | `schedule::reference_signals::RunLock` (DS-241) |
+//! | `record_signal`, `settled_delivery` | none | `schedule::reference_signals::{record, settled_delivery}` (DS-241) |
 //!
 //! The CIF-derived rows arrive as the JSON values the api's routes take and
 //! are read into `ds_store`'s row types with the same `Deserialize`, so
@@ -31,10 +33,12 @@ use std::time::Instant;
 use ds_store::writes::WriteFailure;
 use sqlx::PgPool;
 
-use super::{ChunkPart, DatedProduct, LinePopulation, PublishSink, SinkError};
+use ds_store::schedule::reference_signals::{self, RunLock};
+
+use super::{ChunkPart, DatedProduct, LinePopulation, PublishSink, Signal, SinkError};
 
 /// The `operation` labels this sink records.
-pub(crate) const OPERATIONS: [&str; 11] = [
+pub(crate) const OPERATIONS: [&str; 12] = [
     "stanox_crs",
     "tiploc_crs",
     "tiploc_locations",
@@ -46,6 +50,7 @@ pub(crate) const OPERATIONS: [&str; 11] = [
     "turnarounds",
     "associations",
     "publish_marker",
+    "signal",
 ];
 
 /// Postgres, through `ds_store`. `lines` is the line catalogue the
@@ -54,13 +59,22 @@ pub(crate) const OPERATIONS: [&str; 11] = [
 pub(crate) struct DbSink<'a> {
     pool: PgPool,
     lines: &'a [common::LineDefinition],
+    /// The run lock while held ([`PublishSink::try_lock_run`]).
+    run_lock: std::sync::Mutex<Option<RunLock>>,
 }
 
 impl<'a> DbSink<'a> {
     pub(crate) fn new(pool: PgPool, lines: &'a [common::LineDefinition]) -> Self {
-        Self { pool, lines }
+        Self {
+            pool,
+            lines,
+            run_lock: std::sync::Mutex::new(None),
+        }
     }
 }
+
+/// `pg_stat_activity.application_name` of the run lock's connection.
+const RUN_LOCK_APPLICATION_NAME: &str = "distant-signal-schedule-reference-lock";
 
 /// Startup telemetry for the db sink: the publish metrics (their `store_`
 /// names, spec §14.1) and every `db_writes_total` series at 0.
@@ -361,6 +375,54 @@ impl PublishSink for DbSink<'_> {
 
     async fn last_completed_publish(&self) -> Result<Option<String>, SinkError> {
         ds_store::schedule::last_completed_schedule_reference_publish(&self.pool)
+            .await
+            .map_err(db_error)
+    }
+
+    async fn try_lock_run(&self) -> Result<bool, SinkError> {
+        if self.run_lock.lock().is_ok_and(|held| held.is_some()) {
+            return Ok(true);
+        }
+        let Some(lock) = RunLock::try_acquire(&self.pool, RUN_LOCK_APPLICATION_NAME)
+            .await
+            .map_err(SinkError::Transient)?
+        else {
+            return Ok(false);
+        };
+        match self.run_lock.lock() {
+            Ok(mut held) => {
+                *held = Some(lock);
+                Ok(true)
+            }
+            Err(_) => Err(SinkError::Transient(anyhow::anyhow!(
+                "the run lock's state is poisoned"
+            ))),
+        }
+    }
+
+    async fn unlock_run(&self) {
+        let lock = self.run_lock.lock().ok().and_then(|mut held| held.take());
+        if let Some(lock) = lock {
+            lock.release().await;
+        }
+    }
+
+    async fn record_signal(
+        &self,
+        signal: Signal,
+        product: &str,
+        delivery: Option<&str>,
+    ) -> Result<(), SinkError> {
+        timed("signal", async {
+            reference_signals::record(&self.pool, signal, product, delivery)
+                .await
+                .map_err(db_error)
+        })
+        .await
+    }
+
+    async fn settled_delivery(&self) -> Result<Option<String>, SinkError> {
+        reference_signals::settled_delivery(&self.pool)
             .await
             .map_err(db_error)
     }

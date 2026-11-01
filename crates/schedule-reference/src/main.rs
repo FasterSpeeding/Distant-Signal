@@ -8,6 +8,12 @@
 //! writes them to Postgres (`sink`; until release B, ingest phase 5,
 //! through `api`'s `/private` routes). See
 //! docs/superpowers/specs/2026-09-01-schedule-ingest-stanox-crs-table-design.md.
+//!
+//! Two ways to run (docs/scheduled-jobs.md, "schedule-reference"): a loop
+//! polling every `POLL_INTERVAL_SECS` (the Deployment), or, with
+//! `RUN_ONCE=true`, one run of a Kubernetes `CronJob` ([`run_once`]). Either
+//! way a cycle publishes only while it holds the run lock
+//! (`ds_store::schedule::reference_signals::RunLock`).
 
 mod alf;
 mod config;
@@ -100,6 +106,7 @@ async fn run() -> anyhow::Result<()> {
 
     let config = Config::parse();
     config.validate()?;
+    let once = common::poller_loop::RunOnce::from_env()?;
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
@@ -107,7 +114,11 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!("schedule-reference starting");
     let pool = connect_db(&config, &progress).await?;
     sink::db::register_metrics();
-    run_with(&DbSink::new(pool, &config.lines), &config, &progress).await
+    let sink = DbSink::new(pool, &config.lines);
+    if once.is_some() {
+        return run_once(&sink, &config).await;
+    }
+    run_with(&sink, &config, &progress).await
 }
 
 /// `pg_stat_activity.application_name` of the sink's pool.
@@ -150,8 +161,16 @@ async fn run_with(
     let mut state = PublishState {
         // Waiting (with backoff) for the marker read is not a stall.
         last_processed_delivery: progress.idle(seed_and_report(sink, config)).await,
+        settled: None,
         partial: None,
     };
+    record_signal(
+        sink,
+        sink::Signal::Seeded,
+        "",
+        state.last_processed_delivery.as_deref(),
+    )
+    .await;
     if let Some(delivery) = &state.last_processed_delivery {
         tracing::info!(
             delivery = %delivery,
@@ -167,7 +186,26 @@ async fn run_with(
     loop {
         progress.idle(interval.tick()).await;
         let cycle_start = std::time::Instant::now();
-        let result = poll_once(sink, config, &mut state).await;
+        // The run lock, for this cycle only: a CronJob run alive at the
+        // same time (the mode being switched, a manual Job) publishes
+        // alone, and this cycle waits for the next interval.
+        match sink.try_lock_run().await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    "another schedule-reference run holds the run lock; skipping this cycle"
+                );
+                progress.beat();
+                continue;
+            }
+            Err(err) => {
+                tracing::error!(error = ?err, "could not take the run lock; will retry next interval");
+                progress.beat();
+                continue;
+            }
+        }
+        let result = poll_once(sink, config, &mut state).await.map(drop);
+        sink.unlock_run().await;
         progress.beat();
         metrics::histogram!(common::metrics::metric_name(
             "schedule_reference_cycle_duration_seconds"
@@ -175,6 +213,119 @@ async fn run_with(
         .record(cycle_start.elapsed().as_secs_f64());
         if let Err(err) = result {
             tracing::error!(error = ?err, "schedule-reference cycle failed; will retry next interval");
+        }
+    }
+}
+
+/// How many times a once-mode run reads its completion marker before it
+/// gives up and exits 1 (the Job retries): [`Config::startup_backoff`]
+/// from 1 s, about a minute in all. The Deployment waits for it forever
+/// instead ([`seed_last_processed_delivery`]).
+const ONCE_SEED_ATTEMPTS: u32 = 7;
+
+/// One run of the `CronJob` (`RUN_ONCE=true`; docs/scheduled-jobs.md,
+/// "schedule-reference"). Exits:
+///
+/// - 0: another run holds the run lock; no complete delivery, or the newest
+///   is already published (its completion marker) or settled; or this run
+///   published every product and wrote the marker;
+/// - 1 (the Job retries, then the next scheduled run): the marker could not
+///   be read, or a product failed in a way a retry could fix. Nothing of
+///   the delivery is remembered between runs (no in-memory resume), so the
+///   next run republishes it in full; every product's publish is
+///   idempotent (an upsert and prune, a full replace, or a per-date diff
+///   publish under a new publish id);
+/// - 3 (the Job fails without retrying): a product was refused as bad data
+///   or its input can't be published (e.g. an ALF file with no links). The
+///   delivery is recorded as settled, so later runs skip it until a newer
+///   one lands, as the Deployment's in-memory marker does; its previous
+///   rows stay.
+async fn run_once(sink: &impl PublishSink, config: &Config) -> anyhow::Result<()> {
+    if !sink.try_lock_run().await? {
+        tracing::info!("another schedule-reference run holds the run lock; nothing to do");
+        return Ok(());
+    }
+    let result = run_once_locked(sink, config).await;
+    sink.unlock_run().await;
+    result
+}
+
+/// [`run_once`]'s work, under the run lock.
+async fn run_once_locked(sink: &impl PublishSink, config: &Config) -> anyhow::Result<()> {
+    let last_processed_delivery = seed_once(sink, config).await?;
+    record_signal(
+        sink,
+        sink::Signal::Seeded,
+        "",
+        last_processed_delivery.as_deref(),
+    )
+    .await;
+    let settled = sink.settled_delivery().await?;
+    let mut state = PublishState {
+        last_processed_delivery,
+        settled,
+        partial: None,
+    };
+    let report = match poll_once(sink, config, &mut state).await {
+        Ok(report) => report,
+        Err(err) => {
+            return Err(match sink::classify(&err) {
+                common::ingest::FailureClass::Rejected => {
+                    err.context(common::logging::ExitStatus::REJECTED)
+                }
+                common::ingest::FailureClass::Transient => err,
+            });
+        }
+    };
+    match report {
+        CycleReport::NothingNew => {
+            tracing::info!("no new delivery to publish");
+            Ok(())
+        }
+        CycleReport::Published { delivery } => {
+            tracing::info!(delivery, "published every product of the delivery");
+            Ok(())
+        }
+        CycleReport::Incomplete { delivery, failed } => Err(anyhow::anyhow!(
+            "{} product(s) of delivery {delivery} failed to publish ({failed:?}); the next \
+             attempt republishes the delivery in full",
+            failed.len()
+        )),
+        CycleReport::Settled { delivery, failed } => {
+            record_signal(sink, sink::Signal::Settled, "", Some(&delivery)).await;
+            Err(anyhow::anyhow!(
+                "{} product(s) of delivery {delivery} failed in a way this delivery can't fix \
+                 ({failed:?}); later runs skip it until a newer delivery lands",
+                failed.len()
+            )
+            .context(common::logging::ExitStatus::REJECTED))
+        }
+    }
+}
+
+/// The completion marker, read up to [`ONCE_SEED_ATTEMPTS`] times.
+async fn seed_once(sink: &impl PublishSink, config: &Config) -> anyhow::Result<Option<String>> {
+    let mut failures: u32 = 0;
+    loop {
+        match sink.last_completed_publish().await {
+            Ok(delivery) => return Ok(delivery),
+            Err(err) if failures + 1 < ONCE_SEED_ATTEMPTS => {
+                let delay = config.startup_backoff.delay(failures);
+                failures += 1;
+                tracing::warn!(
+                    error = ?err,
+                    failed_attempts = failures,
+                    retry_in = ?delay,
+                    "could not read this service's own last completed publish; retrying"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(err) => {
+                return Err(anyhow::Error::new(err).context(format!(
+                    "could not read this service's own last completed publish after \
+                     {ONCE_SEED_ATTEMPTS} attempts"
+                )));
+            }
         }
     }
 }
@@ -331,6 +482,9 @@ struct CycleOutcome {
     /// Every product key published for this delivery, this cycle or an
     /// earlier one in this process.
     published: std::collections::HashSet<String>,
+    /// The products refused this cycle, each recorded as a
+    /// `rejected` run signal once the cycle's publishes are done.
+    newly_rejected: Vec<String>,
 }
 
 impl CycleOutcome {
@@ -377,6 +531,7 @@ impl CycleOutcome {
                 );
                 telemetry::record(&product, telemetry::REJECTED);
                 self.permanent_failures.push(product.clone());
+                self.newly_rejected.push(product.clone());
                 self.rejected.insert(product);
             }
             common::ingest::FailureClass::Transient => {
@@ -519,11 +674,11 @@ mod telemetry {
     }
 
     /// A delivery directory name (`YYYYMMDDTHHMMSSZ`, schedule-ingest's
-    /// `delivery_dir_name`) as Unix seconds.
+    /// `delivery_dir_name`) as Unix seconds; the ingest-writer's
+    /// `..._recorded_published_delivery_timestamp_seconds` reads it the
+    /// same way.
     pub(crate) fn delivery_timestamp(dir_name: &str) -> Option<i64> {
-        chrono::NaiveDateTime::parse_from_str(dir_name, "%Y%m%dT%H%M%SZ")
-            .ok()
-            .map(|at| at.and_utc().timestamp())
+        ds_store::schedule::reference_signals::delivery_timestamp(dir_name)
     }
 
     #[expect(
@@ -589,6 +744,11 @@ struct PublishState {
     /// The delivery whose publish cycle is finished (seeded at startup from
     /// `api`'s durable marker, see `seed_last_processed_delivery`).
     last_processed_delivery: Option<String>,
+    /// Once mode only: the delivery an earlier run settled (a failure the
+    /// same delivery can't fix, [`CycleReport::Settled`]), skipped like
+    /// `last_processed_delivery` until a newer one lands. The Deployment
+    /// keeps that in `last_processed_delivery`, in memory.
+    settled: Option<String>,
     /// A delivery that has been partly published: the products listed here
     /// went through, at least one other did not. The next cycle for the same
     /// delivery publishes only what is missing. In memory only, on purpose:
@@ -668,11 +828,34 @@ async fn publish_with_retry(
     }
 }
 
+/// What one [`poll_once`] did, for a once-mode run's exit status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CycleReport {
+    /// No complete delivery, or the newest is already published (or
+    /// settled): nothing read or written.
+    NothingNew,
+    /// Every product of `delivery` published, and the marker written.
+    Published { delivery: String },
+    /// At least one product failed in a way a retry could fix: the
+    /// delivery stays unprocessed.
+    Incomplete {
+        delivery: String,
+        failed: Vec<String>,
+    },
+    /// Everything retryable went through, but at least one product failed
+    /// in a way the same delivery can't fix (refused as bad data, or an
+    /// input this service refuses to publish).
+    Settled {
+        delivery: String,
+        failed: Vec<String>,
+    },
+}
+
 /// Scans for the most recent complete delivery, skips if unchanged since
-/// `last_processed_delivery`, else reads+parses+POSTs every product it
-/// derives from that delivery, and only then advances
-/// `last_processed_delivery` -- see [`CycleOutcome`] for why "only then" is
-/// load-bearing and which failures hold it back.
+/// `last_processed_delivery` (or once mode's `settled`), else
+/// reads+parses+POSTs every product it derives from that delivery, and only
+/// then advances `last_processed_delivery` -- see [`CycleOutcome`] for why
+/// "only then" is load-bearing and which failures hold it back.
 #[expect(
     clippy::too_many_lines,
     reason = "long but linear; splitting it would scatter its shared state across helpers"
@@ -681,17 +864,25 @@ async fn poll_once(
     sink: &impl PublishSink,
     config: &Config,
     state: &mut PublishState,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<CycleReport> {
     let Some(delivery) = discovery::latest_complete_delivery(&config.storage_dir)? else {
         tracing::debug!("no complete MCA+MSN delivery directory found yet");
-        return Ok(());
+        return Ok(CycleReport::NothingNew);
     };
     if Some(&delivery.dir_name) == state.last_processed_delivery.as_ref() {
         tracing::debug!(
             delivery = %delivery.dir_name,
             "no new delivery since last successful parse; nothing to do"
         );
-        return Ok(());
+        return Ok(CycleReport::NothingNew);
+    }
+    if Some(&delivery.dir_name) == state.settled.as_ref() {
+        tracing::info!(
+            delivery = %delivery.dir_name,
+            "this delivery was settled by an earlier run (a failure it can't fix); waiting for \
+             a newer one"
+        );
+        return Ok(CycleReport::NothingNew);
     }
 
     // Declared before everything the cycle builds, so it drops after all of
@@ -833,6 +1024,17 @@ async fn poll_once(
     )
     .await;
 
+    // In Postgres too, for the alert when this is a CronJob run (DS-241).
+    for product in std::mem::take(&mut outcome.newly_rejected) {
+        record_signal(
+            sink,
+            sink::Signal::Rejected,
+            telemetry::product_kind(&product),
+            Some(&delivery.dir_name),
+        )
+        .await;
+    }
+
     if !outcome.may_advance_marker() {
         // The marker stays exactly where it was, so the NEXT cycle sees this
         // delivery as unprocessed -- and, via `state.partial`, republishes
@@ -845,12 +1047,16 @@ async fn poll_once(
             "not marking this delivery as processed: at least one product failed to publish \
              after retrying; the next cycle republishes only the products that failed"
         );
+        let failed = outcome.retryable_failures.clone();
         state.partial = Some(PartialDelivery {
             delivery: delivery.dir_name.clone(),
             published: outcome.published,
             rejected: outcome.rejected,
         });
-        return Ok(());
+        return Ok(CycleReport::Incomplete {
+            delivery: delivery.dir_name,
+            failed,
+        });
     }
 
     if !outcome.permanent_failures.is_empty() {
@@ -869,9 +1075,33 @@ async fn poll_once(
     if outcome.fully_published() {
         telemetry::set_last_published_delivery(&delivery.dir_name);
         record_completed_publish(sink, &delivery.dir_name).await;
+        return Ok(CycleReport::Published {
+            delivery: delivery.dir_name,
+        });
     }
 
-    Ok(())
+    Ok(CycleReport::Settled {
+        delivery: delivery.dir_name,
+        failed: outcome.permanent_failures,
+    })
+}
+
+/// Records a run signal, best effort: a failure is logged, never fails the
+/// cycle (the signal only feeds an alert).
+async fn record_signal(
+    sink: &impl PublishSink,
+    signal: sink::Signal,
+    product: &str,
+    delivery: Option<&str>,
+) {
+    if let Err(err) = sink.record_signal(signal, product, delivery).await {
+        tracing::warn!(
+            error = ?err,
+            kind = signal.kind(),
+            product,
+            "could not record a run signal; its alert can't see it"
+        );
+    }
 }
 
 /// Hands a publish cycle's freed heap back to the kernel when dropped, and
@@ -5082,6 +5312,7 @@ mod per_product_retry_tests {
 
         let mut state = PublishState {
             last_processed_delivery: None,
+            settled: None,
             partial: Some(PartialDelivery {
                 delivery: DELIVERY.to_string(),
                 published: [product::STANOX_CRS.to_string()].into_iter().collect(),
@@ -6058,6 +6289,73 @@ mod db_sink_tests {
             assert!(outcome.may_advance_marker() && !outcome.fully_published());
         }
     }
+
+    /// `CronJob` phase 4: one run at a time. While a run holds the run lock a
+    /// second sink can't take it, and a once-mode run started then exits 0
+    /// without reading anything; once it is released the next run takes it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
+    async fn the_run_lock_admits_one_run_at_a_time() {
+        let pool = pool().await;
+        let root = tempfile::tempdir().unwrap();
+        let config = delivery_and_config(root.path());
+        let first = DbSink::new(pool.clone(), &config.lines);
+        let second = DbSink::new(pool.clone(), &config.lines);
+        assert!(first.try_lock_run().await.unwrap());
+        assert!(
+            first.try_lock_run().await.unwrap(),
+            "the holder asking again still holds it"
+        );
+        assert!(!second.try_lock_run().await.unwrap(), "held by the first");
+        let before = TableSnapshot::comparable(&pool).await;
+        run_once(&second, &config)
+            .await
+            .expect("a run that finds the lock held exits 0");
+        assert_eq!(
+            TableSnapshot::comparable(&pool).await,
+            before,
+            "and publishes nothing"
+        );
+        first.unlock_run().await;
+        assert!(second.try_lock_run().await.unwrap(), "free once released");
+        second.unlock_run().await;
+    }
+
+    /// Decision 3 of `CronJob` phase 4: a run that fails mid-publish leaves no
+    /// resume state, and the next run republishes the whole delivery. That
+    /// is only safe if every product's publish is idempotent: publishing the
+    /// same delivery twice in full leaves exactly the tables one publish
+    /// leaves.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
+    async fn a_full_republish_leaves_the_tables_as_one_publish_does() {
+        let _clock = test_clock::pin_london_today_at(
+            chrono::NaiveTime::from_hms_opt(6, 0, 0).expect("a valid time"),
+        );
+        let pool = pool().await;
+        let original = TableSnapshot::take(&pool).await;
+        let root = tempfile::tempdir().unwrap();
+        let config = delivery_and_config(root.path());
+        let db = DbSink::new(pool.clone(), &config.lines);
+
+        let mut state = PublishState::default();
+        let first = poll_once(&db, &config, &mut state).await.unwrap();
+        assert!(matches!(first, CycleReport::Published { .. }), "{first:?}");
+        let once = TableSnapshot::comparable(&pool).await;
+
+        // A fresh run: nothing carried over, so every product goes again.
+        let mut state = PublishState::default();
+        let again = poll_once(&db, &config, &mut state).await.unwrap();
+        assert!(matches!(again, CycleReport::Published { .. }), "{again:?}");
+        let twice = TableSnapshot::comparable(&pool).await;
+        original.restore(&pool).await;
+        forget_marker(&pool).await;
+
+        for (table, rows) in &once {
+            assert!(!rows.is_empty(), "the fixture day publishes {table}");
+        }
+        assert_eq!(once, twice);
+    }
 }
 
 /// **Manual memory harness, not a regular test.** Runs one whole publish
@@ -6174,6 +6472,27 @@ mod publish_memory_harness {
         fn last_completed_publish(
             &self,
         ) -> impl Future<Output = Result<Option<String>, SinkError>> {
+            ready(Ok(None))
+        }
+
+        fn try_lock_run(&self) -> impl Future<Output = Result<bool, SinkError>> {
+            ready(Ok(true))
+        }
+
+        fn unlock_run(&self) -> impl Future<Output = ()> {
+            ready(())
+        }
+
+        fn record_signal(
+            &self,
+            _signal: sink::Signal,
+            _product: &str,
+            _delivery: Option<&str>,
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            ready(Ok(()))
+        }
+
+        fn settled_delivery(&self) -> impl Future<Output = Result<Option<String>, SinkError>> {
             ready(Ok(None))
         }
     }
@@ -6305,5 +6624,212 @@ mod schedule_associations_tests {
         std::fs::write(file.path(), aa_line("M00001", "A00001", 'P')).expect("write");
         let (_, associations) = build_schedule_index_from_file(file.path()).expect("read");
         assert_eq!(associations.on_date(day()).len(), 1);
+    }
+}
+
+/// `CronJob` phase 4: one `RUN_ONCE` run and its exit status
+/// (docs/scheduled-jobs.md, "schedule-reference").
+#[cfg(test)]
+mod once_mode_tests {
+    use super::poll_once_retry_tests::write_fixture_delivery;
+    use super::sink::fake::{self, Fail, FakePublishSink};
+    use super::*;
+
+    const DELIVERY: &str = "20261031T210342Z";
+
+    fn config(root: &std::path::Path) -> Config {
+        let mut config = poll_once_tests::test_config();
+        config.storage_dir = root.to_path_buf();
+        config
+    }
+
+    /// Every product a full publish of the fixture writes.
+    const PRODUCTS: [&str; 7] = [
+        fake::STANOX_CRS,
+        fake::TIPLOC_CRS,
+        fake::TIPLOC_LOCATIONS,
+        fake::NETWORK_DEPARTURES,
+        fake::DESTINATION_DEPARTURES,
+        fake::CALLING_POINTS_FULL,
+        fake::SERVICES,
+    ];
+
+    fn status(result: &anyhow::Result<()>) -> u8 {
+        result
+            .as_ref()
+            .map_or_else(common::logging::exit_status_of, |()| 0)
+    }
+
+    #[tokio::test]
+    async fn no_delivery_exits_0_having_read_only_its_marker() {
+        let sink = FakePublishSink::new();
+        let storage = tempfile::tempdir().unwrap();
+        let result = run_once(&sink, &config(storage.path())).await;
+        assert_eq!(status(&result), 0, "{result:?}");
+        for product in PRODUCTS {
+            assert_eq!(sink.count(product), 0, "{product}");
+        }
+        assert_eq!(
+            sink.signals(),
+            [("seeded".to_owned(), String::new())],
+            "the run recorded that it read its marker"
+        );
+        assert!(!sink.holds_run_lock(), "released on the way out");
+    }
+
+    #[tokio::test]
+    async fn a_held_run_lock_exits_0_without_reading_anything() {
+        let sink = FakePublishSink::new();
+        sink.hold_run_lock_elsewhere(true);
+        let storage = tempfile::tempdir().unwrap();
+        write_fixture_delivery(storage.path(), DELIVERY);
+        let result = run_once(&sink, &config(storage.path())).await;
+        assert_eq!(status(&result), 0, "{result:?}");
+        let endpoints: Vec<&str> = sink.calls().iter().map(|call| call.endpoint).collect();
+        assert_eq!(endpoints, [fake::RUN_LOCK], "only the lock attempt");
+    }
+
+    /// A new delivery is published and its marker written (exit 0); the
+    /// next run finds it published and does nothing (exit 0).
+    #[tokio::test]
+    async fn a_publish_exits_0_and_the_next_run_is_a_no_op() {
+        let sink = FakePublishSink::new();
+        let storage = tempfile::tempdir().unwrap();
+        write_fixture_delivery(storage.path(), DELIVERY);
+        let config = config(storage.path());
+
+        let result = run_once(&sink, &config).await;
+        assert_eq!(status(&result), 0, "{result:?}");
+        for product in PRODUCTS {
+            assert!(sink.count(product) > 0, "{product} published");
+        }
+        assert_eq!(sink.count(fake::PUBLISHES), 1, "the marker written");
+        assert!(!sink.holds_run_lock());
+
+        let writes = sink.calls().len();
+        let result = run_once(&sink, &config).await;
+        assert_eq!(status(&result), 0, "{result:?}");
+        let after: Vec<&str> = sink.calls()[writes..]
+            .iter()
+            .map(|call| call.endpoint)
+            .collect();
+        assert_eq!(
+            after,
+            [
+                fake::RUN_LOCK,
+                fake::LAST_PUBLISH,
+                fake::SIGNALS,
+                fake::SETTLED
+            ],
+            "a no-op run only reads its marker"
+        );
+    }
+
+    /// Refused data exits 3 (the Job fails without retrying), records the
+    /// rejection and settles the delivery, so the next run skips it (exit 0)
+    /// rather than republish it every half hour.
+    #[tokio::test]
+    async fn a_rejection_exits_3_and_settles_the_delivery() {
+        let sink = FakePublishSink::new();
+        sink.fail(fake::STANOX_CRS, u64::MAX, Fail::Rejected);
+        let storage = tempfile::tempdir().unwrap();
+        write_fixture_delivery(storage.path(), DELIVERY);
+        let config = config(storage.path());
+
+        let result = run_once(&sink, &config).await;
+        assert_eq!(status(&result), 3, "{result:?}");
+        assert_eq!(sink.count(fake::STANOX_CRS), 1, "not retried");
+        assert!(
+            sink.count(fake::CALLING_POINTS_FULL) > 0,
+            "the other products still published"
+        );
+        assert_eq!(sink.count(fake::PUBLISHES), 0, "no completion marker");
+        let signals = sink.signals();
+        assert!(
+            signals.contains(&("rejected".to_owned(), "stanox_crs".to_owned())),
+            "{signals:?}"
+        );
+        assert!(
+            signals.contains(&("settled".to_owned(), String::new())),
+            "{signals:?}"
+        );
+
+        let result = run_once(&sink, &config).await;
+        assert_eq!(status(&result), 0, "{result:?}");
+        assert_eq!(
+            sink.count(fake::STANOX_CRS),
+            1,
+            "the settled delivery is skipped"
+        );
+
+        // A newer delivery is published again.
+        write_fixture_delivery(storage.path(), "20261101T210000Z");
+        sink.reset();
+        let result = run_once(&sink, &config).await;
+        assert_eq!(status(&result), 0, "{result:?}");
+        assert_eq!(sink.count(fake::PUBLISHES), 1);
+    }
+
+    /// A product that keeps failing transiently exits 1 (the Job retries),
+    /// and the next run republishes the whole delivery: every product, not
+    /// only the one that failed.
+    #[tokio::test]
+    async fn a_mid_run_failure_exits_1_and_the_next_run_republishes_in_full() {
+        let sink = FakePublishSink::new();
+        sink.fail(fake::CALLING_POINTS_FULL, u64::MAX, Fail::Transient);
+        let storage = tempfile::tempdir().unwrap();
+        write_fixture_delivery(storage.path(), DELIVERY);
+        let config = config(storage.path());
+
+        let result = run_once(&sink, &config).await;
+        assert_eq!(status(&result), 1, "{result:?}");
+        assert_eq!(sink.count(fake::PUBLISHES), 0, "no completion marker");
+        assert!(sink.count(fake::STANOX_CRS) > 0, "earlier products went");
+        assert!(!sink.holds_run_lock(), "released on failure too");
+
+        sink.reset();
+        let result = run_once(&sink, &config).await;
+        assert_eq!(status(&result), 0, "{result:?}");
+        for product in PRODUCTS {
+            assert!(sink.count(product) > 0, "{product} republished");
+        }
+        assert_eq!(sink.count(fake::PUBLISHES), 1);
+    }
+
+    /// A marker that can't be read fails the run (exit 1) after a bounded
+    /// number of tries, instead of waiting forever as the Deployment does.
+    #[tokio::test]
+    async fn an_unreadable_marker_exits_1() {
+        let sink = FakePublishSink::new();
+        sink.fail(fake::LAST_PUBLISH, u64::MAX, Fail::Transient);
+        let storage = tempfile::tempdir().unwrap();
+        write_fixture_delivery(storage.path(), DELIVERY);
+        let result = run_once(&sink, &config(storage.path())).await;
+        assert_eq!(status(&result), 1, "{result:?}");
+        assert_eq!(
+            sink.count(fake::LAST_PUBLISH),
+            usize::try_from(ONCE_SEED_ATTEMPTS).unwrap()
+        );
+        assert_eq!(sink.count(fake::STANOX_CRS), 0);
+    }
+
+    /// What a Deployment cycle reports (it ignores it; a run's exit reads it).
+    #[tokio::test]
+    async fn a_cycle_reports_what_it_did() {
+        let sink = FakePublishSink::new();
+        let storage = tempfile::tempdir().unwrap();
+        let config = config(storage.path());
+        let mut state = PublishState::default();
+        assert_eq!(
+            poll_once(&sink, &config, &mut state).await.unwrap(),
+            CycleReport::NothingNew
+        );
+        write_fixture_delivery(storage.path(), DELIVERY);
+        assert_eq!(
+            poll_once(&sink, &config, &mut state).await.unwrap(),
+            CycleReport::Published {
+                delivery: DELIVERY.to_owned()
+            }
+        );
     }
 }
