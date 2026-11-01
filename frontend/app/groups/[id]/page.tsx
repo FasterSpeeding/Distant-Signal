@@ -517,9 +517,10 @@ function SharedJourneyRow({
       {/* Under the title, as on `SharedTrainRow`. An untracked-only
           journey, one still needing its train, or a picked train with its
           phase and mode: the owner's words, by the Track list's rule
-          (`groupJourneyRowStatus`). */}
+          (`groupJourneyRowStatus`). Only the owner or a follower is asked
+          to pick a train; other members read "No train picked yet". */}
       <Group justify="space-between" gap="xs" mt="xs">
-        <TrackedRowStatusBadge status={groupJourneyRowStatus(journey, londonDayKey(new Date()))} />
+        <TrackedRowStatusBadge status={groupJourneyRowStatus(journey, londonDayKey(new Date()), currentUserId)} />
         <Group gap="xs" wrap="wrap">
           {canFollow && (
             <FollowJourneyButton

@@ -51,12 +51,13 @@ function isValidShareToken(token: string): boolean {
 /** Coarse, non-numeric phrasing for a journey's worst-leg status, built on
  * `lib/journeyStatus.ts::journeyDetailSummary` -- the same whole-journey
  * summary `JourneyStatusBadge` already renders on-page as
- * its single header badge. Deliberately coarser than
- * `app/train/[uid]/[date]/page.tsx`'s own `trainStatusSummary`, which
- * quotes an exact `delayMinutes` figure and the train's own last reported
- * LOCATION: that page is fully public regardless of whether its own OG
- * metadata exists (no token gates it), so its preview card reveals nothing
- * a URL-guesser couldn't already get. A journey share link is different --
+ * its single header badge. This page has no live preview card, so its
+ * description is the only status a pasted link's unfurl can show; a train
+ * page (`app/train/[uid]/[date]/page.tsx`) has one, so its description is
+ * evergreen (`trainPageDescription`) and its card image quotes the exact
+ * delay and where the train is. That page is fully public (no token gates
+ * it), so its card reveals nothing a URL-guesser couldn't already get. A
+ * journey share link is different --
  * its whole security model is a bearer token (2026-09-23 unlisted-links
  * design §3/§5), and a pasted link's unfurled preview card is seen by
  * EVERYONE who can see that chat message, not only the person the owner

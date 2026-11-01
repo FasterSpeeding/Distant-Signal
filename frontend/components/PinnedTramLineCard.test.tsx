@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { MINOR_DELAYS, NETWORK } from '@/test/transitFixtures';
+import { DELAY, MINOR_DELAYS, NETWORK, NOTHING_REPORTED } from '@/test/transitFixtures';
 import { PinnedTramLineCard } from './PinnedTramLineCard';
 
 describe('PinnedTramLineCard', () => {
@@ -20,5 +20,35 @@ describe('PinnedTramLineCard', () => {
     expect(container.querySelector('[data-line-swatch]')).not.toBeNull();
     expect(container.querySelector('[data-card-title-row]')?.textContent).toContain('Minor delays');
     expect(screen.getByText('Manchester Metrolink')).toBeTruthy();
+  });
+
+  it("links its worst published disruption to that disruption's page", () => {
+    renderWithMantine(
+      <PinnedTramLineCard
+        pinned={{
+          network: 'metrolink',
+          networkName: 'Manchester Metrolink',
+          line: { ...NETWORK.lines[0]!, status: MINOR_DELAYS },
+        }}
+      />,
+    );
+    expect(screen.getByRole('link', { name: DELAY.summary }).getAttribute('href')).toBe(
+      '/transit/metrolink/incidents/S1',
+    );
+  });
+
+  it('has no disruption link while nothing is published', () => {
+    renderWithMantine(
+      <PinnedTramLineCard
+        pinned={{
+          network: 'metrolink',
+          networkName: 'Manchester Metrolink',
+          line: { ...NETWORK.lines[0]!, status: NOTHING_REPORTED },
+        }}
+      />,
+    );
+    expect(screen.getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual([
+      '/transit/metrolink/lines/blue',
+    ]);
   });
 });

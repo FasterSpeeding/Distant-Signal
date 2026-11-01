@@ -11,14 +11,12 @@ import { TextLink } from '@/components/TextLink';
 import { LastUpdated } from '@/components/LastUpdated';
 import { REFRESH_INTERVAL_MS } from '@/lib/refresh';
 import { TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
-import { isTimetableOnly, serviceModeLabel, TIMETABLE_ONLY_MESSAGE } from '@/lib/serviceMode';
+import { isTimetableOnly, serviceModeLabel } from '@/lib/serviceMode';
 import { ServiceModeIcon } from '@/components/ServiceModeIcon';
 import { ProvisionalTimetableNote } from '@/components/ProvisionalTimetableNote';
 import type { PublicTrainState, TrainJourneyState, TrackedTrainListItem } from '@/lib/types';
-import { delayLabel } from '@/lib/serviceStatus';
-import { cancellationSummary, trainCancellation } from '@/lib/cancellation';
 import { pageMetadata, previewImageAlt } from '@/lib/pageMetadata';
-import { trainPreviewCard, trainPreviewImage } from '@/lib/trainPreview';
+import { serviceDateLabel, trainPreviewCard, trainPreviewImage } from '@/lib/trainPreview';
 import { trainIdentifiers, trainName } from '@/lib/trainName';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -117,72 +115,21 @@ function trackNoun(train: Pick<PublicTrainState, 'serviceMode'>): 'train' | 'bus
   return 'train';
 }
 
-/** Plain-text status summary for a train, sharing the exact phrasing
- * conventions `components/TrainJourney.tsx`'s `StatusMessage`/
- * `JourneyDetails` already establish ("Last reported: X", "{N}m late" /
- * "On time", "This train has arrived at X", "Waiting to hear from Network
- * Rail", ...) rather than inventing new copy for the OG description. Takes
- * a `TrainJourneyState` (the same shape `toJourneyState` above produces)
- * so `generateMetadata` below can reuse the exact same derivation the page
- * component itself already runs.
- *
- * `'unresolved'` is included only for type completeness -- per
- * `toJourneyState`'s own doc comment it's unreachable for a shared public
- * train -- but is handled honestly rather than silently falling through,
- * in case that invariant ever changes. */
-export function trainStatusSummary(state: TrainJourneyState): string {
-  if (isTimetableOnly(state)) {
-    return `${serviceModeLabel(state.serviceMode) ?? 'This service'}: ${TIMETABLE_ONLY_MESSAGE}.`;
-  }
-  if (state.trackingPhase === 'noTimetable' && state.resolutionStatus !== 'unresolved') {
-    return "Not matched to a timetable, so we can't track this train.";
-  }
-  if (state.trackingPhase === 'planned') {
-    return 'Planned. These are the timetabled times.';
-  }
-  if (state.resolutionStatus === 'pending') {
-    return "Waiting to hear from Network Rail. This train hasn't been matched to a live service yet.";
-  }
-  if (state.resolutionStatus === 'schedule_matched') {
-    return 'Matched to a scheduled service. Waiting for live tracking to begin.';
-  }
-  if (state.resolutionStatus === 'unresolved') {
-    return "Couldn't be matched to a live service.";
-  }
-
-  // resolutionStatus === 'resolved' from here on -- same invariant
-  // StatusMessage's own equivalent branch relies on.
-  if (state.status === 'awaiting_activation' || state.status === null) {
-    return 'Matched to a timetabled train. Waiting for its first movement report.';
-  }
-
-  const cancellation = trainCancellation(state);
-  if (cancellation && (state.status === 'cancelled' || cancellation.kind === 'partial')) {
-    // "Cancelled: a fault with the signalling system.", "Terminates at
-    // Raynes Park.", ...; the plain sentence when there is nothing more.
-    const summary = cancellationSummary(cancellation);
-    return summary === 'Cancelled' ? 'This train was cancelled.' : `${summary}.`;
-  }
-
-  if (state.status === 'completed') {
-    const destination = state.scheduleDestinationName ?? state.scheduleDestinationCrs;
-    return destination
-      ? `This train has arrived at ${destination}.`
-      : 'This train has arrived at its final destination.';
-  }
-
-  if (state.mayHaveArrived) {
-    return 'This journey may have arrived at its destination (not yet confirmed by Network Rail).';
-  }
-
-  const parts: string[] = [];
-  if (state.lastReportedLocation) {
-    parts.push(`Last reported: ${state.lastReportedLocation}`);
-  }
-  if (state.delayMinutes !== null) {
-    parts.push(delayLabel(state.delayMinutes).text);
-  }
-  return parts.length > 0 ? parts.join('. ') : `Train ${state.trainUid} is currently en route.`;
+/** The page's meta description: evergreen, since the live part of a shared
+ * link's preview is its card image (`card.png`, docs/style-guide.md "Live
+ * link previews"). A chat app shows the unfurl for hours, so a delay or a
+ * "last reported" location here would go stale while the card's band moves
+ * on. Says what the page has: "13:42 Woking to London Waterloo, Sat 1 Nov:
+ * calling points, platforms and live running." A bus or ferry, never
+ * tracked live, has its timetable only. */
+export function trainPageDescription(
+  title: string,
+  train: Pick<PublicTrainState, 'serviceDate' | 'serviceMode' | 'liveTracking'>,
+): string {
+  const what = isTimetableOnly(train)
+    ? 'calling points and timetabled times'
+    : 'calling points, platforms and live running';
+  return `${title}, ${serviceDateLabel(train.serviceDate)}: ${what}.`;
 }
 
 /** Per-page Open Graph/Twitter/`<title>` metadata for a shared train link
@@ -226,7 +173,7 @@ export async function generateMetadata({
   }
 
   const title = publicTrainName(train) ?? `${serviceHeading(train)} ${uid}`;
-  const description = trainStatusSummary(toJourneyState(train));
+  const description = trainPageDescription(title, train);
 
   // One train on one day: worth following, not worth indexing. Its preview
   // image is its own (`card.png`), its URL versioned by what the card
