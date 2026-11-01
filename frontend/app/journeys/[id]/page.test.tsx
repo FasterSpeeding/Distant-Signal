@@ -552,6 +552,40 @@ describe('JourneyDetailPage: untracked legs', () => {
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/^York to York \(YRK\), 22 Sep 2026$/);
   });
 
+  it('re-times a timetabled leg after a late train, and takes the change after it from there', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(
+      baseJourney({
+        legs: [
+          tubeLeg({
+            id: 1,
+            plannedDeparture: '2026-09-22T14:20:00Z',
+            plannedArrival: '2026-09-22T14:48:00Z',
+            connection: null,
+          }),
+          tubeLeg({
+            id: 2,
+            transitMode: 'tram',
+            plannedDeparture: '2026-09-22T14:50:00Z',
+            plannedArrival: '2026-09-22T15:00:00Z',
+            connection: {
+              gapMinutes: 7,
+              minimumChangeMinutes: null,
+              state: 'ok',
+              nextTimetabled: { departure: '2026-09-22T14:55:00Z', arrival: '2026-09-22T15:05:00Z' },
+            },
+          }),
+          matchedLeg({ id: 3 }),
+        ],
+      }),
+    );
+    await renderPage();
+    expect(
+      screen.getByText('On the timetable, the next tram once you get there leaves at 15:55 and gets in at 16:05.'),
+    ).toBeInTheDocument();
+    // The change after the tram is from its re-timed arrival.
+    expect(screen.getByText(/arrive 16:05\./)).toBeInTheDocument();
+  });
+
   it('summarises a multi-leg journey with each untracked state', async () => {
     vi.mocked(api.getJourney).mockResolvedValue(
       baseJourney({

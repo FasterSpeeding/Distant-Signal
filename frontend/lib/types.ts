@@ -1593,6 +1593,10 @@ export interface LegConnection {
   /** Set when the change works only because this leg's train is running
    * late (DS-141): it could leave earlier. Absent otherwise. */
   reliesOnLateDeparture?: LateDepartureReliance;
+  /** Onto a timetabled leg (DS-237): the ride its timetable has first
+   * once the traveller gets there, when that isn't the planned one.
+   * Scheduled times (RFC3339), never live. Absent otherwise. */
+  nextTimetabled?: { departure: string; arrival: string };
 }
 
 /** A change that works only because the train changed onto is running

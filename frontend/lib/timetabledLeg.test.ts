@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { noticeHref, timetableCaption, timetableNote, timetabledLineHref, vehicleNoun } from './timetabledLeg';
+import {
+  nextTimetabledNote,
+  noticeHref,
+  retimedArrival,
+  timetableCaption,
+  timetableNote,
+  timetabledLineHref,
+  vehicleNoun,
+} from './timetabledLeg';
+import type { JourneyLegDetail } from './types';
 import type { LegTimetable } from './types';
 
 function timetable(overrides: Partial<LegTimetable> = {}): LegTimetable {
@@ -65,5 +74,19 @@ describe('timetabled legs (DS-237)', () => {
     expect(noticeHref('metrolink', { ...notice, lineId: 'metrolink:blue' })).toBeNull();
     expect(timetabledLineHref(timetable())).toBe('/transit/tfl/lines/victoria');
     expect(timetabledLineHref(timetable({ line: null }))).toBeNull();
+  });
+
+  it('says which ride a late traveller takes, only when it is not the planned one', () => {
+    const leg = (connection: JourneyLegDetail['connection']) =>
+      ({ kind: 'untracked', transitMode: 'tube', connection }) as JourneyLegDetail;
+    const ride = { departure: '2026-11-04T08:19:00Z', arrival: '2026-11-04T08:29:00Z' };
+    expect(
+      nextTimetabledNote(leg({ gapMinutes: 2, minimumChangeMinutes: null, state: 'ok', nextTimetabled: ride })),
+    ).toBe('On the timetable, the next train once you get there leaves at 08:19 and gets in at 08:29.');
+    expect(retimedArrival(leg({ gapMinutes: 2, minimumChangeMinutes: null, state: 'ok', nextTimetabled: ride }))).toBe(
+      '2026-11-04T08:29:00Z',
+    );
+    expect(nextTimetabledNote(leg({ gapMinutes: 5, minimumChangeMinutes: null, state: 'ok' }))).toBeNull();
+    expect(retimedArrival(leg(null))).toBeNull();
   });
 });

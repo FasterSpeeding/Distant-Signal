@@ -1404,3 +1404,115 @@ async fn a_journeys_operator_filter_is_kept_echoed_and_honoured_by_replans() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
+
+/// A timetabled tram leg (DS-237) between RP0001 and RP0005, on the test
+/// transit network: the tram line every ten minutes from 11:05 London
+/// (20 minutes to the far stop), the leg planned on the 11:05. Six minutes
+/// late into ZRD, the traveller misses it and takes the 11:15, in at
+/// 11:35, leaving five minutes for the 11:40: at risk. Shifting the
+/// planned ride instead would have ended it at 11:26 and called the
+/// change fine.
+#[tokio::test]
+#[ignore = "requires a live database: DATABASE_URL"]
+async fn a_late_train_re_times_a_timetabled_leg_and_judges_the_next_change_from_it() {
+    use common::transit::{TimetableRows, TransitTrip};
+    use ds_store::test_support::transit::{A, B, cleanup as transit_cleanup, feed, seed_feed};
+    const NETWORK: &str = "test-replan-tt";
+    let _now = pin_now();
+    let _switch = crate::data::transit_planning::set_switch_for_tests(&[NETWORK]);
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool).await;
+    seed_timetable(&pool).await;
+    seed_onward(&pool).await;
+    let (mut parts, mut manifest) = feed(NETWORK, date());
+    let starts = [11 * 3600 + 300, 11 * 3600 + 900, 11 * 3600 + 1500];
+    for (part, _) in &mut parts {
+        match &mut part.rows {
+            TimetableRows::Patterns(patterns) => {
+                for pattern in patterns.iter_mut().filter(|p| p.pattern_id == "out") {
+                    pattern.stops[1].arr_offset_s = 1200;
+                    pattern.stops[1].dep_offset_s = 1200;
+                }
+            }
+            TimetableRows::Trips(trips) => {
+                *trips = starts
+                    .iter()
+                    .map(|start| TransitTrip {
+                        trip_id: format!("T{start}"),
+                        line_id: Some("blue".to_owned()),
+                        pattern_id: "out".to_owned(),
+                        service_id: "s1".to_owned(),
+                        start_s: *start,
+                        headsign: Some("Bbb".to_owned()),
+                        replacement_bus: false,
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    manifest.counts.trips = 3;
+    seed_feed(&pool, &parts, &manifest, date()).await;
+
+    let token = seed_session(&pool, USER).await;
+    let router = router(pool.clone());
+    let (status, body) = call(
+        &router,
+        "POST",
+        "/Journeys/itinerary",
+        Some(&token),
+        Some(serde_json::json!({
+            "legs": [
+                { "trainUid": "RP0001", "serviceDate": DATE, "originCrs": "ZRC", "destinationCrs": "ZRD" },
+                {
+                    "kind": "untracked", "transitMode": "tram",
+                    "originStopId": A, "destinationStopId": B,
+                    "plannedDeparture": "2099-05-05T10:05:00Z", "plannedArrival": "2099-05-05T10:25:00Z",
+                    "transitNetwork": NETWORK, "transitLineId": "blue", "headsign": "Bbb"
+                },
+                { "trainUid": "RP0005", "serviceDate": DATE, "originCrs": "ZRD", "destinationCrs": "ZRE" }
+            ]
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let journey = format!(
+        "/Journeys/{}",
+        body["journeyId"].as_i64().expect("journeyId")
+    );
+
+    // On time: the planned tram, and the 11:40 with 15 minutes to spare.
+    seed_live(&pool, "RP0001", "en_route", 0, "2099-05-05T07:00:00Z").await;
+    let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
+    assert_eq!(
+        detail["legs"][1]["timetable"]["state"], "matched",
+        "{detail}"
+    );
+    assert!(
+        detail["legs"][1]["connection"]
+            .get("nextTimetabled")
+            .is_none(),
+        "{detail}"
+    );
+    assert_eq!(detail["legs"][2]["connection"]["state"], "ok", "{detail}");
+
+    seed_live(&pool, "RP0001", "en_route", 6, "2099-05-05T07:00:00Z").await;
+    let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
+    let onto_tram = &detail["legs"][1]["connection"];
+    assert_eq!(onto_tram["state"], "ok", "{detail}");
+    assert_eq!(onto_tram["gapMinutes"], 9, "{detail}");
+    assert_eq!(
+        onto_tram["nextTimetabled"],
+        serde_json::json!({
+            "departure": "2099-05-05T10:15:00Z",
+            "arrival": "2099-05-05T10:35:00Z",
+        })
+    );
+    assert_eq!(
+        detail["legs"][2]["connection"]["state"], "atRisk",
+        "{detail}"
+    );
+    assert_eq!(detail["legs"][2]["connection"]["gapMinutes"], 5, "{detail}");
+    transit_cleanup(&pool, NETWORK).await;
+}

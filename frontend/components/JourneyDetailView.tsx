@@ -32,6 +32,7 @@ import {
 } from '@/lib/journeyName';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
 import { delayLabel } from '@/lib/serviceStatus';
+import { nextTimetabledNote, retimedArrival } from '@/lib/timetabledLeg';
 import { formatTime } from '@/lib/dateFormat';
 import { isUntrackedLeg, UNTRACKED_STATUS_LABEL } from '@/lib/untrackedLeg';
 
@@ -101,16 +102,19 @@ function LegConnector({ leg, next }: { leg: JourneyLegDetail; next: JourneyLegDe
     legEndpointName(leg.destinationCrs, stops, leg.trackedTrainState, 'destination') ??
     leg.destinationName ??
     leg.destinationCrs;
-  const arrival =
-    isUntrackedLeg(leg) && leg.plannedArrival
-      ? `arrive ${formatTime(leg.plannedArrival)}`
-      : legDestinationArrivalLabel(leg.destinationCrs, stops);
+  // A timetabled leg the traveller can't make as planned gets in with the
+  // timetable's next ride (DS-237).
+  const untrackedArrival = isUntrackedLeg(leg) ? (retimedArrival(leg) ?? leg.plannedArrival) : null;
+  const arrival = untrackedArrival
+    ? `arrive ${formatTime(untrackedArrival)}`
+    : legDestinationArrivalLabel(leg.destinationCrs, stops);
   // The gap to the next leg, whatever kind each is, when both times are
   // known: the api's (live times, with the station's minimum change time)
   // when it sent one, else the page's own, which assumes no minimum.
   const gapText = next === null ? null : connectionText(leg, next);
   if (!stationName && !gapText) return null;
   const reliance = next?.connection?.reliesOnLateDeparture;
+  const retimed = next === null ? null : nextTimetabledNote(next);
   const connector = (
     <Text size="xs" c="dimmed" pl="sm" data-leg-connector>
       <span aria-hidden="true">↓</span> {stationName ? `Change at ${stationName}` : 'Change'}
@@ -118,14 +122,21 @@ function LegConnector({ leg, next }: { leg: JourneyLegDetail; next: JourneyLegDe
       {gapText ? `. ${gapText}.` : ''}
     </Text>
   );
-  if (!reliance) return connector;
-  // The change works only because the next train is running late (DS-141).
+  if (!reliance && !retimed) return connector;
   return (
     <Stack gap={0}>
       {connector}
-      <Box pl="sm">
-        <LateDepartureNote {...instantLateDepartureTimes(reliance)} subject="the next train" />
-      </Box>
+      {retimed && (
+        <Text size="xs" c="dimmed" pl="sm" data-next-timetabled>
+          {retimed}
+        </Text>
+      )}
+      {/* The change works only because the next train is running late (DS-141). */}
+      {reliance && (
+        <Box pl="sm">
+          <LateDepartureNote {...instantLateDepartureTimes(reliance)} subject="the next train" />
+        </Box>
+      )}
     </Stack>
   );
 }
