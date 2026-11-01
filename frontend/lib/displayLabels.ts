@@ -1,4 +1,4 @@
-import type { Suggestion, TripPlanAccessLeg, TripPlanItinerary } from './types';
+import type { Suggestion, TripPlanAccessLeg, TripPlanItinerary, TripPlanLeg } from './types';
 import { ownValue } from './ownValue';
 
 /** Human labels for the `category` a `LineSummary`/`CustomLineDetail`
@@ -91,6 +91,46 @@ export function transferLabel(mode: string, line?: string | null): string {
   const modeLabel = transferModeLabel(mode);
   const lineName = transferLineName(mode, line);
   return lineName ? `${modeLabel} (${lineName})` : modeLabel;
+}
+
+type TransferLeg = Extract<TripPlanLeg, { kind: 'transfer' }>;
+
+/** Whether a `TRANSFER` link joins two different stations (Euston to
+ * Victoria, 19 minutes), rather than being a change within one station
+ * (the same code at both ends, or neither known). */
+export function isCrossStationTransfer(leg: Pick<TransferLeg, 'mode' | 'originCrs' | 'destinationCrs'>): boolean {
+  if (leg.mode.toUpperCase() !== 'TRANSFER') return false;
+  return (leg.originCrs?.toUpperCase() ?? null) !== (leg.destinationCrs?.toUpperCase() ?? null);
+}
+
+/** The fixed-link mode a transfer leg is: its own, except that a `TRANSFER`
+ * between two stations the plan knows is a Tube hop is `TUBE`. It is one
+ * when London Underground runs it (`operator` `LT`: the pair also has a
+ * Tube link) or the plan names a Tube stop at both ends (2026-11-01). */
+export function transferLegMode(
+  leg: Pick<TransferLeg, 'mode' | 'originCrs' | 'destinationCrs' | 'operator' | 'originStop' | 'destinationStop'>,
+): string {
+  if (!isCrossStationTransfer(leg)) return leg.mode;
+  const tubeHop = leg.operator === 'LT' || (leg.originStop !== undefined && leg.destinationStop !== undefined);
+  return tubeHop ? 'TUBE' : leg.mode;
+}
+
+/** A plan card's words for a transfer leg's mode, with its line: "Tube
+ * (Victoria line)" for a Tube link or a known Tube hop, "Transfer" for any
+ * other `TRANSFER` between two stations (as the saved leg says), "Change"
+ * for a change within one station. */
+export function transferLegLabel(
+  leg: Pick<
+    TransferLeg,
+    'mode' | 'originCrs' | 'destinationCrs' | 'operator' | 'originStop' | 'destinationStop' | 'line'
+  >,
+): string {
+  const mode = transferLegMode(leg);
+  if (mode.toUpperCase() === 'TRANSFER' && isCrossStationTransfer(leg)) {
+    const lineName = transferLineName(mode, leg.line);
+    return lineName ? `Transfer (${lineName})` : 'Transfer';
+  }
+  return transferLabel(mode, leg.line);
 }
 
 /** The note under a `/Trips/plan` access leg (DS-135): the leg between a

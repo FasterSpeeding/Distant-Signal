@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { categoryLabel, changesBadge, tocNameLookup, operatorLabel, transferLabel } from './displayLabels';
+import {
+  categoryLabel,
+  changesBadge,
+  isCrossStationTransfer,
+  tocNameLookup,
+  operatorLabel,
+  transferLabel,
+  transferLegLabel,
+  transferLegMode,
+} from './displayLabels';
 import type { TripPlanItinerary, TripPlanLeg } from './types';
 
 describe('categoryLabel', () => {
@@ -61,6 +70,42 @@ describe('transferLabel', () => {
     expect(transferLabel('TUBE')).toBe('Tube');
     expect(transferLabel('WALK', '  ')).toBe('Walk');
     expect(transferLabel('TUBE', null)).toBe('Tube');
+  });
+});
+
+describe('transfer legs (#95)', () => {
+  const stop = (id: string) => ({ id, name: id, modes: ['tube'], lines: [] });
+  const leg = {
+    kind: 'transfer' as const,
+    mode: 'TRANSFER',
+    originCrs: 'EUS',
+    destinationCrs: 'VIC',
+    minutes: 19,
+  };
+
+  it('tells a TRANSFER between stations from a change within one', () => {
+    expect(isCrossStationTransfer(leg)).toBe(true);
+    expect(isCrossStationTransfer({ ...leg, destinationCrs: 'eus' })).toBe(false);
+    expect(isCrossStationTransfer({ ...leg, originCrs: null, destinationCrs: null })).toBe(false);
+    expect(isCrossStationTransfer({ ...leg, mode: 'TUBE' })).toBe(false);
+  });
+
+  it('reads a known Tube hop as the Tube: run by LT, or a Tube stop at both ends', () => {
+    expect(transferLegMode(leg)).toBe('TRANSFER');
+    expect(transferLegMode({ ...leg, operator: 'LT' })).toBe('TUBE');
+    expect(transferLegMode({ ...leg, originStop: stop('A'), destinationStop: stop('B') })).toBe('TUBE');
+    expect(transferLegMode({ ...leg, originStop: stop('A') })).toBe('TRANSFER');
+    expect(transferLegMode({ ...leg, operator: 'ds:DLR' })).toBe('TRANSFER');
+    // A change within one station stays one, whoever runs the pair's link.
+    expect(transferLegMode({ ...leg, destinationCrs: 'EUS', operator: 'LT' })).toBe('TRANSFER');
+    expect(transferLegMode({ ...leg, mode: 'WALK', operator: 'LT' })).toBe('WALK');
+  });
+
+  it('labels each the way it saves', () => {
+    expect(transferLegLabel(leg)).toBe('Transfer');
+    expect(transferLegLabel({ ...leg, operator: 'LT', line: 'Victoria' })).toBe('Tube (Victoria line)');
+    expect(transferLegLabel({ ...leg, destinationCrs: 'EUS' })).toBe('Change');
+    expect(transferLegLabel({ ...leg, mode: 'TUBE', line: 'Northern' })).toBe('Tube (Northern line)');
   });
 });
 
