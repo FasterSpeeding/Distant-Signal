@@ -46,6 +46,16 @@ export function hasTflStops(mode: TransitMode): boolean {
   return TFL_STOP_SEARCH[mode] !== undefined;
 }
 
+/** Whether an untracked `mode` leg can carry `stopId` as a place's stop,
+ * as `POST /Journeys/itinerary` checks it (`journeys::attach_untracked_stops`):
+ * a trip-planner network's tram station (`9400ZZMAPIC`) on a tram or bus
+ * leg, any other (TfL) stop on a leg whose places come from the TfL stop
+ * lookup. A walk or transfer to a stop has none: the stop's name is its
+ * place. */
+export function canHaveStopId(mode: TransitMode, stopId: string): boolean {
+  return stopId.startsWith('9400') ? mode === 'tram' || mode === 'bus' : hasTflStops(mode);
+}
+
 /** The TfL stop modes a `mode` leg's place fields search (none for a mode
  * without TfL stops). */
 export function tflStopSearchModes(mode: TransitMode): readonly string[] {
