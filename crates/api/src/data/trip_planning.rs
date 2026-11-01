@@ -134,7 +134,22 @@ pub fn build_connections_with_passes(
         .iter()
         .map(|(uid, points)| (uid.as_str(), points.as_slice()))
         .collect();
-    schedule_query::build_connections_with_passes(schedules)
+    let built = schedule_query::build_connections_with_passes(schedules);
+    record_interned_codes();
+    built
+}
+
+/// `api_trip_plan_interned_codes{kind}`: how many TIPLOCs (`stop`) and
+/// train UIDs or transit trip keys (`trip`) the process has interned
+/// (`schedule_query::code`, DS-225). They are never freed, so this only
+/// grows; it should level off at the timetable's own size (about 12,000
+/// stops and a few hundred thousand trips), and a steady climb would mean
+/// codes are being minted from something unbounded.
+#[expect(clippy::cast_precision_loss, reason = "a gauge of thousands")]
+pub fn record_interned_codes() {
+    let name = common::metrics::metric_name("api_trip_plan_interned_codes");
+    metrics::gauge!(name.clone(), "kind" => "stop").set(schedule_query::StopCode::count() as f64);
+    metrics::gauge!(name, "kind" => "trip").set(schedule_query::TripCode::count() as f64);
 }
 
 /// [`fetch_calling_points_for_date`] plus [`build_connections`] in one call.
@@ -1934,5 +1949,30 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+}
+
+#[cfg(test)]
+mod interned_codes_tests {
+    #[test]
+    fn the_interned_code_counts_are_reported() {
+        schedule_query::StopCode::new("ZZGAUGE");
+        schedule_query::TripCode::new("ZZGAUGE1");
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, super::record_interned_codes);
+        let rendered = handle.render();
+        for kind in ["stop", "trip"] {
+            let line = rendered
+                .lines()
+                .find(|line| {
+                    line.starts_with(&format!(
+                        "distant_signal_api_trip_plan_interned_codes{{kind=\"{kind}\"}}"
+                    ))
+                })
+                .unwrap_or_else(|| panic!("no {kind} series in\n{rendered}"));
+            let value: f64 = line.rsplit(' ').next().unwrap().parse().unwrap();
+            assert!(value >= 1.0, "{line}");
+        }
     }
 }

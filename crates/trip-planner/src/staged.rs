@@ -58,16 +58,19 @@
 //! `raptor.rs` remain the implementation for that case, and a differential
 //! test checks the two agree.
 
+use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashSet};
+use std::rc::Rc;
 
 use chrono::NaiveDate;
 use schedule_query::{
-    ChangeTime, Connection, InterchangeData, fixed_links_from_where, minimum_change_time,
-    normalize_tiploc, sibling_tiplocs,
+    ChangeTime, Connection, FixedLink, InterchangeData, LinkWindow, StopCode, TripCode,
+    links_in_lookup_order, minimum_change_time, normalize_tiploc, sibling_tiplocs,
 };
 
 use crate::csa::{JourneyLeg, TrainLeg, TransferLeg};
+use crate::dense::{FxMap, FxSet, ModalBuffer};
 use crate::overlay::ConnectionOverlay;
 use crate::restrictions::{self, Restrictions};
 use crate::via::{ViaHow, ViaLeg, Vias};
@@ -170,26 +173,32 @@ struct Label {
 
 #[derive(Clone)]
 struct Labels {
-    /// Per stop, its labels: at most one per state.
-    stops: HashMap<String, Vec<Label>>,
-    best: Option<(u32, String)>,
+    /// Per stop (by normalized code, DS-225), its labels: at most one per
+    /// state.
+    stops: FxMap<StopCode, Vec<Label>>,
+    best: Option<(u32, StopCode)>,
     touched: bool,
 }
 
 impl Labels {
     fn new() -> Self {
         Self {
-            stops: HashMap::new(),
+            stops: FxMap::default(),
             best: None,
             touched: false,
         }
     }
 
-    fn label(&self, tiploc: &str, state: usize) -> Option<&Label> {
+    fn label(&self, stop: StopCode, state: usize) -> Option<&Label> {
         self.stops
-            .get(tiploc)
+            .get(&stop)
             .and_then(|labels| labels.iter().find(|label| label.state == state))
     }
+}
+
+/// `tiploc`'s normalized code.
+fn code(tiploc: &str) -> StopCode {
+    StopCode::new(normalize_tiploc(tiploc))
 }
 
 /// Change time at a waypoint whose own is the `NoInterchange` sentinel: the
@@ -291,8 +300,9 @@ enum Candidate {
 }
 
 /// Labels waiting to have their fixed links expanded: (the time the links
-/// start, the label's arrival, its state, its TIPLOC), earliest first.
-type LinkQueue = BinaryHeap<Reverse<(u32, u32, usize, String)>>;
+/// start, the label's arrival, its state, its stop), earliest first. A
+/// `StopCode` orders by its text, so ties pop as they did with strings.
+type LinkQueue = BinaryHeap<Reverse<(u32, u32, usize, StopCode)>>;
 
 struct Forward<'a> {
     interchange: &'a InterchangeData,
@@ -300,12 +310,22 @@ struct Forward<'a> {
     vias: Option<&'a Vias>,
     grid: Grid,
     date: NaiveDate,
-    origin: HashSet<String>,
-    destinations: HashSet<String>,
-    /// `targets[s]`: waypoint `s`'s TIPLOCs.
+    /// The origin's and destination's TIPLOCs, by normalized code.
+    origin: FxSet<StopCode>,
+    destinations: FxSet<StopCode>,
+    /// `targets[s]`: waypoint `s`'s TIPLOCs (what `change_minutes` reads),
+    /// and the same by normalized code.
     targets: Vec<HashSet<String>>,
+    target_codes: Vec<FxSet<StopCode>>,
     departure_min: u32,
+    modal: ModalBuffer,
+    /// Per stop, its CRS's fixed links in lookup order with the stops each
+    /// leads to, read on first use (DS-225; see `raptor::Stop::links`).
+    links: RefCell<FxMap<StopCode, StopLinks<'a>>>,
 }
+
+/// A stop's fixed links in lookup order, each with the stops it leads to.
+type StopLinks<'a> = Rc<[(&'a FixedLink, Vec<StopCode>)]>;
 
 impl<'a> Forward<'a> {
     fn new(
@@ -319,16 +339,21 @@ impl<'a> Forward<'a> {
                 .map(|t| normalize_tiploc(t).to_string())
                 .collect()
         };
+        let codes =
+            |tiplocs: &[String]| -> FxSet<StopCode> { tiplocs.iter().map(|t| code(t)).collect() };
         Self {
             interchange: options.interchange,
             restrictions,
             vias: options.vias,
             grid: Grid::new(options.waypoints.len(), options.vias),
             date: options.date,
-            origin: set(options.from_tiplocs),
-            destinations: set(options.to_tiplocs),
+            origin: codes(options.from_tiplocs),
+            destinations: codes(options.to_tiplocs),
             targets: options.waypoints.iter().map(|w| set(w)).collect(),
+            target_codes: options.waypoints.iter().map(|w| codes(w)).collect(),
             departure_min,
+            modal: ModalBuffer::new(&options.interchange.modal_change),
+            links: RefCell::default(),
         }
     }
 
@@ -338,10 +363,9 @@ impl<'a> Forward<'a> {
 
     fn initial_labels(&self) -> Labels {
         let mut labels = Labels::new();
-        let origin: Vec<String> = self.origin.iter().cloned().collect();
-        for tiploc in origin {
+        for &stop in &self.origin {
             let mut queue = LinkQueue::new();
-            self.expand_links(&mut labels, 0, &tiploc, self.departure_min, &mut queue);
+            self.expand_links(&mut labels, 0, stop, self.departure_min, &mut queue);
             self.drain_links(&mut labels, &mut queue);
         }
         labels
@@ -350,9 +374,16 @@ impl<'a> Forward<'a> {
     /// `csa::Scan::relax`, per state, plus the advances at a waypoint or via:
     /// records the arrival, then walks on over fixed links from every label
     /// it improves (see [`Self::drain_links`]).
-    fn relax(&self, labels: &mut Labels, state: usize, tiploc: &str, time: u32, reached: Reached) {
+    fn relax(
+        &self,
+        labels: &mut Labels,
+        state: usize,
+        stop: StopCode,
+        time: u32,
+        reached: Reached,
+    ) {
         let mut queue = LinkQueue::new();
-        self.record(labels, state, tiploc, time, reached, &mut queue);
+        self.record(labels, state, stop, time, reached, &mut queue);
         self.drain_links(labels, &mut queue);
     }
 
@@ -363,25 +394,23 @@ impl<'a> Forward<'a> {
         &self,
         labels: &mut Labels,
         state: usize,
-        tiploc: &str,
+        stop: StopCode,
         time: u32,
         reached: Reached,
         queue: &mut LinkQueue,
     ) {
-        let tiploc = normalize_tiploc(tiploc);
+        let tiploc = stop.as_str();
         if !restrictions::allows_interchange(self.restrictions, tiploc) {
             return;
         }
         let grid = self.grid;
         // A walk on from a bus or ferry is a change off it: the alighting
-        // buffer comes first (`csa::alighting_buffer`). As in
+        // buffer comes first (`csa::Label::ready`). As in
         // `ready_states`, an advance (a waypoint or via reached here) owes
         // none of its own, matching `reverse::alighting_extra`.
         let walk_from = time
             + match &reached {
-                Reached::Train { connection, .. } => {
-                    self.interchange.modal_change.extra_for(&connection.uid)
-                }
+                Reached::Train { connection, .. } => self.modal.extra_for(connection.uid),
                 Reached::Link { .. } | Reached::Advance { .. } => 0,
             };
         let label = Label {
@@ -389,7 +418,7 @@ impl<'a> Forward<'a> {
             time,
             reached,
         };
-        if let Some(existing) = labels.stops.get_mut(tiploc) {
+        if let Some(existing) = labels.stops.get_mut(&stop) {
             // Already here as early at this state, or at one further along
             // (see the module doc on dominance).
             if existing
@@ -403,28 +432,28 @@ impl<'a> Forward<'a> {
                 None => existing.push(label),
             }
         } else {
-            labels.stops.insert(tiploc.to_string(), vec![label]);
+            labels.stops.insert(stop, vec![label]);
         }
         labels.touched = true;
         if state == grid.last()
-            && self.destinations.contains(tiploc)
+            && self.destinations.contains(&stop)
             && labels.best.as_ref().is_none_or(|(best, _)| time < *best)
         {
-            labels.best = Some((time, tiploc.to_string()));
+            labels.best = Some((time, stop));
         }
         let (at_stage, progress) = (grid.stage(state), grid.progress(state));
-        if at_stage < self.last_stage() && self.targets[at_stage].contains(tiploc) {
+        if at_stage < self.last_stage() && self.target_codes[at_stage].contains(&stop) {
             let next = grid.state(at_stage + 1, progress);
             let reached = Reached::Advance { from: state };
-            self.record(labels, next, tiploc, time, reached, queue);
+            self.record(labels, next, stop, time, reached, queue);
         }
         let passed = advance_at(self.vias, progress, tiploc);
         if passed != progress {
             let next = grid.state(at_stage, passed);
             let reached = Reached::Advance { from: state };
-            self.record(labels, next, tiploc, time, reached, queue);
+            self.record(labels, next, stop, time, reached, queue);
         }
-        queue.push(Reverse((walk_from, time, state, tiploc.to_string())));
+        queue.push(Reverse((walk_from, time, state, stop)));
     }
 
     /// Expands the queued labels' fixed links earliest first (a min-heap on
@@ -435,15 +464,15 @@ impl<'a> Forward<'a> {
     /// (`schedule_query::index_fixed_links_both_ways`) London's links are
     /// one dense component: as `csa::Scan::relax_fixed_links`.
     fn drain_links(&self, labels: &mut Labels, queue: &mut LinkQueue) {
-        while let Some(Reverse((walk_from, time, state, tiploc))) = queue.pop() {
+        while let Some(Reverse((walk_from, time, state, stop))) = queue.pop() {
             // Superseded by an earlier arrival at this state since queued.
             if labels
-                .label(&tiploc, state)
+                .label(stop, state)
                 .is_none_or(|label| label.time != time)
             {
                 continue;
             }
-            self.expand_links(labels, state, &tiploc, walk_from, queue);
+            self.expand_links(labels, state, stop, walk_from, queue);
         }
     }
 
@@ -457,31 +486,59 @@ impl<'a> Forward<'a> {
         &self,
         labels: &mut Labels,
         state: usize,
-        from_tiploc: &str,
+        from: StopCode,
         at: u32,
         queue: &mut LinkQueue,
     ) {
-        let from_tiploc = normalize_tiploc(from_tiploc);
-        let Some(crs) = self.interchange.tiploc_to_crs.get(from_tiploc) else {
-            return;
-        };
-        let restrictions = self.restrictions;
-        for link in fixed_links_from_where(self.interchange, crs, self.date, at, |link| {
-            restrictions::allows_link(restrictions, link)
-        }) {
-            let Some(destinations) = self.interchange.crs_to_tiplocs.get(&link.to_crs) else {
+        let from_tiploc = from.as_str();
+        let window = LinkWindow::new(self.date, at);
+        // `schedule_query::fixed_links_from_where`'s choice: the first link
+        // valid then to each CRS, in lookup order.
+        let mut last_to: Option<&str> = None;
+        for (link, destinations) in self.links_of(from).iter() {
+            if !restrictions::allows_link(self.restrictions, link)
+                || !window.applies(link)
+                || last_to == Some(link.to_crs.as_str())
+            {
                 continue;
-            };
-            for to_tiploc in destinations {
+            }
+            last_to = Some(link.to_crs.as_str());
+            for &to in destinations {
                 let reached = Reached::Link {
                     from_tiploc: from_tiploc.to_string(),
                     mode: link.mode.clone(),
                     minutes: link.minutes,
                 };
                 let arrival = at + link.minutes.max(0) as u32;
-                self.record(labels, state, to_tiploc, arrival, reached, queue);
+                self.record(labels, state, to, arrival, reached, queue);
             }
         }
+    }
+
+    /// `from`'s fixed links (see [`Forward::links`]).
+    fn links_of(&self, from: StopCode) -> StopLinks<'a> {
+        if let Some(cached) = self.links.borrow().get(&from) {
+            return Rc::clone(cached);
+        }
+        let interchange: &'a InterchangeData = self.interchange;
+        let links: Vec<(&'a FixedLink, Vec<StopCode>)> =
+            match interchange.tiploc_to_crs.get(from.as_str()) {
+                None => Vec::new(),
+                Some(crs) => links_in_lookup_order(interchange, crs)
+                    .into_iter()
+                    .map(|link| {
+                        let to = interchange
+                            .crs_to_tiplocs
+                            .get(&link.to_crs)
+                            .map(|tiplocs| tiplocs.iter().map(|t| code(t)).collect())
+                            .unwrap_or_default();
+                        (link, to)
+                    })
+                    .collect(),
+            };
+        let links: StopLinks<'a> = links.into();
+        self.links.borrow_mut().insert(from, Rc::clone(&links));
+        links
     }
 
     /// `csa::Scan::ready_source_at` for every state at once: the states at
@@ -496,32 +553,37 @@ impl<'a> Forward<'a> {
         labels: &Labels,
         connection: &Connection,
         aboard: &[usize],
-        siblings: &mut Vec<&'a str>,
+        siblings: &mut Vec<StopCode>,
         out: &mut Vec<(usize, u32, usize)>,
     ) {
         out.clear();
         siblings.clear();
         let grid = self.grid;
         let departure = connection.departure_min;
-        let boarding_extra = self.interchange.modal_change.extra_for(&connection.uid);
-        let tiploc = normalize_tiploc(&connection.from_tiploc);
-        let at_origin = self.origin.contains(tiploc);
+        let boarding_extra = self.modal.extra_for(connection.uid);
+        let from = connection.from_tiploc.normalized();
+        let tiploc = from.as_str();
+        let at_origin = self.origin.contains(&from);
         if at_origin
             && self.departure_min <= departure
             && !aboard.iter().any(|&known| grid.covers(known, 0))
         {
             out.push((0, self.departure_min, 0));
         }
-        siblings.extend(sibling_tiplocs(self.interchange, tiploc));
+        siblings.extend(
+            sibling_tiplocs(self.interchange, tiploc)
+                .into_iter()
+                .map(code),
+        );
         // The change time per stage, computed once.
         let mut changes: Vec<(usize, Option<u32>)> = Vec::new();
         for source in 0..=siblings.len() {
             let stop = if source == 0 {
-                tiploc
+                from
             } else {
                 siblings[source - 1]
             };
-            let Some(found) = labels.stops.get(stop) else {
+            let Some(found) = labels.stops.get(&stop) else {
                 continue;
             };
             for label in found {
@@ -555,7 +617,7 @@ impl<'a> Forward<'a> {
                     Reached::Train {
                         connection: arrived,
                         ..
-                    } => self.interchange.modal_change.extra_for(&arrived.uid),
+                    } => self.modal.extra_for(arrived.uid),
                     _ => 0,
                 };
                 let ready = label.time + change + boarding_extra + alighting_extra;
@@ -589,11 +651,11 @@ impl<'a> Forward<'a> {
     ) {
         let grid = self.grid;
         // Per train, the states it is ridden at and their boardings.
-        let mut aboard: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        let mut aboard: FxMap<TripCode, Vec<(usize, usize)>> = FxMap::default();
         let mut candidates: Vec<(usize, Candidate)> = Vec::new();
         let mut ready: Vec<(usize, u32, usize)> = Vec::new();
         let mut aboard_states: Vec<usize> = Vec::new();
-        let mut siblings: Vec<&'a str> = Vec::new();
+        let mut siblings: Vec<StopCode> = Vec::new();
         let mut riding: Vec<usize> = Vec::new();
         let mut continuations: Vec<(usize, usize, bool)> = Vec::new();
         for connection in connections {
@@ -606,12 +668,12 @@ impl<'a> Forward<'a> {
                 break;
             }
             if restrictions::blocks(self.restrictions, connection) {
-                aboard.remove(connection.uid.as_str());
+                aboard.remove(&connection.uid);
                 continue;
             }
             candidates.clear();
             aboard_states.clear();
-            if let Some(rides) = aboard.get(connection.uid.as_str()) {
+            if let Some(rides) = aboard.get(&connection.uid) {
                 candidates.extend(
                     rides
                         .iter()
@@ -652,7 +714,7 @@ impl<'a> Forward<'a> {
                     Candidate::Aboard(boarding) => boarding,
                     Candidate::Fresh(source) => {
                         let from = if source == 0 {
-                            normalize_tiploc(&connection.from_tiploc)
+                            connection.from_tiploc.normalized()
                         } else {
                             siblings[source - 1]
                         };
@@ -664,7 +726,7 @@ impl<'a> Forward<'a> {
                             state,
                         });
                         aboard
-                            .entry(connection.uid.to_string())
+                            .entry(connection.uid)
                             .or_default()
                             .push((state, arena.len() - 1));
                         arena.len() - 1
@@ -681,7 +743,7 @@ impl<'a> Forward<'a> {
                     self.relax(
                         current,
                         grid.state(stage, progress),
-                        &connection.to_tiploc,
+                        connection.to_tiploc.normalized(),
                         connection.arrival_min,
                         Reached::Train {
                             connection: connection.clone(),
@@ -691,7 +753,7 @@ impl<'a> Forward<'a> {
                     );
                 }
                 let next_stage = if stage < self.last_stage()
-                    && self.targets[stage].contains(normalize_tiploc(&connection.to_tiploc))
+                    && self.target_codes[stage].contains(&connection.to_tiploc.normalized())
                 {
                     stage + 1
                 } else {
@@ -705,7 +767,7 @@ impl<'a> Forward<'a> {
             // Staying aboard through the waypoint (a new part) or past a via
             // (the same leg), from the NEXT connection on.
             for &(state, previous, new_part) in &continuations {
-                let rides = aboard.entry(connection.uid.to_string()).or_default();
+                let rides = aboard.entry(connection.uid).or_default();
                 if rides.iter().any(|&(known, _)| grid.covers(known, state)) {
                     continue;
                 }
@@ -744,7 +806,7 @@ impl<'a> Forward<'a> {
         &self,
         rounds: &[(Labels, Vec<Boarding>)],
         start_round: usize,
-        destination: &str,
+        destination: StopCode,
         single_pass: bool,
     ) -> StagedJourney {
         let grid = self.grid;
@@ -761,14 +823,14 @@ impl<'a> Forward<'a> {
         let (mut round, mut state, mut stop) = (start_round, grid.last(), destination.to_string());
         let arrival_min = rounds[start_round]
             .0
-            .label(&stop, state)
+            .label(destination, state)
             .expect("internal error: the destination has a label")
             .time;
 
-        while !(state == 0 && self.origin.contains(&stop)) {
+        while !(state == 0 && self.origin.contains(&code(&stop))) {
             let label = rounds[round]
                 .0
-                .label(&stop, state)
+                .label(code(&stop), state)
                 .unwrap_or_else(|| panic!("internal error: {stop} (state {state}) has no source"));
             match &label.reached {
                 Reached::Advance { from } => {
@@ -949,9 +1011,9 @@ pub fn scan_staged(
         &mut arena,
         true,
     );
-    let (_, destination) = labels.best.clone()?;
+    let (_, destination) = labels.best?;
     let rounds = [(labels, arena)];
-    Some(forward.reconstruct(&rounds, 0, &destination, true))
+    Some(forward.reconstruct(&rounds, 0, destination, true))
 }
 
 /// The Pareto set over (arrival, changes for the whole journey) of journeys
@@ -993,14 +1055,14 @@ pub fn raptor_staged(
     let mut results: Vec<StagedJourney> = Vec::new();
     let mut running_best = u32::MAX;
     for round in 1..rounds.len() {
-        let Some((arrival, destination)) = rounds[round].0.best.clone() else {
+        let Some((arrival, destination)) = rounds[round].0.best else {
             continue;
         };
         if arrival >= running_best {
             continue;
         }
         running_best = arrival;
-        results.push(forward.reconstruct(&rounds, round, &destination, false));
+        results.push(forward.reconstruct(&rounds, round, destination, false));
     }
     results
 }
@@ -1012,6 +1074,8 @@ pub fn raptor_staged(
     reason = "test code: casts of small known test values; scenario tests read top to bottom"
 )]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::{
         RaptorOptions, ScanOptions, raptor_search_restricted, scan_connections_restricted,
@@ -2802,7 +2866,7 @@ mod tests {
             ic.crs_to_tiplocs
                 .insert(crs.to_string(), vec![tiploc.to_string()]);
         }
-        let walk = schedule_query::FixedLink {
+        let walk = FixedLink {
             only_without: schedule_query::OperatorId::UNKNOWN,
             operator: schedule_query::OperatorId::UNKNOWN,
             mode: "WALK".to_string(),

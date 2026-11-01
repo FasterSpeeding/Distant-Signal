@@ -11,7 +11,8 @@
 //! replaced UIDs, and the replacements -- in the same
 //! `(departure_min, uid, from_tiploc)` order `build_connections` sorts by.
 //!
-//! The base array is ~100 MB per day and shared through a cache, so the
+//! The base array is about 23 MB per day with `TfL` (some 710,000
+//! connections of 32 bytes, DS-225) and shared through a cache, so the
 //! alternative (clone, edit, re-sort per request) would cost far more than
 //! the search itself.
 //!
@@ -29,12 +30,17 @@
 
 use std::collections::HashSet;
 
-use schedule_query::Connection;
+use schedule_query::{Connection, TripCode};
+
+use crate::dense::FxSet;
 
 /// See the module doc.
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionOverlay {
     replaced_uids: HashSet<String>,
+    /// The same by code (DS-225): what an unindexed walk checks each base
+    /// connection against.
+    replaced: FxSet<TripCode>,
     replacements: Vec<Connection>,
     /// Which connections of one base array are withdrawn, when
     /// [`ConnectionOverlay::indexed`].
@@ -80,8 +86,11 @@ impl ConnectionOverlay {
         mut replacements: Vec<Connection>,
     ) -> Self {
         replacements.sort_by(|a, b| order_key(a).cmp(&order_key(b)));
+        let replaced_uids: HashSet<String> = replaced_uids.into_iter().collect();
+        let replaced = replaced_uids.iter().map(|uid| TripCode::new(uid)).collect();
         Self {
-            replaced_uids: replaced_uids.into_iter().collect(),
+            replaced_uids,
+            replaced,
             replacements,
             withdrawn: None,
         }
@@ -94,9 +103,9 @@ impl ConnectionOverlay {
     #[must_use]
     pub fn indexed(mut self, base: &[Connection]) -> Self {
         let mut bits = vec![0u64; base.len().div_ceil(64)];
-        if !self.replaced_uids.is_empty() {
+        if !self.replaced.is_empty() {
             for (position, connection) in base.iter().enumerate() {
-                if self.replaced_uids.contains(connection.uid.as_str()) {
+                if self.replaced.contains(&connection.uid) {
                     bits[position / 64] |= 1 << (position % 64);
                 }
             }
@@ -138,7 +147,7 @@ pub fn connections_from<'a>(
                 .partition_point(|c| c.departure_min < from_min);
             let withdrawn = match &overlay.withdrawn {
                 Some(index) if index.covers(base) => Withdrawn::Bits(index),
-                _ => Withdrawn::Uids(&overlay.replaced_uids),
+                _ => Withdrawn::Uids(&overlay.replaced),
             };
             (Some(withdrawn), &overlay.replacements[extra_start..])
         }
@@ -157,7 +166,7 @@ pub fn connections_from<'a>(
 /// How [`MergedConnections`] tells a withdrawn base connection.
 #[derive(Clone, Copy)]
 enum Withdrawn<'a> {
-    Uids(&'a HashSet<String>),
+    Uids(&'a FxSet<TripCode>),
     Bits(&'a WithdrawnIndex),
 }
 
@@ -176,9 +185,7 @@ impl<'a> MergedConnections<'a> {
     fn pull_base(&mut self) -> Option<&'a Connection> {
         match self.withdrawn {
             None => self.base.next(),
-            Some(Withdrawn::Uids(replaced)) => {
-                self.base.find(|c| !replaced.contains(c.uid.as_str()))
-            }
+            Some(Withdrawn::Uids(replaced)) => self.base.find(|c| !replaced.contains(&c.uid)),
             Some(Withdrawn::Bits(index)) => loop {
                 let connection = self.base.next()?;
                 let position = self.position;

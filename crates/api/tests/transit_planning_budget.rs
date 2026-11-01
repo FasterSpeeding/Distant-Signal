@@ -509,9 +509,9 @@ fn memory_budget() {
     // `GraphCache` keeps 2 dates by default (`TRIP_PLAN_GRAPH_CACHE_DATES`).
     let cached = 2 * delta;
     println!(
-        "rail day: {rail_connections} connections, {:.1} MB; with Metrolink: +{trams} connections, \
-         {:.1} MB; per date +{:.1} MB (of which the interchange copy {:.1} MB), for 2 cached \
-         dates +{:.1} MB (budget 25 MB){}",
+        "rail day: {rail_connections} connections, {:.1} MB (budget 32 MB); with Metrolink: \
+         +{trams} connections, {:.1} MB; per date +{:.1} MB (of which the interchange copy {:.1} \
+         MB), for 2 cached dates +{:.1} MB (budget 25 MB){}",
         mb(rail),
         mb(both),
         mb(delta),
@@ -528,14 +528,26 @@ fn memory_budget() {
         "{rail_connections}"
     );
     assert!((24_000..34_000).contains(&trams), "{trams}");
-    // No budget assertion: this prints the figure (and "OVER BUDGET") for
-    // the PR and the card. The budget is checked on a copy of production
-    // (phase M4), where the interchange table's real size applies.
+    // No budget assertion for the trams: this prints the figure (and "OVER
+    // BUDGET") for the PR and the card. The budget is checked on a copy of
+    // production (phase M4), where the interchange table's real size
+    // applies.
+    //
+    // The rail day itself is asserted (DS-225): its connections are 32
+    // bytes each, about 15 MB of the 25.5 measured, so 32 MB catches a
+    // regression to wider connections (96 bytes was 64 MB) with room for
+    // the allocator.
+    assert!(
+        rail <= 32 * 1_048_576,
+        "rail day {:.1} MB over its 32 MB budget",
+        mb(rail)
+    );
 }
 
 /// The `TfL` network's memory (the `TfL` transit design §11.2): the rail
 /// graph, then the same with Metrolink and `TfL`, both held. Budget: at
-/// most 60 MB more for the two cached dates than Metrolink alone.
+/// most 30 MB more for the two cached dates than Metrolink alone (60 MB
+/// until DS-225's 32-byte connections; measured 21.6 MB after).
 #[test]
 #[ignore = "benchmark; see the module doc"]
 fn memory_budget_with_tfl() {
@@ -556,19 +568,24 @@ fn memory_budget_with_tfl() {
     let cached = 2 * delta;
     println!(
         "with Metrolink: {} connections, {:.1} MB; with TfL too: +{tfl} connections, {:.1} MB; \
-         per date +{:.1} MB, for 2 cached dates +{:.1} MB (budget 60 MB){}",
+         per date +{:.1} MB, for 2 cached dates +{:.1} MB (budget 30 MB){}",
         metrolink_graph.connections.len(),
         mb(metrolink),
         mb(both),
         mb(delta),
         mb(cached),
-        if cached <= 60 * 1_048_576 {
+        if cached <= 30 * 1_048_576 {
             ""
         } else {
             ": OVER BUDGET"
         }
     );
     assert!((200_000..260_000).contains(&tfl), "{tfl}");
+    assert!(
+        cached <= 30 * 1_048_576,
+        "TfL for 2 dates {:.1} MB over its 30 MB budget",
+        mb(cached)
+    );
 }
 
 /// What holding one more graph with `days` adds to the resident set.
@@ -779,8 +796,8 @@ fn operator_table_memory() {
     }
     assert_eq!(
         size_of::<Connection>(),
-        96,
-        "the operator id must fit Connection's padding"
+        32,
+        "the operator id must fit Connection's 32 bytes (DS-225)"
     );
     assert_eq!(
         size_of::<FixedLink>(),

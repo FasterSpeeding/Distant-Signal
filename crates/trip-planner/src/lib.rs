@@ -9,6 +9,7 @@
 
 pub mod access;
 pub mod csa;
+mod dense;
 pub mod options;
 pub mod overlay;
 pub mod raptor;

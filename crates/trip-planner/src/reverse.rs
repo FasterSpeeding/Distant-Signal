@@ -43,15 +43,18 @@
 //!
 //! See docs/superpowers/specs/2026-09-29-trips-plan-arrive-by-avoid-design.md.
 
+use std::cell::RefCell;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::rc::Rc;
 
 use chrono::NaiveDate;
 use schedule_query::{
-    Connection, InterchangeData, fixed_link_between_where, fixed_links_between, normalize_tiploc,
-    sibling_tiplocs,
+    Connection, FixedLink, InterchangeData, LinkWindow, StopCode, TripCode, fixed_links_between,
+    normalize_tiploc, sibling_tiplocs,
 };
 
 use crate::csa::{Goal, Journey, ScanOptions, scan};
+use crate::dense::{FxMap, FxSet, ModalBuffer};
 use crate::overlay::ConnectionOverlay;
 use crate::raptor::{RaptorJourney, RaptorOptions, raptor_search_restricted};
 use crate::restrictions::{self, Restrictions};
@@ -84,10 +87,11 @@ pub struct ArriveByOptions<'a> {
 /// progress `v` = the first `v` vias passed).
 #[derive(Clone)]
 struct Labels {
-    /// Per stop, `(state, latest)`: the latest time a traveller may have
-    /// ARRIVED there (by train or walk), at that state, and still reach the
-    /// destination by the deadline. At most one entry per state.
-    latest_arrival: HashMap<String, Vec<(usize, u32)>>,
+    /// Per stop (by normalized code, DS-225), `(state, latest)`: the latest
+    /// time a traveller may have ARRIVED there (by train or walk), at that
+    /// state, and still reach the destination by the deadline. At most one
+    /// entry per state.
+    latest_arrival: FxMap<StopCode, Vec<(usize, u32)>>,
     /// Latest departure from the origin found so far.
     origin_departure: Option<u32>,
     touched: bool,
@@ -96,7 +100,7 @@ struct Labels {
 impl Labels {
     fn new() -> Self {
         Self {
-            latest_arrival: HashMap::new(),
+            latest_arrival: FxMap::default(),
             origin_departure: None,
             touched: false,
         }
@@ -116,14 +120,35 @@ struct Reverse<'a> {
     vias: Option<&'a Vias>,
     grid: Grid,
     date: NaiveDate,
-    origin: HashSet<String>,
-    /// `targets[s]`: waypoint `s`'s TIPLOCs.
+    /// The origin's TIPLOCs, by normalized code.
+    origin: FxSet<StopCode>,
+    /// `targets[s]`: waypoint `s`'s TIPLOCs (what `staged::change_minutes`
+    /// reads), and the same by normalized code.
     targets: Vec<HashSet<String>>,
-    /// The destination's TIPLOCs: arriving there by bus or ferry is no
-    /// change, so it owes no buffer.
-    destinations: HashSet<String>,
+    target_codes: Vec<FxSet<StopCode>>,
+    /// The destination's TIPLOCs, by normalized code: arriving there by bus
+    /// or ferry is no change, so it owes no buffer.
+    destinations: FxSet<StopCode>,
     /// to-CRS -> every CRS with at least one fixed link into it.
     links_into: HashMap<&'a str, Vec<&'a str>>,
+    /// Per stop, the links into it, read on first use (see
+    /// [`Reverse::links_back`]).
+    links_back: RefCell<FxMap<StopCode, Rc<[LinkBack<'a>]>>>,
+    modal: ModalBuffer,
+}
+
+/// The fixed links into a stop's CRS from one other CRS: every one the
+/// restrictions allow (in `fixed_links_between`'s order), their distinct
+/// strictly positive minutes ascending, and the other CRS's stops.
+struct LinkBack<'a> {
+    links: Vec<&'a FixedLink>,
+    minutes: Vec<u32>,
+    from: Vec<StopCode>,
+}
+
+/// `tiploc`'s normalized code.
+fn code(tiploc: &str) -> StopCode {
+    StopCode::new(normalize_tiploc(tiploc))
 }
 
 impl<'a> Reverse<'a> {
@@ -143,16 +168,21 @@ impl<'a> Reverse<'a> {
                 .map(|t| normalize_tiploc(t).to_string())
                 .collect()
         };
+        let codes =
+            |tiplocs: &[String]| -> FxSet<StopCode> { tiplocs.iter().map(|t| code(t)).collect() };
         Self {
             interchange: options.interchange,
             restrictions,
             vias: options.vias,
             grid: Grid::new(options.waypoints.len(), options.vias),
             date: options.date,
-            origin: set(options.from_tiplocs),
+            origin: codes(options.from_tiplocs),
             targets: options.waypoints.iter().map(|w| set(w)).collect(),
-            destinations: set(options.to_tiplocs),
+            target_codes: options.waypoints.iter().map(|w| codes(w)).collect(),
+            destinations: codes(options.to_tiplocs),
             links_into,
+            links_back: RefCell::default(),
+            modal: ModalBuffer::new(&options.interchange.modal_change),
         }
     }
 
@@ -161,7 +191,12 @@ impl<'a> Reverse<'a> {
     fn initial_labels(&self, options: &ArriveByOptions<'_>) -> Labels {
         let mut labels = Labels::new();
         for tiploc in options.to_tiplocs {
-            self.set_arrival(&mut labels, self.grid.last(), tiploc, options.arrive_by_min);
+            self.set_arrival(
+                &mut labels,
+                self.grid.last(),
+                code(tiploc),
+                options.arrive_by_min,
+            );
         }
         labels
     }
@@ -183,85 +218,66 @@ impl<'a> Reverse<'a> {
         clippy::cast_sign_loss,
         reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
     )]
-    fn set_arrival(&self, labels: &mut Labels, state: usize, tiploc: &str, time: u32) {
-        let tiploc = normalize_tiploc(tiploc);
-        if !self.record_arrival(labels, state, tiploc, time) {
+    fn set_arrival(&self, labels: &mut Labels, state: usize, stop: StopCode, time: u32) {
+        if !self.record_arrival(labels, state, stop, time) {
             return;
         }
-        let mut queue: BinaryHeap<(u32, usize, String)> = BinaryHeap::new();
-        queue.push((time, state, tiploc.to_string()));
-        while let Some((time, state, tiploc)) = queue.pop() {
-            let tiploc = tiploc.as_str();
+        // `StopCode` orders by its text, so ties pop as they did when this
+        // queue held the TIPLOC strings themselves.
+        let mut queue: BinaryHeap<(u32, usize, StopCode)> = BinaryHeap::new();
+        queue.push((time, state, stop));
+        while let Some((time, state, stop)) = queue.pop() {
+            let tiploc = stop.as_str();
             // Superseded: a later arrival for this state was recorded (and
             // expanded) after this entry was queued.
             let current = labels
                 .latest_arrival
-                .get(tiploc)
+                .get(&stop)
                 .and_then(|found| found.iter().find(|(known, _)| *known == state))
                 .map(|&(_, latest)| latest);
             if current != Some(time) {
                 continue;
             }
-            let mut push = |labels: &mut Labels, state: usize, tiploc: &str, time: u32| {
-                if self.record_arrival(labels, state, tiploc, time) {
-                    queue.push((time, state, tiploc.to_string()));
+            let mut push = |labels: &mut Labels, state: usize, stop: StopCode, time: u32| {
+                if self.record_arrival(labels, state, stop, time) {
+                    queue.push((time, state, stop));
                 }
             };
             let grid = self.grid;
             let (at_stage, progress) = (grid.stage(state), grid.progress(state));
-            if at_stage > 0 && self.targets[at_stage - 1].contains(tiploc) {
-                push(labels, grid.state(at_stage - 1, progress), tiploc, time);
+            if at_stage > 0 && self.target_codes[at_stage - 1].contains(&stop) {
+                push(labels, grid.state(at_stage - 1, progress), stop, time);
             }
             // Arriving here with the via before `progress` still to pass
             // passes it on arrival.
             if progress > 0 && advance_at(self.vias, progress - 1, tiploc) >= progress {
-                push(labels, grid.state(at_stage, progress - 1), tiploc, time);
+                push(labels, grid.state(at_stage, progress - 1), stop, time);
             }
 
-            let Some(crs) = self.interchange.tiploc_to_crs.get(tiploc) else {
-                continue;
-            };
-            let Some(sources) = self.links_into.get(crs.as_str()) else {
-                continue;
-            };
-            for &from_crs in sources {
-                let allowed = |link: &schedule_query::FixedLink| {
-                    restrictions::allows_link(self.restrictions, link)
-                };
-                let mut minutes: Vec<u32> = fixed_links_between(self.interchange, from_crs, crs)
-                    .filter(|link| link.minutes > 0 && allowed(link))
-                    .map(|link| link.minutes as u32)
-                    .collect();
-                minutes.sort_unstable();
-                minutes.dedup();
-                for walk in minutes {
+            for back in self.links_back(stop).iter() {
+                for &walk in &back.minutes {
                     let Some(start) = time.checked_sub(walk) else {
                         continue;
                     };
                     // The forward search takes the shortest link valid at
-                    // the walk's start time; accept `start` only if that
-                    // link arrives in time.
-                    let fits = fixed_link_between_where(
-                        self.interchange,
-                        from_crs,
-                        crs,
-                        self.date,
-                        start,
-                        allowed,
-                    )
-                    .is_some_and(|link| start + link.minutes.max(0) as u32 <= time);
+                    // the walk's start time (`fixed_link_between_where`:
+                    // the first in lookup order); accept `start` only if
+                    // that link arrives in time.
+                    let window = LinkWindow::new(self.date, start);
+                    let fits = back
+                        .links
+                        .iter()
+                        .filter(|link| window.applies(link))
+                        .min_by(|a, b| (a.minutes, &a.mode).cmp(&(b.minutes, &b.mode)))
+                        .is_some_and(|link| start + link.minutes.max(0) as u32 <= time);
                     if !fits {
                         continue;
                     }
-                    let Some(from_tiplocs) = self.interchange.crs_to_tiplocs.get(from_crs) else {
-                        continue;
-                    };
-                    for from_tiploc in from_tiplocs {
-                        let from_tiploc = normalize_tiploc(from_tiploc);
-                        if state == 0 && self.origin.contains(from_tiploc) {
+                    for &from in &back.from {
+                        if state == 0 && self.origin.contains(&from) {
                             labels.offer_origin(start);
                         } else {
-                            push(labels, state, from_tiploc, start);
+                            push(labels, state, from, start);
                         }
                     }
                 }
@@ -269,15 +285,58 @@ impl<'a> Reverse<'a> {
         }
     }
 
+    /// The fixed links into `stop`'s CRS, by the CRS they leave from (see
+    /// [`LinkBack`]): read once per search (DS-225).
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "only links of strictly positive minutes are listed"
+    )]
+    fn links_back(&self, stop: StopCode) -> Rc<[LinkBack<'a>]> {
+        if let Some(cached) = self.links_back.borrow().get(&stop) {
+            return Rc::clone(cached);
+        }
+        let interchange: &'a InterchangeData = self.interchange;
+        let mut backs: Vec<LinkBack<'a>> = Vec::new();
+        if let Some(crs) = interchange.tiploc_to_crs.get(stop.as_str())
+            && let Some(sources) = self.links_into.get(crs.as_str())
+        {
+            for &from_crs in sources {
+                let links: Vec<&'a FixedLink> = fixed_links_between(interchange, from_crs, crs)
+                    .filter(|link| restrictions::allows_link(self.restrictions, link))
+                    .collect();
+                let mut minutes: Vec<u32> = links
+                    .iter()
+                    .filter(|link| link.minutes > 0)
+                    .map(|link| link.minutes as u32)
+                    .collect();
+                minutes.sort_unstable();
+                minutes.dedup();
+                let from: Vec<StopCode> = interchange
+                    .crs_to_tiplocs
+                    .get(from_crs)
+                    .map(|tiplocs| tiplocs.iter().map(|t| code(t)).collect())
+                    .unwrap_or_default();
+                backs.push(LinkBack {
+                    links,
+                    minutes,
+                    from,
+                });
+            }
+        }
+        let backs: Rc<[LinkBack<'a>]> = backs.into();
+        self.links_back.borrow_mut().insert(stop, Rc::clone(&backs));
+        backs
+    }
+
     /// Records that `tiploc` may be arrived at, at `state`, as late as
     /// `time`, unless that is dominated. Returns whether it was recorded
     /// (and so needs propagating).
-    fn record_arrival(&self, labels: &mut Labels, state: usize, tiploc: &str, time: u32) -> bool {
-        if !restrictions::allows_interchange(self.restrictions, tiploc) {
+    fn record_arrival(&self, labels: &mut Labels, state: usize, stop: StopCode, time: u32) -> bool {
+        if !restrictions::allows_interchange(self.restrictions, stop.as_str()) {
             return false;
         }
         let grid = self.grid;
-        if let Some(existing) = labels.latest_arrival.get_mut(tiploc) {
+        if let Some(existing) = labels.latest_arrival.get_mut(&stop) {
             // Dominated: a plan from here that still has to pass MORE of the
             // waypoints and vias works at least this late, and serves this
             // state too.
@@ -292,9 +351,7 @@ impl<'a> Reverse<'a> {
                 None => existing.push((state, time)),
             }
         } else {
-            labels
-                .latest_arrival
-                .insert(tiploc.to_string(), vec![(state, time)]);
+            labels.latest_arrival.insert(stop, vec![(state, time)]);
         }
         labels.touched = true;
         true
@@ -307,18 +364,18 @@ impl<'a> Reverse<'a> {
     /// the last via, it is a change like any other), nor at the waypoint
     /// the stage calls at (the forward searches advance through it without
     /// a change label).
-    fn alighting_extra(&self, stage: usize, progress: usize, to: &str, uid: &str) -> u32 {
-        let arriving = if stage == self.targets.len() {
-            self.destinations.contains(to)
-                && advance_at(self.vias, progress, to) == self.via_count()
-        } else {
-            self.targets[stage].contains(to)
-        };
-        if arriving {
-            0
-        } else {
-            self.interchange.modal_change.extra_for(uid)
+    fn alighting_extra(&self, stage: usize, progress: usize, to: StopCode, uid: TripCode) -> u32 {
+        let extra = self.modal.extra_for(uid);
+        if extra == 0 {
+            return 0;
         }
+        let arriving = if stage == self.targets.len() {
+            self.destinations.contains(&to)
+                && advance_at(self.vias, progress, to.as_str()) == self.via_count()
+        } else {
+            self.target_codes[stage].contains(&to)
+        };
+        if arriving { 0 } else { extra }
     }
 
     /// One backward sweep over `connections` (descending order). `previous`
@@ -329,7 +386,7 @@ impl<'a> Reverse<'a> {
         let vias = self.via_count();
         // Per UID, the states at which a traveller aboard (from its later
         // connections) can stay on and still make it.
-        let mut aboard_ok: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut aboard_ok: FxMap<TripCode, Vec<usize>> = FxMap::default();
         // `after[v]`: the via progress after riding this connection from `v`.
         let mut after: Vec<usize> = Vec::with_capacity(vias + 1);
         let mut ok_states: Vec<usize> = Vec::new();
@@ -344,12 +401,12 @@ impl<'a> Reverse<'a> {
             {
                 break;
             }
-            let uid = connection.uid.as_str();
+            let uid = connection.uid;
             if restrictions::blocks(self.restrictions, connection) {
-                aboard_ok.remove(uid);
+                aboard_ok.remove(&uid);
                 continue;
             }
-            let to = normalize_tiploc(&connection.to_tiploc);
+            let to = connection.to_tiploc.normalized();
             after.clear();
             after.extend((0..=vias).map(|v| advance(self.vias, v, connection)));
             // Every state at which riding this connection works, decided
@@ -371,7 +428,7 @@ impl<'a> Reverse<'a> {
             {
                 let labels = previous.unwrap_or(&*current);
                 if connection.can_alight
-                    && let Some(found) = labels.latest_arrival.get(to)
+                    && let Some(found) = labels.latest_arrival.get(&to)
                 {
                     for &(state, latest) in found {
                         if connection.arrival_min
@@ -383,11 +440,11 @@ impl<'a> Reverse<'a> {
                     }
                 }
             }
-            if let Some(states) = aboard_ok.get(uid) {
+            if let Some(states) = aboard_ok.get(&uid) {
                 for &state in states {
                     let (stage, progress) = (grid.stage(state), grid.progress(state));
                     from_after(stage, progress);
-                    if stage > 0 && self.targets[stage - 1].contains(to) {
+                    if stage > 0 && self.target_codes[stage - 1].contains(&to) {
                         from_after(stage - 1, progress);
                     }
                 }
@@ -406,7 +463,7 @@ impl<'a> Reverse<'a> {
                 }
             }
 
-            let from = normalize_tiploc(&connection.from_tiploc);
+            let from = connection.from_tiploc.normalized();
             let rides = aboard_ok.entry(uid).or_default();
             for &state in &recorded {
                 if !rides.iter().any(|&known| grid.covers(state, known)) {
@@ -431,13 +488,13 @@ impl<'a> Reverse<'a> {
         &self,
         current: &mut Labels,
         connection: &Connection,
-        from: &str,
-        uid: &str,
+        from: StopCode,
+        uid: TripCode,
         recorded: &[usize],
     ) {
         let grid = self.grid;
         for &state in recorded {
-            if state == 0 && self.origin.contains(from) {
+            if state == 0 && self.origin.contains(&from) {
                 current.offer_origin(connection.departure_min);
                 continue;
             }
@@ -447,7 +504,7 @@ impl<'a> Reverse<'a> {
                     self.restrictions,
                     &self.targets,
                     stage,
-                    from,
+                    from.as_str(),
                 )
             };
             let (mut at, stage) = (state, grid.stage(state));
@@ -458,7 +515,9 @@ impl<'a> Reverse<'a> {
             // stand for that boarding: it dominated it in `aboard_ok`
             // when the train reaches another stop of the same waypoint
             // later (an OR group's member, 2026-10-07).
-            if change.is_none() && stage < self.targets.len() && self.targets[stage].contains(from)
+            if change.is_none()
+                && stage < self.targets.len()
+                && self.target_codes[stage].contains(&from)
             {
                 change = change_at(stage + 1);
                 at = grid.state(stage + 1, grid.progress(state));
@@ -466,13 +525,13 @@ impl<'a> Reverse<'a> {
             let Some(change) = change else {
                 continue;
             };
-            let change = change + self.interchange.modal_change.extra_for(uid);
+            let change = change + self.modal.extra_for(uid);
             let Some(ready_by) = connection.departure_min.checked_sub(change) else {
                 continue;
             };
             self.set_arrival(current, at, from, ready_by);
-            for sibling in sibling_tiplocs(self.interchange, from) {
-                self.set_arrival(current, at, sibling, ready_by);
+            for sibling in sibling_tiplocs(self.interchange, from.as_str()) {
+                self.set_arrival(current, at, code(sibling), ready_by);
             }
         }
     }
