@@ -4549,6 +4549,12 @@ mod db_tests {
     /// - the terminating stop (on no departure board) stays `None`.
     ///
     /// Times are relative to now: boards older than 10 minutes are ignored.
+    /// So a stop can fall either side of London midnight, and its
+    /// `dayOffset` is its ARRIVAL's day, as the schedule stores it (R-043):
+    /// a stop booked to arrive 23:59 and depart 00:00 has offset 0, and its
+    /// departure is dated to the next day from the pair. Taking the offset
+    /// from the departure instead dated that departure a day too late, so
+    /// the test failed whenever it ran at 23:10 or 23:20 London.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 build_journey_stops_attaches_each_calling_points_own_board_platform \
@@ -4569,6 +4575,23 @@ mod db_tests {
         let hhmm = |at: &DateTime<chrono_tz::Tz>| at.format("%H:%M").to_string();
         let hhmmss = |at: &DateTime<chrono_tz::Tz>| at.format("%H:%M:%S").to_string();
         let day_offset = |at: &DateTime<chrono_tz::Tz>| (at.date_naive() - service_date).num_days();
+        let intermediate_arrival = intermediate_at - Duration::minutes(1);
+        let cancelled_arrival = cancelled_at - Duration::minutes(1);
+
+        // Before seeding and again on drop, pass or fail: a failure must not
+        // leave its `schedule_destination_departures` row (a real date)
+        // behind, which widens `GET /trains/search`'s published range for
+        // every later test.
+        let _cleanup = crate::test_support::FixtureCleanup::new(
+            &pool,
+            [
+                "DELETE FROM station_samples WHERE crs IN ('ZPA', 'ZPB', 'ZPD')",
+                "DELETE FROM stanox_crs WHERE tiploc IN ('ZTJPA', 'ZTJPBX', 'ZTJPC', 'ZTJPD')",
+                "DELETE FROM schedule_destination_departures WHERE train_uid = 'TSTJPLT'",
+                "DELETE FROM trains WHERE train_uid = 'TSTJPLT'",
+            ],
+        )
+        .await;
 
         let trains_id = crate::data::trains::find_or_create_train(&pool, "TSTJPLT", service_date)
             .await
@@ -4666,12 +4689,12 @@ mod db_tests {
             { "tiploc": "ZTJPA", "kind": "Origin", "dayOffset": 0,
               "bookedArrival": null, "bookedDeparture": hhmmss(&origin_at), "platform": "6" },
             { "tiploc": "ZTJPBX", "kind": "Intermediate",
-              "dayOffset": day_offset(&intermediate_at),
-              "bookedArrival": hhmmss(&(intermediate_at - Duration::minutes(1))),
+              "dayOffset": day_offset(&intermediate_arrival),
+              "bookedArrival": hhmmss(&intermediate_arrival),
               "bookedDeparture": hhmmss(&intermediate_at) },
             { "tiploc": "ZTJPD", "kind": "Intermediate",
-              "dayOffset": day_offset(&cancelled_at),
-              "bookedArrival": hhmmss(&(cancelled_at - Duration::minutes(1))),
+              "dayOffset": day_offset(&cancelled_arrival),
+              "bookedArrival": hhmmss(&cancelled_arrival),
               "bookedDeparture": hhmmss(&cancelled_at) },
             { "tiploc": "ZTJPC", "kind": "Terminate", "dayOffset": day_offset(&terminus_at),
               "bookedArrival": hhmmss(&terminus_at), "bookedDeparture": null }
@@ -4721,24 +4744,6 @@ mod db_tests {
         assert_eq!(stops[0].booked_platform.as_deref(), Some("6"));
         assert_eq!(stops[1].booked_platform, None);
         assert_eq!(stops[3].booked_platform, None);
-
-        sqlx::query("DELETE FROM station_samples WHERE crs IN ('ZPA', 'ZPB', 'ZPD')")
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM stanox_crs WHERE tiploc IN ('ZTJPA', 'ZTJPBX', 'ZTJPC', 'ZTJPD')")
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TSTJPLT'")
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM trains WHERE id = $1")
-            .bind(trains_id)
-            .execute(&pool)
-            .await
-            .ok();
     }
 
     /// End-to-end (real Postgres) counterpart to the pure
