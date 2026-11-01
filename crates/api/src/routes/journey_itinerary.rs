@@ -119,6 +119,15 @@ pub(crate) struct ItineraryLegRequest {
     origin_stop_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     destination_stop_id: Option<String>,
+    /// A timetabled leg's network ride (DS-237, additive; skipped when
+    /// absent, so older bodies hash as before):
+    /// `journeys::attach_leg_timetable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transit_network: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transit_line_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    headsign: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -265,12 +274,24 @@ pub(crate) enum ValidLeg {
         origin_crs: Option<String>,
         destination_crs: Option<String>,
     },
-    /// Its stop ids are checked against `tfl_stops` when it is saved.
+    /// Its stop ids are checked against `tfl_stops`, and its network ride
+    /// against the timetable, when it is saved.
     Untracked {
         leg: journeys::UntrackedLeg,
         origin_stop_id: Option<String>,
         destination_stop_id: Option<String>,
+        ride: Box<RideRequest>,
     },
+}
+
+/// An untracked leg's network ride as the body names it (DS-237),
+/// checked by `journeys::attach_leg_timetable` when it is saved. Boxed in
+/// [`ValidLeg`]: most legs have none.
+#[derive(Debug)]
+pub(crate) struct RideRequest {
+    transit_network: Option<String>,
+    transit_line_id: Option<String>,
+    headsign: Option<String>,
 }
 
 fn invalid(message: impl Into<String>) -> RouteError {
@@ -364,10 +385,14 @@ pub(crate) fn validate_leg(
                 || leg.planned_arrival.is_some()
                 || leg.origin_stop_id.is_some()
                 || leg.destination_stop_id.is_some()
+                || leg.transit_network.is_some()
+                || leg.transit_line_id.is_some()
+                || leg.headsign.is_some()
             {
                 return Err(invalid(
                     "A train leg takes no transitMode, originName, destinationName, lineName, \
-                     plannedDeparture, plannedArrival, originStopId or destinationStopId.",
+                     plannedDeparture, plannedArrival, originStopId, destinationStopId, \
+                     transitNetwork, transitLineId or headsign.",
                 ));
             }
             let (Some(train_uid), Some(service_date)) = (&leg.train_uid, leg.service_date) else {
@@ -420,6 +445,11 @@ pub(crate) fn validate_leg(
                 leg: untracked,
                 origin_stop_id: leg.origin_stop_id.clone(),
                 destination_stop_id: leg.destination_stop_id.clone(),
+                ride: Box::new(RideRequest {
+                    transit_network: leg.transit_network.clone(),
+                    transit_line_id: leg.transit_line_id.clone(),
+                    headsign: leg.headsign.clone(),
+                }),
             })
         }
         Some(_) => Err(invalid("A leg's kind must be train or untracked.")),
@@ -508,6 +538,7 @@ pub(crate) async fn resolve_legs(
                 leg,
                 origin_stop_id,
                 destination_stop_id,
+                ride,
             } => {
                 let leg = journeys::attach_untracked_stops(
                     &app.database,
@@ -517,6 +548,16 @@ pub(crate) async fn resolve_legs(
                 )
                 .await
                 .map_err(internal("check untracked leg stops"))?
+                .map_err(invalid)?;
+                let leg = journeys::attach_leg_timetable(
+                    &app.database,
+                    leg,
+                    ride.transit_network.as_deref(),
+                    ride.transit_line_id.as_deref(),
+                    ride.headsign.as_deref(),
+                )
+                .await
+                .map_err(internal("check the leg's timetable"))?
                 .map_err(invalid)?;
                 resolved.push(journeys::ItineraryLeg::Untracked(leg));
             }

@@ -700,6 +700,12 @@ export interface UntrackedLegFields {
   /** The TfL stops its places were picked from, `null` for free text. */
   originStopId?: string | null;
   destinationStopId?: string | null;
+  /** A timetabled leg's network ride (DS-237): its network (`tfl`,
+   * `metrolink`), its line's local id (`victoria`) and its headsign.
+   * `null` on other legs; absent from an older backend. */
+  transitNetwork?: string | null;
+  transitLineId?: string | null;
+  headsign?: string | null;
 }
 export type JourneyStatus = 'awaiting_activation' | 'en_route' | 'cancelled' | 'completed';
 // `previous-working`: a predicted late start from the incoming train
@@ -1532,6 +1538,40 @@ export interface JourneyLegDetail extends UntrackedLegFields {
   /** The legs of the previous plan this leg replaced (mid-journey changes
    * spec 2026-10-22 §7). Usually empty; absent from an older backend. */
   replacesLegIds?: number[];
+  /** A timetabled leg's ride as its network's timetable has it now
+   * (DS-237). Scheduled times only, never live. Absent on other legs. */
+  timetable?: LegTimetable;
+}
+
+/** How a timetabled leg's ride stands in the network's timetable now:
+ * `matched` (at the planned times), `retimed` (the nearest ride runs at
+ * other times), `notInTimetable` (none near the planned time, though the
+ * line runs between the stops that day), `noService` (nothing between the
+ * stops that day) or `noTimetable` (no timetable for the date). */
+export type LegTimetableState = 'matched' | 'retimed' | 'notInTimetable' | 'noService' | 'noTimetable';
+
+/** One stop of a timetabled ride, boarding to alighting. */
+export interface LegTimetableCall {
+  stopId: string;
+  name: string;
+  platform: string | null;
+  /** `null` at the boarding stop. RFC3339. */
+  scheduledArrival: string | null;
+  /** `null` at the alighting stop. RFC3339. */
+  scheduledDeparture: string | null;
+}
+
+/** `JourneyLegDetail.timetable`. */
+export interface LegTimetable {
+  network: string;
+  line: { id: string; name: string; colour: string | null; mode: string | null } | null;
+  state: LegTimetableState;
+  scheduledDeparture: string | null;
+  scheduledArrival: string | null;
+  headsign: string | null;
+  calls: LegTimetableCall[];
+  headwayMinutes?: number;
+  notices: TripPlanTransitNotice[];
 }
 
 /** How a change between two legs stands: `ok`, `atRisk` (little time left
@@ -2001,6 +2041,8 @@ export interface TripPlanTransitNotice {
   description: string;
   message: string;
   reason: string | null;
+  /** The situation behind it, for its page; absent for TfL's status. */
+  situationId?: string;
 }
 
 /** The tram end of a rail-to-tram walk. `towardsStop`: walking from the

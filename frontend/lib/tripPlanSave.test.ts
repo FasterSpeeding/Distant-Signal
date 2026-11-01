@@ -448,6 +448,8 @@ describe('itineraryLegsForSaving with a tram leg', () => {
         destinationStopId: '940GZZLUBXN',
         plannedDeparture: '2026-11-04T08:14:00.000Z',
         plannedArrival: '2026-11-04T08:22:00.000Z',
+        transitNetwork: 'tfl',
+        transitLineId: 'victoria',
       },
     ]);
   });
@@ -477,6 +479,10 @@ describe('itineraryLegsForSaving with a tram leg', () => {
         // The tram's own times, not borrowed from the trains either side.
         plannedDeparture: '2026-11-04T08:14:00.000Z',
         plannedArrival: '2026-11-04T08:22:00.000Z',
+        // Its network ride, to find it in the timetable again (DS-237).
+        transitNetwork: 'metrolink',
+        transitLineId: 'blue',
+        headsign: 'Bury',
       },
       {
         kind: 'untracked',
@@ -506,6 +512,19 @@ describe('itineraryLegsForSaving with a tram leg', () => {
       plannedDeparture: '2026-11-04T08:15:00.000Z',
       plannedArrival: '2026-11-04T08:31:00.000Z',
     });
+  });
+
+  it('saves a Tube ride with its network and line, and no headsign when it has none', () => {
+    const [leg] = itineraryLegsForSaving([{ legs: [TUBE_LEG], changeCount: 0, totalDurationMinutes: 8 }], mcrName);
+    expect(leg).toMatchObject({
+      kind: 'untracked',
+      transitMode: 'tube',
+      originStopId: '940GZZLUKSX',
+      destinationStopId: '940GZZLUBXN',
+      transitNetwork: 'tfl',
+      transitLineId: 'victoria',
+    });
+    expect(leg).not.toHaveProperty('headsign');
   });
 
   it('a tram-only plan has no train to track', () => {
@@ -555,6 +574,8 @@ describe('itineraryLegsForSaving sends stop ids only where the api takes them', 
         destinationStopId: '940GZZLUWBN',
         plannedDeparture: '2026-11-02T09:09:00.000Z',
         plannedArrival: '2026-11-02T09:25:00.000Z',
+        transitNetwork: 'tfl',
+        transitLineId: 'district',
       },
       {
         kind: 'untracked',

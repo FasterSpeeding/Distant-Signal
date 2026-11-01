@@ -1505,6 +1505,11 @@ pub struct TransitLegNotice {
     pub message: String,
     /// The situation's text.
     pub reason: String,
+    /// The situation behind it, for its page (`/transit/{network}/incidents/{id}`);
+    /// absent for a status from `TfL`, whose line page has the detail
+    /// (additive, DS-237).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub situation_id: Option<String>,
 }
 
 /// `kind: "transit"` (spec §11.1): a tram or replacement-bus ride on a
@@ -1787,6 +1792,7 @@ pub fn line_notices(
             description: status.description.clone(),
             message: format!("Disruption reported on the {line_name}"),
             reason: status.reason.clone(),
+            situation_id: status.situation_id.clone(),
         })
         .collect()
 }

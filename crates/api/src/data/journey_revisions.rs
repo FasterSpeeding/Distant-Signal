@@ -41,7 +41,8 @@ INSERT INTO journey_revision_legs \
     (revision_id, position, source_leg_id, kind, train_uid, service_date, trains_id, \
      atoc_code, origin_crs, destination_crs, booked_departure, booked_arrival, \
      transit_mode, origin_place, destination_place, line_name, \
-     planned_departure, planned_arrival, ticket_ids) \
+     planned_departure, planned_arrival, ticket_ids, \
+     origin_stop_id, destination_stop_id, transit_network, transit_line_id, headsign) \
 SELECT $2, \
        ROW_NUMBER() OVER (ORDER BY jl.leg_order)::INT, \
        jl.id, jl.kind, tr.train_uid, jl.service_date, ts.trains_id, \
@@ -81,7 +82,9 @@ SELECT $2, \
        COALESCE( \
            (SELECT array_agg(t.id ORDER BY t.id) FROM tracked_train_tickets t \
              WHERE t.tracked_train_id = jl.train_subscription_id), \
-           '{}') \
+           '{}'), \
+       jl.origin_stop_id, jl.destination_stop_id, jl.transit_network, jl.transit_line_id, \
+       jl.headsign \
 FROM journey_legs jl \
 LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
 LEFT JOIN trains tr ON tr.id = ts.trains_id \
@@ -475,6 +478,14 @@ pub struct RevisionLeg {
     pub planned_arrival: Option<DateTime<Utc>>,
     pub ticket_ids: Vec<i64>,
     pub fate: String,
+    /// An untracked leg's stops and network ride (DS-237, additive), so
+    /// going back to this plan keeps them; `null` otherwise and on a
+    /// revision written before them.
+    pub origin_stop_id: Option<String>,
+    pub destination_stop_id: Option<String>,
+    pub transit_network: Option<String>,
+    pub transit_line_id: Option<String>,
+    pub headsign: Option<String>,
     #[serde(skip)]
     pub revision_id: i64,
 }
@@ -513,7 +524,9 @@ pub async fn list_revisions(pool: &PgPool, journey_id: i64) -> anyhow::Result<Ve
                 l.atoc_code, l.origin_crs, so.name AS origin_name, l.destination_crs, \
                 sd.name AS destination_name, l.booked_departure, l.booked_arrival, \
                 l.transit_mode, l.origin_place, l.destination_place, l.line_name, \
-                l.planned_departure, l.planned_arrival, l.ticket_ids, l.fate \
+                l.planned_departure, l.planned_arrival, l.ticket_ids, l.fate, \
+                l.origin_stop_id, l.destination_stop_id, l.transit_network, \
+                l.transit_line_id, l.headsign \
          FROM journey_revision_legs l \
          LEFT JOIN stations so ON so.crs = l.origin_crs \
          LEFT JOIN stations sd ON sd.crs = l.destination_crs \

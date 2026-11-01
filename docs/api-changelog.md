@@ -3,6 +3,51 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-11-01: timetabled untracked legs (`transitNetwork`, `timetable`)
+
+Additive (DS-237). A Tube, DLR, London tram or Metrolink ride saved from a
+plan's `kind: "transit"` leg can say which network ride it is, so the
+journey page finds it in the network's timetable. It is still an
+untracked leg (`kind: "untracked"`): no train, no live times, no breaks
+or pushes.
+
+- **Saving** (`POST /Journeys/itinerary`, `POST /Journeys` and
+  `POST /Journeys/{id}/legs` with `mode: "untracked"`, the leg edit and
+  `.../replace`): an untracked leg takes `transitNetwork` (the plan leg's
+  `network`, `tfl` or `metrolink`), `transitLineId` (its line's local id,
+  the part of `line.id` after `network:`, such as `victoria`) and
+  `headsign`. With a network, the leg must be `tube`, `dlr` or `tram`, have
+  both `originStopId` and `destinationStopId`, and the line must be in the
+  network's current timetable; otherwise a `400` with a sentence. A train
+  leg takes none of them. An edit that leaves out `transitNetwork` keeps
+  the leg's network ride while its stops stay the same.
+- **Reading** (`GET /Journeys/{id}`, the shared and delegated reads): each
+  leg gains `transitNetwork`, `transitLineId` and `headsign` (`null` unless
+  saved), and a timetabled leg gains `timetable`:
+  `{network, line: {id, name, colour, mode} | null, state,
+  scheduledDeparture, scheduledArrival, headsign, calls, headwayMinutes?,
+  notices}`.
+  - `state`: `matched` (the timetable has the ride at the planned times),
+    `retimed` (the nearest ride, within 10 minutes, runs at other times;
+    `scheduledDeparture` and `scheduledArrival` are its), `notInTimetable`
+    (no ride near the planned time, though the line still runs between
+    the stops that day), `noService` (nothing on the line between the
+    stops that day) or `noTimetable` (no timetable for the date). The
+    leg's own `plannedDeparture` and `plannedArrival` never change.
+  - `calls`: the ride's stops from boarding to alighting,
+    `{stopId, name, platform, scheduledArrival, scheduledDeparture}`;
+    empty without a ride.
+  - `notices`: the line's current disruption, as a plan's transit leg
+    has them, now with `situationId` where the status comes from a
+    situation (its page is `/transit/{network}/incidents/{situationId}`).
+  - Scheduled times only: never `expected`, `delay`, `cancelled` or
+    `live`.
+- **Revisions** (`GET /Journeys/{id}/revisions`): each leg gains
+  `originStopId`, `destinationStopId`, `transitNetwork`, `transitLineId`
+  and `headsign`, and going back to an earlier plan now restores them (it
+  dropped an untracked leg's stops before).
+- **Plans** (`/Trips/plan`): a transit leg's `notices` gain `situationId`
+  where there is one.
 ## 2026-11-01: station search answered from memory
 
 `GET /public/stations?q=` now matches against a list of every station
