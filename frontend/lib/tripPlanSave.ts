@@ -1,6 +1,6 @@
 import dayjs from 'dayjs';
 import { LONDON_TZ } from './londonWallClock';
-import { transferLineName } from './displayLabels';
+import { isCrossStationTransfer, transferLegMode, transferLineName } from './displayLabels';
 import { isTiplocCode } from './stationLabel';
 import type { TransitMode, TripPlanItinerary, TripPlanLeg, TripPlanTransitLeg } from './types';
 
@@ -46,14 +46,13 @@ const TRANSFER_MODES: Record<string, TransitMode> = {
   FERRY: 'ferry',
 };
 
-/** A `TRANSFER` link's mode: `transfer` when its two ends are different
- * stations, `undefined` for a change within one station (both ends the
- * same code, or neither known). */
+/** A `TRANSFER` link's mode: `tube` when it joins two different stations
+ * and is a known Tube hop (`transferLegMode`), `transfer` for any other
+ * between two stations, `undefined` for a change within one station (both
+ * ends the same code, or neither known). */
 function crossStationTransferMode(leg: TransferLeg): TransitMode | undefined {
-  if (leg.mode.toUpperCase() !== 'TRANSFER') return undefined;
-  const origin = leg.originCrs?.toUpperCase() ?? null;
-  const destination = leg.destinationCrs?.toUpperCase() ?? null;
-  return origin === destination ? undefined : 'transfer';
+  if (!isCrossStationTransfer(leg)) return undefined;
+  return transferLegMode(leg) === 'TUBE' ? 'tube' : 'transfer';
 }
 
 /** The ONE place a planner transfer becomes an untracked leg's mode and
@@ -87,7 +86,7 @@ export function transferAsUntracked(
   const destinationName = leg.destinationStop?.name ?? destinationTram?.name ?? place(leg.destinationCrs);
   const originStopId = leg.originStop?.id ?? originTram?.id;
   const destinationStopId = leg.destinationStop?.id ?? destinationTram?.id;
-  const lineName = transferLineName(leg.mode, leg.line);
+  const lineName = transferLineName(transferLegMode(leg), leg.line);
   return {
     transitMode,
     ...(originName ? { originName } : {}),

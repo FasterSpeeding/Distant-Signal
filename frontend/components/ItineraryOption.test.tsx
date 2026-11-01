@@ -250,6 +250,39 @@ describe('ItineraryOption', () => {
     expect(screen.getByText(byVisibleText('Tube (Victoria line) VXH to EUS, 22 min'))).toBeInTheDocument();
   });
 
+  // #95: the card said "Change" for a TRANSFER between two stations, which
+  // saves as a "Transfer" leg (or a Tube one, when it is a known Tube hop).
+  it('says Transfer for a TRANSFER between stations, Tube for a known Tube hop, Change within a station', () => {
+    const victoria = { id: '940GZZLUVIC', name: 'Victoria', modes: ['tube'], lines: [] };
+    const euston = { id: '940GZZLUEUS', name: 'Euston', modes: ['tube'], lines: [] };
+    const card = (leg: TripPlanItinerary['legs'][number]) => {
+      const view = renderWithMantine(
+        <ItineraryOption
+          itinerary={{ legs: [leg], changeCount: 0, totalDurationMinutes: leg.kind === 'transfer' ? leg.minutes : 0 }}
+          selected={false}
+          onSelect={vi.fn()}
+        />,
+      );
+      return view;
+    };
+    const base = { kind: 'transfer' as const, mode: 'TRANSFER', originCrs: 'EUS', destinationCrs: 'VIC', minutes: 19 };
+
+    let view = card(base);
+    expect(screen.getByText(byVisibleText('Transfer EUS to VIC, 19 min'))).toBeInTheDocument();
+    view.unmount();
+
+    view = card({ ...base, operator: 'LT', line: 'Victoria' });
+    expect(screen.getByText(byVisibleText('Tube (Victoria line) EUS to VIC, 19 min'))).toBeInTheDocument();
+    view.unmount();
+
+    view = card({ ...base, originStop: euston, destinationStop: victoria });
+    expect(screen.getByText(byVisibleText('Tube EUS to VIC, 19 min'))).toBeInTheDocument();
+    view.unmount();
+
+    card({ ...base, destinationCrs: 'EUS', minutes: 5 });
+    expect(screen.getByText(byVisibleText('Change EUS to EUS, 5 min'))).toBeInTheDocument();
+  });
+
   it('falls back to bare codes for an end whose name did not resolve, without mixing forms', () => {
     // Only EUS resolved -- per `codeRouteLabel`'s own "never mix" rule
     // (mirroring `routeLabel`'s), BOTH ends must render as bare codes

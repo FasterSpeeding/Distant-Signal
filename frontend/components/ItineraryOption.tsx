@@ -23,7 +23,13 @@ import type {
   TripPlanWaypointSatisfied,
   TflStop,
 } from '@/lib/types';
-import { accessChangeClause, accessLegNote, accessStopsNote, changesBadge, transferLabel } from '@/lib/displayLabels';
+import {
+  accessChangeClause,
+  accessLegNote,
+  accessStopsNote,
+  changesBadge,
+  transferLegLabel,
+} from '@/lib/displayLabels';
 import { transitServiceModeLabel } from '@/lib/serviceMode';
 import { SCHEDULED_CAPTION } from '@/lib/transitStops';
 import { StateBadge } from './StateBadge';
@@ -69,7 +75,7 @@ function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): ReactN
   // train: "Tube (Piccadilly line) Uxbridge to Heathrow, change at Acton
   // Town, 45 min".
   const change = leg.access ? accessChangeClause(leg.access) : undefined;
-  return `${transferLabel(leg.mode, leg.line)} ${route}${change ? `, ${change}` : ''}, ${leg.minutes} min`;
+  return `${transferLegLabel(leg)} ${route}${change ? `, ${change}` : ''}, ${leg.minutes} min`;
 }
 
 /** A tram leg (transit trip planning §11.3): "08:14 Tram (Blue Line)

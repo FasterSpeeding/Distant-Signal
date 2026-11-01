@@ -362,6 +362,31 @@ describe('transferAsUntracked', () => {
     ).toEqual({ transitMode: 'transfer', destinationName: 'London Kings Cross' });
   });
 
+  it('saves a TRANSFER between stations that is a known Tube hop as a Tube leg', () => {
+    const hop = { kind: 'transfer' as const, mode: 'TRANSFER', originCrs: 'EUS', destinationCrs: 'VIC', minutes: 19 };
+    // Run by London Underground: the pair also has a Tube link.
+    expect(transferAsUntracked({ ...hop, operator: 'LT', line: 'Victoria' }, nameFor)).toEqual({
+      transitMode: 'tube',
+      originName: 'London Euston',
+      destinationName: 'London Victoria',
+      lineName: 'Victoria line',
+    });
+    // A Tube stop at both ends: the stops are the places.
+    const euston = { id: '940GZZLUEUS', name: 'Euston', modes: ['tube'], lines: [] };
+    const victoria = { id: '940GZZLUVIC', name: 'Victoria', modes: ['tube'], lines: [] };
+    expect(transferAsUntracked({ ...hop, originStop: euston, destinationStop: victoria }, nameFor)).toEqual({
+      transitMode: 'tube',
+      originName: 'Euston',
+      destinationName: 'Victoria',
+      originStopId: '940GZZLUEUS',
+      destinationStopId: '940GZZLUVIC',
+    });
+    // Not known to be one: a transfer, as before.
+    expect(transferAsUntracked({ ...hop, operator: null }, nameFor)?.transitMode).toBe('transfer');
+    // Within one station: still not a leg of its own.
+    expect(transferAsUntracked({ ...hop, destinationCrs: 'EUS', operator: 'LT' }, nameFor)).toBeNull();
+  });
+
   it("takes a Tube transfer's TfL stops, names and ids, where the plan has them", () => {
     const euston = { id: '940GZZTESTE', name: 'Euston', modes: ['tube'], lines: [] };
     const kingsCross = { id: '940GZZTESTK', name: "King's Cross St. Pancras", modes: ['tube'], lines: [] };
