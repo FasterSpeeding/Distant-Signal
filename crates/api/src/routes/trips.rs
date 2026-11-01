@@ -139,8 +139,12 @@ static OPTIONS_SEARCH_SIZE_LIMIT: LazyLock<usize> = LazyLock::new(|| {
 static PLAN_SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(4));
 
-/// How many service dates' graphs [`GRAPH_CACHE`] keeps (each ~100 MB);
-/// 0 disables it. `TRIP_PLAN_GRAPH_CACHE_DATES`, default 2.
+/// How many service dates' graphs [`GRAPH_CACHE`] keeps; 0 disables it.
+/// `TRIP_PLAN_GRAPH_CACHE_DATES`, default 2. Each is about 27.5 MB for the
+/// rail day, 44 MB with Metrolink and `TfL` (DS-225's budget bench), and the
+/// prewarm keeps both dates built, so that is the steady state (since #107).
+/// The interned-code table the graphs share is never freed: see
+/// [`trip_planning::record_interned_codes`].
 const GRAPH_CACHE_DATES_ENV: &str = "TRIP_PLAN_GRAPH_CACHE_DATES";
 const DEFAULT_GRAPH_CACHE_DATES: usize = 2;
 /// Oldest a cached graph may be before it is rebuilt even with no new
