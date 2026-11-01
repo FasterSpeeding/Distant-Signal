@@ -758,13 +758,13 @@ mod tests {
         );
     }
 
-    fn stop(id: &str) -> Option<Box<TflStopSummary>> {
-        Some(Box::new(TflStopSummary {
+    fn stop(id: &str) -> TflStopSummary {
+        TflStopSummary {
             id: id.to_owned(),
             name: id.to_owned(),
             modes: vec!["tube".to_owned()],
             lines: Vec::new(),
-        }))
+        }
     }
 
     fn transfer(
@@ -782,8 +782,8 @@ mod tests {
             destination_crs: Some(to.to_owned()),
             minutes,
             line: None,
-            origin_stop: if stops { stop("940GZZLUEUS") } else { None },
-            destination_stop: if stops { stop("940GZZLUVIC") } else { None },
+            origin_stop: stops.then(|| Box::new(stop("940GZZLUEUS"))),
+            destination_stop: stops.then(|| Box::new(stop("940GZZLUVIC"))),
             access: None,
             transit_walk: None,
         }
