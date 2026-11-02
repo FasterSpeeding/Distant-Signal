@@ -6,7 +6,7 @@ import { clearBrowserAccountData } from '@/lib/browserAccountData';
 
 /** "Log out everywhere else" -- the user-reachable half of the M14/L6 fix
  * (2026-09-26 Repeater Signal review): before this, authz data (`groups`)
- * was frozen at login for the whole `session_ttl_days` session lifetime
+ * was frozen at login for the whole session lifetime
  * with no way to end a session early, and there was no way at all for a
  * visitor to end their OTHER sessions (a lost/stolen device, a shared
  * computer, or simply "I don't recognise that login") short of waiting out

@@ -41,6 +41,20 @@ pub fn router() -> Router {
         )
 }
 
+/// The session cookie's `Max-Age`: the absolute session cap
+/// (`session_max_age_days`), not the idle timeout. The idle timeout slides
+/// server-side (`auth::AuthenticatedUser`), but a slide can't reliably reach
+/// the browser as a re-issued cookie: most authenticated requests are the
+/// frontend's server-side fetches (`frontend/lib/api.ts`), whose
+/// `Set-Cookie` never reaches the browser. A cookie that expired at the idle
+/// timeout would still log out a user active every day; one that lasts to
+/// the cap never ends before the server-side session can, and once the
+/// session has ended the stale cookie only names a session that no longer
+/// exists.
+fn session_cookie_max_age_secs(app: &App) -> i64 {
+    users::SessionLifetime::from_config(&app.config).cookie_max_age_secs()
+}
+
 /// Whether the `Secure` cookie attribute is appropriate for the browser
 /// this app is actually serving. `sso_redirect_url` is the one config
 /// value that's already the real, operator-set, browser-facing callback
@@ -337,7 +351,7 @@ async fn callback(
         return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
     }
 
-    let max_age = app.config.session_ttl_days * 24 * 60 * 60;
+    let max_age = session_cookie_max_age_secs(&app);
     // Re-validate stored.return_to again here (defense in depth -- cheap,
     // and guards against any future code path that might write to that
     // column without going through login()'s own validation), not just
@@ -499,7 +513,7 @@ async fn revoke_other_sessions(
         }
     };
 
-    let max_age = app.config.session_ttl_days * 24 * 60 * 60;
+    let max_age = session_cookie_max_age_secs(&app);
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().append(
         header::SET_COOKIE,

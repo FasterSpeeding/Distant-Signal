@@ -197,6 +197,7 @@ impl AppState {
              32-bit day count -- sessions.expires_at is computed via \
              make_interval(days => ...), which requires an i32",
         )?;
+        crate::data::users::SessionLifetime::try_from_config(&config)?;
 
         let oidc = OidcClient::new(OidcConfig {
             issuer_url: config.sso_issuer_url.clone(),

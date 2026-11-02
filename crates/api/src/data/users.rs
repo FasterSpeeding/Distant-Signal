@@ -639,6 +639,12 @@ pub struct SessionUser {
     pub groups: Vec<String>,
     /// The user's usage-analytics choice (DS-190), off by default.
     pub analytics_opt_in: bool,
+    /// The session's sign-in time, current expiry, and the database's
+    /// `NOW()` at lookup: what [`SessionLifetime::extension_due`] needs to
+    /// decide whether this request should slide the expiry.
+    pub session_created_at: chrono::DateTime<chrono::Utc>,
+    pub session_expires_at: chrono::DateTime<chrono::Utc>,
+    pub checked_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Looks up a session by its *hashed* token and joins the owning user, but
@@ -664,7 +670,9 @@ pub async fn get_session_with_user(
     hashed_token: &str,
 ) -> Result<Option<SessionUser>> {
     let row = sqlx::query_as::<_, SessionUser>(
-        "SELECT u.id, u.name, u.username, u.groups, u.analytics_opt_in \
+        "SELECT u.id, u.name, u.username, u.groups, u.analytics_opt_in, \
+                s.created_at AS session_created_at, s.expires_at AS session_expires_at, \
+                NOW() AS checked_at \
          FROM sessions s JOIN users u ON u.id = s.user_id \
          WHERE s.id = $1 AND s.expires_at > NOW() \
            AND (u.sessions_invalidated_at IS NULL OR s.created_at >= u.sessions_invalidated_at)",
@@ -673,6 +681,220 @@ pub async fn get_session_with_user(
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/// The sliding-session policy (`session_ttl_days`,
+/// `session_extend_throttle_hours`, `session_max_age_days`), checked once at
+/// startup by [`SessionLifetime::try_from_config`].
+///
+/// A session's expiry slides: sign-in sets `expires_at = NOW() + idle`, and
+/// an authenticated request moves it to `NOW() + idle` again, but only
+///
+/// - once it was last moved more than `throttle` ago, so a busy session
+///   costs at most one `sessions` write per `throttle`. The last move is
+///   `expires_at - idle`, so no column records it: "moved more than
+///   `throttle` ago" is `expires_at < NOW() + idle - throttle`. (Lowering
+///   `idle` by config just delays the next move until that holds again.)
+/// - and never past `created_at + max_age`, the absolute cap: a session
+///   used every day still ends `max_age` after sign-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionLifetime {
+    pub idle_days: i32,
+    pub extend_throttle_hours: i32,
+    pub max_age_days: i32,
+}
+
+impl SessionLifetime {
+    /// Refuses a policy that can't work: a non-positive idle timeout, a
+    /// cap shorter than it (sign-in would already pass the cap), or a
+    /// throttle at or past the idle timeout (no live session would ever be
+    /// due, so nothing would slide). Called by `AppState::init`, so a bad
+    /// value fails the deploy, naming the env var.
+    pub fn try_from_config(config: &crate::data::config::ServiceArguments) -> Result<Self> {
+        Self::try_new(
+            config.session_ttl_days,
+            config.session_extend_throttle_hours,
+            config.session_max_age_days,
+        )
+    }
+
+    fn try_new(idle_days: i64, extend_throttle_hours: i64, max_age_days: i64) -> Result<Self> {
+        use anyhow::{Context, ensure};
+        let idle_days = i32::try_from(idle_days)
+            .context("session_ttl_days (SESSION_TTL_DAYS) does not fit in a 32-bit day count")?;
+        let max_age_days = i32::try_from(max_age_days).context(
+            "session_max_age_days (SESSION_MAX_AGE_DAYS) does not fit in a 32-bit day count",
+        )?;
+        let extend_throttle_hours = i32::try_from(extend_throttle_hours).context(
+            "session_extend_throttle_hours (SESSION_EXTEND_THROTTLE_HOURS) does not fit in a \
+             32-bit hour count",
+        )?;
+        ensure!(
+            idle_days > 0,
+            "session_ttl_days (SESSION_TTL_DAYS) must be positive"
+        );
+        ensure!(
+            max_age_days >= idle_days,
+            "session_max_age_days (SESSION_MAX_AGE_DAYS) must be at least session_ttl_days \
+             (SESSION_TTL_DAYS)"
+        );
+        ensure!(
+            extend_throttle_hours >= 0
+                && i64::from(extend_throttle_hours) < i64::from(idle_days) * 24,
+            "session_extend_throttle_hours (SESSION_EXTEND_THROTTLE_HOURS) must be at least 0 \
+             and less than session_ttl_days (SESSION_TTL_DAYS) in hours"
+        );
+        Ok(Self {
+            idle_days,
+            extend_throttle_hours,
+            max_age_days,
+        })
+    }
+
+    /// [`Self::try_from_config`] for a config `AppState::init` already
+    /// accepted.
+    ///
+    /// # Panics
+    ///
+    /// If the config would have failed startup validation.
+    #[must_use]
+    pub fn from_config(config: &crate::data::config::ServiceArguments) -> Self {
+        Self::try_from_config(config).unwrap_or_else(|err| {
+            panic!("session lifetime config passed startup validation but is invalid: {err:#}")
+        })
+    }
+
+    /// The session cookie's `Max-Age`: the absolute cap, which no session
+    /// outlives. The server-side expiry, not the cookie, enforces the idle
+    /// timeout -- see `routes::auth::session_cookie_max_age_secs` for why.
+    #[must_use]
+    pub fn cookie_max_age_secs(&self) -> i64 {
+        i64::from(self.max_age_days) * 24 * 60 * 60
+    }
+
+    /// Whether a request at `now` should slide this session's expiry: the
+    /// Rust mirror of [`extend_session`]'s `WHERE`, so a request whose
+    /// session isn't due never sends the `UPDATE` at all.
+    #[must_use]
+    pub fn extension_due(
+        &self,
+        created_at: chrono::DateTime<chrono::Utc>,
+        expires_at: chrono::DateTime<chrono::Utc>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
+        let idle = chrono::Duration::days(i64::from(self.idle_days));
+        let throttle = chrono::Duration::hours(i64::from(self.extend_throttle_hours));
+        let cap = created_at + chrono::Duration::days(i64::from(self.max_age_days));
+        expires_at > now && expires_at < (now + idle - throttle).min(cap)
+    }
+}
+
+/// Slides a live session's expiry to `NOW() + idle`, capped at
+/// `created_at + max_age` (see [`SessionLifetime`]), if it is due. Returns
+/// the new expiry, or `None` when nothing was moved.
+///
+/// One conditional `UPDATE`, so it is safe against concurrent requests on
+/// the same session: under READ COMMITTED a second `UPDATE` waits for the
+/// first's row lock and then re-checks its `WHERE` against the row the
+/// first wrote, which is no longer due, so it moves nothing. It can't bring
+/// a session back:
+///
+/// - an expired row fails `expires_at > NOW()`;
+/// - a deleted row (logout, logout-everywhere, re-login, an admin or
+///   back-channel revocation) matches nothing;
+/// - a row behind its user's `sessions_invalidated_at` marker is skipped,
+///   the same check as [`get_session_with_user`] (which would reject it
+///   anyway: `created_at` never moves).
+pub async fn extend_session(
+    pool: &PgPool,
+    hashed_token: &str,
+    lifetime: SessionLifetime,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let new_expiry = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+        "UPDATE sessions s \
+         SET expires_at = LEAST(NOW() + make_interval(days => $2), \
+                                s.created_at + make_interval(days => $4)) \
+         WHERE s.id = $1 AND s.expires_at > NOW() \
+           AND s.expires_at < LEAST( \
+                 NOW() + make_interval(days => $2) - make_interval(hours => $3), \
+                 s.created_at + make_interval(days => $4)) \
+           AND NOT EXISTS ( \
+                 SELECT 1 FROM users u \
+                 WHERE u.id = s.user_id AND s.created_at < u.sessions_invalidated_at) \
+         RETURNING s.expires_at",
+    )
+    .bind(hashed_token)
+    .bind(lifetime.idle_days)
+    .bind(lifetime.extend_throttle_hours)
+    .bind(lifetime.max_age_days)
+    .fetch_optional(pool)
+    .await?;
+    Ok(new_expiry)
+}
+
+#[cfg(test)]
+mod session_lifetime_tests {
+    use chrono::{Duration, TimeZone, Utc};
+
+    use super::*;
+
+    const LIFETIME: SessionLifetime = SessionLifetime {
+        idle_days: 14,
+        extend_throttle_hours: 24,
+        max_age_days: 90,
+    };
+
+    #[test]
+    fn the_defaults_are_accepted() {
+        assert_eq!(
+            SessionLifetime::try_new(14, 24, 90).expect("valid"),
+            LIFETIME
+        );
+        assert_eq!(LIFETIME.cookie_max_age_secs(), 7_776_000);
+    }
+
+    #[test]
+    fn an_unworkable_policy_is_refused_at_startup() {
+        for (idle, throttle, cap) in [
+            (0, 0, 90),
+            (14, 24, 13),
+            (14, 14 * 24, 90),
+            (14, -1, 90),
+            (i64::from(i32::MAX) + 1, 24, i64::from(i32::MAX) + 1),
+        ] {
+            assert!(
+                SessionLifetime::try_new(idle, throttle, cap).is_err(),
+                "{idle}/{throttle}/{cap} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_is_due_once_its_expiry_last_moved_more_than_the_throttle_ago() {
+        let signed_in = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+        let expires = signed_in + Duration::days(14);
+        // Moved 23h ago: not due; 25h ago: due.
+        assert!(!LIFETIME.extension_due(signed_in, expires, signed_in + Duration::hours(23)));
+        assert!(LIFETIME.extension_due(signed_in, expires, signed_in + Duration::hours(25)));
+    }
+
+    #[test]
+    fn an_expired_session_is_never_due() {
+        let signed_in = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+        let expires = signed_in + Duration::days(14);
+        assert!(!LIFETIME.extension_due(signed_in, expires, expires));
+        assert!(!LIFETIME.extension_due(signed_in, expires, expires + Duration::days(1)));
+    }
+
+    #[test]
+    fn a_session_at_its_absolute_cap_is_never_due() {
+        let signed_in = Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 0).unwrap();
+        let cap = signed_in + Duration::days(90);
+        let now = cap - Duration::days(5);
+        assert!(!LIFETIME.extension_due(signed_in, cap, now));
+        // Just short of the cap it is due, once, to reach the cap.
+        assert!(LIFETIME.extension_due(signed_in, cap - Duration::hours(1), now));
+    }
 }
 
 /// The "log out everywhere" action (M14/L6, 2026-09-26 Repeater Signal
@@ -1640,5 +1862,229 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup test user");
+    }
+}
+
+#[cfg(test)]
+mod sliding_session_db_tests {
+    use sqlx::PgPool;
+
+    use super::*;
+
+    const LIFETIME: SessionLifetime = SessionLifetime {
+        idle_days: 14,
+        extend_throttle_hours: 24,
+        max_age_days: 90,
+    };
+
+    async fn user(pool: &PgPool) -> String {
+        let identity = OidcIdentity {
+            sub: "TEST-USER-SLIDING".to_string(),
+            name: None,
+            preferred_username: None,
+            groups: Vec::new(),
+        };
+        upsert_user(pool, &identity).await.expect("upsert user").id
+    }
+
+    /// A session row signed in `age` ago, expiring at `expires_at` (SQL).
+    async fn session(pool: &PgPool, id: &str, user_id: &str, age: &str, expires_at: &str) {
+        sqlx::query(&format!(
+            "INSERT INTO sessions (id, user_id, refresh_token, created_at, expires_at) \
+             VALUES ($1, $2, NULL, NOW() - INTERVAL '{age}', {expires_at})"
+        ))
+        .bind(id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("insert session");
+    }
+
+    /// Seconds from the database's `NOW()` to the session's expiry.
+    async fn expires_in_secs(pool: &PgPool, id: &str) -> Option<i64> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT ROUND(EXTRACT(EPOCH FROM expires_at - NOW()))::bigint \
+             FROM sessions WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .expect("read expiry")
+    }
+
+    const DAY: i64 = 24 * 60 * 60;
+
+    #[sqlx::test(migrations = "../ds-store/migrations")]
+    #[ignore = "needs DATABASE_URL (a role that can create databases)"]
+    async fn a_due_session_slides_to_the_idle_timeout_from_now(pool: PgPool) {
+        let user_id = user(&pool).await;
+        session(
+            &pool,
+            "due",
+            &user_id,
+            "3 days",
+            "NOW() + INTERVAL '11 days'",
+        )
+        .await;
+
+        let found = get_session_with_user(&pool, "due")
+            .await
+            .expect("lookup")
+            .expect("live");
+        assert!(LIFETIME.extension_due(
+            found.session_created_at,
+            found.session_expires_at,
+            found.checked_at
+        ));
+        assert!(
+            extend_session(&pool, "due", LIFETIME)
+                .await
+                .expect("extend")
+                .is_some()
+        );
+        assert_eq!(expires_in_secs(&pool, "due").await, Some(14 * DAY));
+    }
+
+    #[sqlx::test(migrations = "../ds-store/migrations")]
+    #[ignore = "needs DATABASE_URL (a role that can create databases)"]
+    async fn a_session_moved_within_the_throttle_is_left_alone(pool: PgPool) {
+        let user_id = user(&pool).await;
+        // Last moved 23 hours ago.
+        session(
+            &pool,
+            "fresh",
+            &user_id,
+            "5 days",
+            "NOW() + INTERVAL '14 days' - INTERVAL '23 hours'",
+        )
+        .await;
+        assert!(
+            extend_session(&pool, "fresh", LIFETIME)
+                .await
+                .expect("extend")
+                .is_none()
+        );
+        assert_eq!(
+            expires_in_secs(&pool, "fresh").await,
+            Some(14 * DAY - 23 * 60 * 60)
+        );
+
+        // The first slide of a due session moves it; a second right after
+        // (a concurrent request's retry) finds it no longer due.
+        session(
+            &pool,
+            "twice",
+            &user_id,
+            "5 days",
+            "NOW() + INTERVAL '1 day'",
+        )
+        .await;
+        assert!(
+            extend_session(&pool, "twice", LIFETIME)
+                .await
+                .expect("first")
+                .is_some()
+        );
+        assert!(
+            extend_session(&pool, "twice", LIFETIME)
+                .await
+                .expect("second")
+                .is_none()
+        );
+    }
+
+    #[sqlx::test(migrations = "../ds-store/migrations")]
+    #[ignore = "needs DATABASE_URL (a role that can create databases)"]
+    async fn a_session_never_slides_past_its_absolute_cap(pool: PgPool) {
+        let user_id = user(&pool).await;
+        // Signed in 85 days ago: the cap is 5 days away, not 14.
+        session(
+            &pool,
+            "old",
+            &user_id,
+            "85 days",
+            "NOW() + INTERVAL '2 days'",
+        )
+        .await;
+        assert!(
+            extend_session(&pool, "old", LIFETIME)
+                .await
+                .expect("extend")
+                .is_some()
+        );
+        assert_eq!(expires_in_secs(&pool, "old").await, Some(5 * DAY));
+        // At the cap: never due again.
+        assert!(
+            extend_session(&pool, "old", LIFETIME)
+                .await
+                .expect("extend at cap")
+                .is_none()
+        );
+        assert_eq!(expires_in_secs(&pool, "old").await, Some(5 * DAY));
+    }
+
+    #[sqlx::test(migrations = "../ds-store/migrations")]
+    #[ignore = "needs DATABASE_URL (a role that can create databases)"]
+    async fn an_expired_deleted_or_revoked_session_is_never_brought_back(pool: PgPool) {
+        let user_id = user(&pool).await;
+        session(
+            &pool,
+            "expired",
+            &user_id,
+            "20 days",
+            "NOW() - INTERVAL '1 hour'",
+        )
+        .await;
+        assert!(
+            extend_session(&pool, "expired", LIFETIME)
+                .await
+                .expect("extend expired")
+                .is_none()
+        );
+        assert!(
+            get_session_with_user(&pool, "expired")
+                .await
+                .expect("lookup")
+                .is_none()
+        );
+
+        // Logged out: the row is gone, so there's nothing to move.
+        session(
+            &pool,
+            "gone",
+            &user_id,
+            "3 days",
+            "NOW() + INTERVAL '1 day'",
+        )
+        .await;
+        delete_session(&pool, "gone").await.expect("logout");
+        assert!(
+            extend_session(&pool, "gone", LIFETIME)
+                .await
+                .expect("extend deleted")
+                .is_none()
+        );
+
+        // Behind the user's revocation marker (a row that outlived it).
+        session(
+            &pool,
+            "revoked",
+            &user_id,
+            "3 days",
+            "NOW() + INTERVAL '1 day'",
+        )
+        .await;
+        sqlx::query("UPDATE users SET sessions_invalidated_at = NOW() WHERE id = $1")
+            .bind(&user_id)
+            .execute(&pool)
+            .await
+            .expect("set marker");
+        assert!(
+            extend_session(&pool, "revoked", LIFETIME)
+                .await
+                .expect("extend revoked")
+                .is_none()
+        );
+        assert_eq!(expires_in_secs(&pool, "revoked").await, Some(DAY));
     }
 }

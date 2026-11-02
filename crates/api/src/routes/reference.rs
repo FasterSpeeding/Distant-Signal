@@ -453,6 +453,8 @@ mod db_tests {
             sso_redirect_url: "https://example.invalid/callback".to_string(),
             sso_post_login_redirect_url: "https://example.invalid/".to_string(),
             session_ttl_days: 14,
+            session_max_age_days: 90,
+            session_extend_throttle_hours: 24,
             history_retention_days: 7,
             daily_stats_retention_days: 300,
             half_hourly_stats_retention_hours: 840,

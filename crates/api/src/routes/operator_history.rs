@@ -341,6 +341,8 @@ mod db_tests {
             sso_redirect_url: "https://example.invalid/callback".to_string(),
             sso_post_login_redirect_url: "https://example.invalid/".to_string(),
             session_ttl_days: 14,
+            session_max_age_days: 90,
+            session_extend_throttle_hours: 24,
             // 0 = no lower clamp (API-10's `clamp_instant_range`), so the
             // fixed-date fixtures below don't age out of the window.
             history_retention_days: 0,
