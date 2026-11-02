@@ -8,7 +8,7 @@ import { PreferencesNavIcon } from './PreferencesNavIcon';
 import { PrideModeApplier, PrideSparkles } from './PrideMode';
 import { PrimaryNavLink } from './PrimaryNavLink';
 import { Wordmark } from './Wordmark';
-import { navDrawerDestinations, PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
+import { navDrawerDestinations, primaryNavDestinations } from '@/lib/navLinks';
 import type { DataFreshness, SessionInfo } from '@/lib/types';
 
 /** The site header, lifted out of `app/layout.tsx` so the whole bar can
@@ -110,10 +110,10 @@ export function AppNavBar({
 }: {
   session: SessionInfo;
   freshness: DataFreshness;
-  /** Whether the api serves any transit network: the drawer then lists
-   * "Trams". Defaults to `false` so the `<Suspense>` fallback in
-   * `app/layout.tsx`, which renders this bar with only
-   * `session`/`freshness`, degrades to "not shown yet". */
+  /** Whether the api serves any transit network: the bar and the drawer
+   * then both list "Trams and metros". Defaults to `false`, i.e. "not
+   * shown"; `app/layout.tsx` passes it to the `<Suspense>` fallback as well
+   * as the resolved bar, so the entry doesn't pop in. */
   transitOn?: boolean;
 }) {
   return (
@@ -167,7 +167,7 @@ export function AppNavBar({
               above this component. */}
           <Group gap="xs" wrap="nowrap">
             <Group gap="xs" wrap="nowrap" visibleFrom={NAV_BREAKPOINT}>
-              {PRIMARY_NAV_DESTINATIONS.map((destination) => (
+              {primaryNavDestinations(transitOn).map((destination) => (
                 <PrimaryNavLink key={destination.href} {...destination} />
               ))}
             </Group>

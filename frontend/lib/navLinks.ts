@@ -70,7 +70,8 @@ export const PLAN_JOURNEY_HREF = '/plan';
 export const PLAN_JOURNEY_LABEL = 'Plan a journey';
 
 /** Always visible to everyone, logged in or not. Rendered inline in the
- * bar at `md` and up, and in the drawer below it. Each label is the h1 of
+ * bar at `md` and up, and in the drawer below it, always through
+ * `primaryNavDestinations`, which adds the conditional transit entry. Each label is the h1 of
  * the page it opens (docs/style-guide.md, "Tone"). The travel entries come
  * first (your journeys, then the timetable), then the network's
  * state and reference pages. */
@@ -120,28 +121,56 @@ export const PREFERENCES_DESTINATION: NavDestination = { href: '/account/prefere
 
 /** `/transit`: the tram and metro networks Distant Signal serves
  * (docs/superpowers/specs/2026-10-09-transit-networks-design.md; TfL's
- * Underground, DLR and trams since the TfL transit design). Listed
- * only while the api serves at least one network, in the drawer after
- * "Lines": the inline bar has no width to spare, and `/lines` links to it
- * for desktop visitors. */
-export const TRANSIT_DESTINATION: NavDestination = { href: '/transit', label: 'Trams and metros' };
+ * Underground, DLR and trams since the TfL transit design). Listed only
+ * while the api serves at least one network, straight after "Lines", in the
+ * bar and the drawer alike (`primaryNavDestinations`).
+ *
+ * It used to be drawer-only, on the grounds that the inline bar had no width
+ * to spare; once round 2 freed that width it was simply never added, so from
+ * `md` up the section had no link in the chrome at all. Measured in Chromium
+ * with it inline, the logged-out bar at 992px (its narrowest) still has 74px
+ * of slack. Its `section` keeps it current on a network's own pages. */
+export const TRANSIT_DESTINATION: NavDestination = {
+  href: '/transit',
+  label: 'Trams and metros',
+  section: ['/transit'],
+};
+
+/** The primary destinations as rendered: `PRIMARY_NAV_DESTINATIONS`, plus
+ * "Trams and metros" after "Lines" while transit is on. The ONE list both the
+ * inline bar (`md` and up) and the drawer (below it) render, so the two
+ * cannot list different pages. */
+export function primaryNavDestinations(transitOn = false): NavDestination[] {
+  return PRIMARY_NAV_DESTINATIONS.flatMap((destination) =>
+    destination.href === '/lines' && transitOn ? [destination, TRANSIT_DESTINATION] : [destination],
+  );
+}
 
 /** What the mobile drawer lists: every primary destination, plus the
- * per-account ones the bar hands to the account menu on desktop. The drawer
- * is the ONLY nav surface below `md`, so it carries the union. */
+ * per-account ones the bar hands to the account menu on desktop (and
+ * Preferences, which logged-out desktop visitors get as a gear). The drawer
+ * is the ONLY nav surface below `md`, so it carries the union; see
+ * `wideNavDestinations` for the same set from `md` up. */
 export function navDrawerDestinations(authenticated: boolean, transitOn = false): NavDestination[] {
   return [
-    ...PRIMARY_NAV_DESTINATIONS.flatMap((destination) =>
-      destination.href === '/lines' && transitOn ? [destination, TRANSIT_DESTINATION] : [destination],
-    ),
+    ...primaryNavDestinations(transitOn),
     ...(authenticated ? [GROUPS_DESTINATION, CHAT_DESTINATION, ACCOUNT_DESTINATION] : []),
     PREFERENCES_DESTINATION,
   ];
 }
 
-/** What the avatar-keyed account menu lists (above the session actions,
- * which the menu adds itself). Only rendered for an authenticated visitor,
- * so every entry is unconditional. */
+/** Everything reachable from the nav at `md` and up: the inline links, plus
+ * the account menu when logged in, or the Preferences gear when not. Not
+ * rendered as one list (the three are different controls); it exists so a
+ * test can hold it equal to `navDrawerDestinations`, i.e. so no page is
+ * reachable from the drawer but not from the wide layout. */
+export function wideNavDestinations(authenticated: boolean, transitOn = false): NavDestination[] {
+  return [
+    ...primaryNavDestinations(transitOn),
+    ...(authenticated ? accountMenuDestinations() : [PREFERENCES_DESTINATION]),
+  ];
+}
+
 export function accountMenuDestinations(): NavDestination[] {
   return [GROUPS_DESTINATION, CHAT_DESTINATION, ACCOUNT_DESTINATION, PREFERENCES_DESTINATION];
 }

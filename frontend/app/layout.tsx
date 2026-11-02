@@ -286,7 +286,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   It also means the anonymous rendering is not a special
                   case that only real anonymous visitors exercise -- every
                   page load renders it, so it cannot quietly rot. */}
-                <Suspense fallback={<AppNavBar session={LOGGED_OUT_SESSION} freshness={freshness} />}>
+                {/* `transitOn` is already known here (the footer's fetch
+                  above), so the fallback carries "Trams and metros" too and
+                  the inline links don't shift when the session lands. */}
+                <Suspense
+                  fallback={<AppNavBar session={LOGGED_OUT_SESSION} freshness={freshness} transitOn={transitOn} />}
+                >
                   <NavBarWithSession freshness={freshness} />
                 </Suspense>
                 {/* `component="main"`: Mantine's Container renders a plain
