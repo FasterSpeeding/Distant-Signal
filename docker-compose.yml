@@ -85,7 +85,7 @@ x-direct-database-url: &direct-database-url postgres://${POSTGRES_USER}:${POSTGR
 
 services:
   postgres:
-    image: postgres:18@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+    image: postgres:18@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -120,7 +120,7 @@ services:
   redis:
     # Valkey 8.1, the chart's `redis.image` (DS-174); the service keeps
     # its `redis` name, so REDIS_URL=redis://redis:6379 is unchanged.
-    image: valkey/valkey:8.1.10-trixie@sha256:640c5e62cea04b6d6f2084232651d0cc70362d31f4f805e7be94dbed6855e8f2
+    image: valkey/valkey:8.1.11-trixie@sha256:8f836008e0986c36adf50da714c7060cf689dbb335f61fe077939d90fa650809
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -675,7 +675,7 @@ services:
   # every container in a Pod (the Helm chart needs no equivalent extra
   # step, since fsGroup already covers `ingest` there too).
   schedule-feed-volume-permissions:
-    image: busybox:1.38.0@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+    image: busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
     command: ["sh", "-c", "chown -R 1000:1000 /data/schedule-feed && chmod -R g+rwX /data/schedule-feed"]
     volumes:
       - schedule_feed_data:/data/schedule-feed
