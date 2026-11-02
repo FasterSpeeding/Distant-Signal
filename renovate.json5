@@ -286,5 +286,55 @@
       "matchUpdateTypes": ["major"],
       "enabled": false,
     },
+    // --- Cargo (2026-11-01, Renovate PRs #11 and #32) ---------------------
+    {
+      // config:best-practices' :pinDevDependencies pins dev-dependencies
+      // with `=x.y.z`. Cargo.lock already pins every crate exactly, and an
+      // `=` requirement blocks lock-file maintenance and the resolver's
+      // MSRV-aware choice, and splits a crate a normal dependency also
+      // uses (tokio `1.52.3` vs `=1.54.1` in #11). Keep cargo dev-deps on
+      // the same strategy as normal deps; npm keeps its pins.
+      "matchManagers": ["cargo"],
+      "matchDepTypes": ["dev-dependencies"],
+      "rangeStrategy": "auto",
+    },
+    {
+      // A 0.x "minor" (base64 0.22 -> 0.23, rand 0.8 -> 0.10, ...) is a
+      // semver-breaking release in Cargo, so it doesn't belong in the
+      // non-major group: one breaking crate failed the whole of #11. Each
+      // gets its own PR instead. Comes after the group rule, so it wins.
+      "matchManagers": ["cargo"],
+      "matchCurrentVersion": "/^[=^~]?0\\./",
+      "matchUpdateTypes": ["minor"],
+      "groupName": null,
+    },
+    {
+      // sqlx 0.9 requires rustc 1.94; the MSRV is 1.88 (see the rust rules
+      // above). Move sqlx together with the MSRV, on purpose.
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["sqlx"],
+      "allowedVersions": "<0.9",
+    },
+    {
+      // notifier's direct `http` dependency exists only to name the types
+      // web_push::request_builder takes and returns, and web-push (0.11.0,
+      // the latest) is on http 0.2. http 1 there can't compile (#32). Lift
+      // this once web-push moves to http 1.
+      "matchManagers": ["cargo"],
+      "matchFileNames": ["crates/notifier/Cargo.toml"],
+      "matchPackageNames": ["http"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false,
+    },
+    // --- npm (2026-11-01, Renovate PR #21) --------------------------------
+    {
+      // TypeScript 7 is the native (Go) compiler. Its package exports no
+      // JS compiler API (`main` is just version.cjs), which
+      // typescript-eslint (peer `>=4.8.4 <6.1.0`) and next build's type
+      // check both load. Stay on 6.x until both support 7.
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7",
+    },
   ],
 }
