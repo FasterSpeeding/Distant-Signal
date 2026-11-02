@@ -145,6 +145,64 @@ describe('itineraryLegsForSaving', () => {
     ]);
   });
 
+  it("saves a Tube hop's walks to and from its Tube stations as walk legs around the ride", () => {
+    const euston = { id: '940GZZLUEUS', name: 'Euston', modes: ['tube'], lines: [] };
+    const victoria = { id: '940GZZLUVIC', name: 'Victoria', modes: ['tube'], lines: [] };
+    const legs = itineraryLegsForSaving(
+      [
+        itinerary([
+          // Arrives Euston 09:50 BST (08:50Z): 2 min walk, 10 on the
+          // Victoria line, 3 min walk out.
+          train('T1', 'MKC', 'EUS', '09:00:00', '09:50:00'),
+          {
+            kind: 'transfer',
+            mode: 'TUBE',
+            originCrs: 'EUS',
+            destinationCrs: 'VIC',
+            minutes: 15,
+            line: 'Victoria',
+            originStop: euston,
+            destinationStop: victoria,
+            stationWalks: { originMinutes: 2, destinationMinutes: 3 },
+          },
+          train('T2', 'VIC', 'BTN', '10:30:00', '11:30:00'),
+        ]),
+      ],
+      nameFor,
+    );
+    expect(legs).toEqual([
+      { trainUid: 'T1', serviceDate: '2026-10-21', originCrs: 'MKC', destinationCrs: 'EUS' },
+      {
+        kind: 'untracked',
+        transitMode: 'walk',
+        originName: 'London Euston (National Rail)',
+        destinationName: 'Euston (Tube)',
+        plannedDeparture: '2026-10-21T08:50:00.000Z',
+        plannedArrival: '2026-10-21T08:52:00.000Z',
+      },
+      {
+        kind: 'untracked',
+        transitMode: 'tube',
+        originName: 'Euston',
+        destinationName: 'Victoria',
+        lineName: 'Victoria line',
+        originStopId: '940GZZLUEUS',
+        destinationStopId: '940GZZLUVIC',
+        plannedDeparture: '2026-10-21T08:52:00.000Z',
+        plannedArrival: '2026-10-21T09:02:00.000Z',
+      },
+      {
+        kind: 'untracked',
+        transitMode: 'walk',
+        originName: 'Victoria (Tube)',
+        destinationName: 'London Victoria (National Rail)',
+        plannedDeparture: '2026-10-21T09:02:00.000Z',
+        plannedArrival: '2026-10-21T09:05:00.000Z',
+      },
+      { trainUid: 'T2', serviceDate: '2026-10-21', originCrs: 'VIC', destinationCrs: 'BTN' },
+    ]);
+  });
+
   it('saves a merged Tube ride as one leg, and times transfers in a row one after another', () => {
     const victoria = (originCrs: string, destinationCrs: string, minutes: number, line: string): TripPlanLeg => ({
       kind: 'transfer',

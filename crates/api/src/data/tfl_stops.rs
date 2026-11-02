@@ -875,6 +875,7 @@ mod tests {
             destination_stop: Some(Box::new(stop(to, &[]))),
             access: None,
             transit_walk: None,
+            station_walks: None,
         }
     }
 
@@ -1323,6 +1324,7 @@ mod db_tests {
             destination_stop: None,
             access: None,
             transit_walk: None,
+            station_walks: None,
         }
     }
 
@@ -1396,6 +1398,76 @@ mod db_tests {
         assert!(legs[1].get("line").is_none(), "{legs}");
         assert!(legs[2].get("line").is_none(), "{legs}");
         assert_eq!(legs[3]["line"], "Testline");
+        // A Tube hop naming both its Tube stations walks to and from them
+        // (`tube_link_walks`): Z8A is at its stop (the 2-minute least), Z8B
+        // 150 m from TESTC (3). A walk, a hop with one stop unknown and a
+        // change within a station walk nowhere.
+        crate::data::tube_link_walks::attach_station_walks(&pool, &mut segments).await;
+        let legs = serde_json::to_value(&segments[0].itineraries[0].legs).unwrap();
+        let walks = serde_json::json!({"originMinutes": 2, "destinationMinutes": 3});
+        assert_eq!(legs[0]["stationWalks"], walks, "{legs}");
+        assert_eq!(legs[3]["stationWalks"], walks, "{legs}");
+        for leg in [&legs[1], &legs[2], &legs[4], &legs[5]] {
+            assert!(leg.get("stationWalks").is_none(), "{legs}");
+        }
+        cleanup(&pool).await;
+    }
+
+    /// `tube_link_walks::apply`: a Tube link between Z8A and Z8B shorter
+    /// than walking to TESTA (2), the wait (3), Testline's timetabled 4
+    /// minutes to TESTC and the walk out (3) is charged those 12 minutes,
+    /// both ways; a long enough one keeps its own.
+    #[tokio::test]
+    #[ignore = "requires a live database (DATABASE_URL)"]
+    async fn short_tube_links_are_charged_their_walks() {
+        use schedule_query::{FixedLink, InterchangeData, OperatorId};
+
+        let pool = connect().await;
+        seed(&pool).await;
+        sqlx::query("DELETE FROM tfl_line_routes WHERE line_id = 'zz-testline'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO tfl_line_routes (line_id, direction, route_index, name, stop_ids, fetched_at, step_seconds) \
+             VALUES ('zz-testline', 'outbound', 0, 'A to D', '{940GZZTESTA,940GZZTESTC,940GZZTESTD}', NOW(), '{240,300}'), \
+                    ('zz-testline', 'inbound', 0, 'D to A', '{940GZZTESTD,940GZZTESTC,940GZZTESTA}', NOW(), '{300,240}')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let link = |to: &str, minutes: i32| FixedLink {
+            mode: "TUBE".to_owned(),
+            to_crs: to.to_owned(),
+            minutes,
+            valid_from: "0000".to_owned(),
+            valid_to: "2359".to_owned(),
+            days_mask: "1111111".to_owned(),
+            operator: OperatorId::LONDON_UNDERGROUND,
+            only_without: OperatorId::UNKNOWN,
+        };
+        let mut data = InterchangeData::default();
+        data.fixed_links_from_crs
+            .insert("Z8A".to_owned(), vec![link("Z8B", 6), link("Z8B", 20)]);
+        data.fixed_links_from_crs
+            .insert("Z8B".to_owned(), vec![link("Z8A", 6)]);
+        let raised = crate::data::tube_link_walks::apply(&pool, &mut data)
+            .await
+            .unwrap();
+        let minutes = |from: &str| -> Vec<i32> {
+            data.fixed_links_from_crs[from]
+                .iter()
+                .map(|l| l.minutes)
+                .collect()
+        };
+        assert_eq!(raised, 2);
+        assert_eq!(minutes("Z8A"), [12, 20]);
+        assert_eq!(minutes("Z8B"), [12]);
+
+        sqlx::query("DELETE FROM tfl_line_routes WHERE line_id = 'zz-testline'")
+            .execute(&pool)
+            .await
+            .unwrap();
         cleanup(&pool).await;
     }
 
@@ -1436,6 +1508,7 @@ mod db_tests {
                 destination_stop: Some(Box::new(stops[to].clone())),
                 access: None,
                 transit_walk: None,
+                station_walks: None,
             },
             PlannedLeg::Train { .. } => unreachable!(),
         };

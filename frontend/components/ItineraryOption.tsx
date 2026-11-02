@@ -30,6 +30,7 @@ import {
   accessStopsNote,
   changesBadge,
   transferLegLabel,
+  withStationWalks,
 } from '@/lib/displayLabels';
 import { transitServiceModeLabel } from '@/lib/serviceMode';
 import { SCHEDULED_CAPTION } from '@/lib/transitStops';
@@ -235,11 +236,15 @@ export function ItineraryOption({
                 // A bus or ferry leg keeps `kind: 'train'`; its own badge
                 // says what it really is (and that it isn't tracked live).
                 <Stack key={index} gap={0}>
-                  <Group gap="xs" wrap="wrap">
-                    <Text size="sm">{legSummary(leg, stationNames)}</Text>
-                    {leg.kind === 'train' && <ServiceModeBadge mode={leg.serviceMode} />}
-                    {leg.kind === 'transit' && <ServiceModeBadge transitMode={leg.serviceMode} />}
-                  </Group>
+                  {/* A Tube hop's walks to and from its Tube stations are
+                      rows of their own around the ride. */}
+                  {(leg.kind === 'transfer' ? withStationWalks(leg) : [leg]).map((part, partIndex) => (
+                    <Group key={partIndex} gap="xs" wrap="wrap">
+                      <Text size="sm">{legSummary(part, stationNames)}</Text>
+                      {part.kind === 'train' && <ServiceModeBadge mode={part.serviceMode} />}
+                      {part.kind === 'transit' && <ServiceModeBadge transitMode={part.serviceMode} />}
+                    </Group>
+                  ))}
                   {leg.kind === 'transfer' && leg.access && (
                     <Text size="xs" c="dimmed" pl="sm">
                       {accessLegNote(leg.access, accessLegStopCount(leg, stopAccess))}

@@ -515,7 +515,13 @@ async fn interchange_data(pool: &PgPool) -> anyhow::Result<Arc<InterchangeData>>
         .get_or_build(
             NaiveDate::MIN,
             trip_planning::GraphMarker::default(),
-            move || async move { trip_planning::fetch_interchange_data(&pool).await.map(Some) },
+            move || async move {
+                let mut data = trip_planning::fetch_interchange_data(&pool).await?;
+                // The Tube links as the planner charges them.
+                crate::data::planner_operators::attribute_fixed_links(&mut data);
+                crate::data::tube_link_walks::raise_or_warn(&pool, &mut data).await;
+                Ok(Some(data))
+            },
         )
         .await?
         .map(|(data, _)| data)

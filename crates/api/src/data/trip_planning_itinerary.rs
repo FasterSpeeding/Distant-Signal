@@ -218,6 +218,13 @@ pub enum PlannedLeg {
         /// `null`. Filled in by `transit_planning` dressing.
         #[serde(skip_serializing_if = "Option::is_none")]
         transit_walk: Option<Box<crate::data::transit_planning::TransitWalk>>,
+        /// Present only on a Tube hop between two National Rail stations
+        /// naming both its Tube stations (additive, 2026-11-02): the walks
+        /// between each station and its Tube station that `minutes`
+        /// include (`originMinutes`, `destinationMinutes`), so the ride is
+        /// the rest. Filled in by `tube_link_walks::attach_station_walks`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        station_walks: Option<crate::data::tube_link_walks::StationWalks>,
         /// Who runs the link (additive, 2026-10-31): `LT` for a Tube link
         /// or ride, `ds:DLR` and so on (planner operator filtering spec
         /// §6.5). Absent for a walk or when no operator is known.
@@ -517,6 +524,7 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
                 destination_stop: None,
                 access: None,
                 transit_walk: None,
+                station_walks: None,
             }
         }
     }
@@ -5008,6 +5016,7 @@ mod tests {
             destination_stop: None,
             access: None,
             transit_walk: None,
+            station_walks: None,
         };
         let segment = |from: &str, to: &str, itineraries| SegmentResult {
             origin_crs: from.to_string(),
@@ -5092,6 +5101,7 @@ mod tests {
                 alight_stop: None,
             })),
             transit_walk: None,
+            station_walks: None,
         };
         let itinerary = |legs: Vec<PlannedLeg>| PlannedItinerary {
             operator_only: false,

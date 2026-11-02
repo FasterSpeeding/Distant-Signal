@@ -1,6 +1,6 @@
 import dayjs from 'dayjs';
 import { LONDON_TZ } from './londonWallClock';
-import { isCrossStationTransfer, transferLegMode, transferLineName } from './displayLabels';
+import { isCrossStationTransfer, transferLegMode, transferLineName, withStationWalks } from './displayLabels';
 import { isTiplocCode } from './stationLabel';
 import { canHaveStopId } from './untrackedLeg';
 import { labelPlaceEnds, RAIL_PLACE, stopPlaceKind } from './placeKinds';
@@ -245,7 +245,10 @@ export function itineraryLegsForSaving(
         };
         return;
       }
-      sequence.push(leg);
+      // A Tube hop's walks to and from its Tube stations are legs of
+      // their own (2026-11-02), timed in turn like any transfers in a row.
+      if (leg.kind === 'transfer') sequence.push(...withStationWalks(leg));
+      else sequence.push(leg);
     });
   }
 
