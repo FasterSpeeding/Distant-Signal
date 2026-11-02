@@ -137,21 +137,33 @@ pub struct ServiceArguments {
     #[arg(long, env)]
     pub sso_post_login_redirect_url: String,
 
-    /// Session lifetime in days: a FIXED expiry stamped once at sign-in,
-    /// not a sliding window. `sessions.expires_at` is set to
-    /// `NOW() + this` by `data::users::insert_session` and never touched
-    /// again -- no code path anywhere extends it on activity, so a session
-    /// dies exactly this many days after login however heavily it was
-    /// used. (The design doc's "Expiry and refresh" section describes a
-    /// sliding window instead; that is unimplemented, and this doc comment
-    /// used to claim it. If you implement it, the write goes in
-    /// `auth::AuthenticatedUser::from_request_parts`, the one place every
-    /// authenticated request resolves its session.) Design doc proposes 14
-    /// as a starting figure, not researched further there; kept
-    /// configurable since it's a product/ops tuning knob, not a protocol
-    /// constant.
+    /// Session idle timeout in days: a SLIDING expiry. Sign-in stamps
+    /// `sessions.expires_at = NOW() + this`, and
+    /// `auth::AuthenticatedUser::from_request_parts` (the one place every
+    /// authenticated request resolves its session) moves it to
+    /// `NOW() + this` again once it was last moved more than
+    /// `session_extend_throttle_hours` ago, never past
+    /// `session_max_age_days` after sign-in. So a session ends after this
+    /// many days without use, or `session_max_age_days` after sign-in,
+    /// whichever comes first. See `data::users::SessionLifetime`.
     #[arg(long, env, default_value_t = 14)]
     pub session_ttl_days: i64,
+
+    /// Absolute session lifetime in days, counted from sign-in
+    /// (`sessions.created_at`): the sliding expiry is never moved past
+    /// this, so even a session used every day ends here and the user signs
+    /// in again (silently, while their `IdP` session lasts). Also the
+    /// session cookie's `Max-Age`. Must be at least `session_ttl_days`.
+    #[arg(long, env, default_value_t = 90)]
+    pub session_max_age_days: i64,
+
+    /// How long after a session's expiry was last moved before an
+    /// authenticated request moves it again, in hours: bounds the sliding
+    /// expiry to one `sessions` write per session per this interval. Must
+    /// be less than `session_ttl_days` in hours (else nothing would ever
+    /// extend).
+    #[arg(long, env, default_value_t = 24)]
+    pub session_extend_throttle_hours: i64,
 
     /// How many days of `line_status_history` rows the aggregator actually
     /// keeps before `queries::prune_history` (`crates/aggregator`) deletes

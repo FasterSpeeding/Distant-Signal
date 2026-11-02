@@ -3,6 +3,20 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-11-02: sliding browser sessions
+
+Browser sessions (the `distant_signal_session` cookie) no longer end a
+fixed 14 days after sign-in. A session now ends after 14 days without an
+authenticated request (`SESSION_TTL_DAYS`), or 90 days after sign-in
+however active it is (`SESSION_MAX_AGE_DAYS`); an authenticated request
+moves the expiry to 14 days from then, at most once a day
+(`SESSION_EXTEND_THROTTLE_HOURS`). The cookie's `Max-Age` is now the
+90-day cap (was 14 days); the server-side expiry enforces the idle
+timeout, so a cookie can outlive its session and then reads as signed out
+(`GET /public/auth/session`, `401` elsewhere). Logout, log out everywhere
+and revocation still end a session at once. Service tokens (DS-MCP) are
+unaffected.
+
 ## 2026-11-02: Tube hops walk to and from their Tube stations (`stationWalks`)
 
 Additive, and some Tube hops take longer. A `/Trips/plan` Tube hop

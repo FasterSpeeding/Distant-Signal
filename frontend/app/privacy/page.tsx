@@ -84,7 +84,8 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
       what: 'A hashed session token and its expiry, and short-lived login state (a one-time code verifier and security values).',
       why: 'To keep you logged in, and to protect logging in from forgery.',
       basis: `${CONTRACT} ${LEGITIMATE_INTERESTS}`,
-      retention: 'Sessions expire after 14 days and are then deleted. Login state is deleted after 15 minutes.',
+      retention:
+        'Sessions expire after 14 days without use, or 90 days after you log in, and are then deleted. Login state is deleted after 15 minutes.',
     },
     {
       title: 'Saved lines, stations, operators and custom lines',

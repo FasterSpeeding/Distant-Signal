@@ -166,11 +166,13 @@ services:
       SSO_CLIENT_SECRET: ${SSO_CLIENT_SECRET:?SSO_CLIENT_SECRET must be set — see the OIDC section of local.env.example}
       SSO_REDIRECT_URL: ${SSO_REDIRECT_URL:?SSO_REDIRECT_URL must be set — the frontend origin plus /api/auth/callback}
       SSO_POST_LOGIN_REDIRECT_URL: ${SSO_POST_LOGIN_REDIRECT_URL:?SSO_POST_LOGIN_REDIRECT_URL must be set — the frontend root URL}
-      # Unlike the five above this one HAS a Rust-side default
-      # (default_value_t = 14), but that default only applies when the env
-      # var is absent — a bare ${SESSION_TTL_DAYS} would hand clap an empty
-      # string and fail to parse as i64. Repeat the default here.
+      # Unlike the five above these HAVE Rust-side defaults
+      # (default_value_t), but a default only applies when the env var is
+      # absent — a bare ${SESSION_TTL_DAYS} would hand clap an empty
+      # string and fail to parse as i64. Repeat the defaults here.
       SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-14}
+      SESSION_MAX_AGE_DAYS: ${SESSION_MAX_AGE_DAYS:-90}
+      SESSION_EXTEND_THROTTLE_HOURS: ${SESSION_EXTEND_THROTTLE_HOURS:-24}
       # Must be kept equal to the aggregator service's own
       # HISTORY_RETENTION_DAYS below -- see
       # crates/api/src/data/config.rs's history_retention_days doc comment.

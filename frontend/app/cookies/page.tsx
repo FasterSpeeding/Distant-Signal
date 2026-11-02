@@ -47,7 +47,7 @@ const COOKIES: readonly StorageItem[] = [
   {
     name: 'distant_signal_session',
     purpose: 'Keeps you logged in. Only sent over HTTPS and not readable by scripts.',
-    lasts: '14 days, or until you sign out.',
+    lasts: 'Up to 90 days. You are signed out sooner after 14 days without use, or when you sign out.',
   },
   {
     name: 'distant_signal_login',

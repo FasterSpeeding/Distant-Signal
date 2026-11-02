@@ -306,6 +306,7 @@ impl FromRequestParts<App> for AuthenticatedUser {
                 StatusCode::UNAUTHORIZED,
                 "session expired or unknown".to_string(),
             ))?;
+        slide_session_expiry(app, &hashed, &session).await;
         Ok(AuthenticatedUser {
             id: session.id,
             name: session.name,
@@ -313,6 +314,29 @@ impl FromRequestParts<App> for AuthenticatedUser {
             groups: session.groups,
             analytics_opt_in: session.analytics_opt_in,
         })
+    }
+}
+
+/// The sliding half of the session lifetime (`data::users::SessionLifetime`):
+/// moves a valid session's expiry forward when it is due, at most once per
+/// `session_extend_throttle_hours`. Best-effort: the session was already
+/// valid for this request, so a failed write is logged and the request goes
+/// on; the next due request tries again.
+///
+/// The cookie isn't re-issued here: its `Max-Age` is already the absolute
+/// cap (see `routes::auth::session_cookie_max_age_secs`), which the sliding
+/// expiry never passes, so there is nothing for the browser to learn.
+async fn slide_session_expiry(app: &App, hashed: &str, session: &crate::data::users::SessionUser) {
+    let lifetime = crate::data::users::SessionLifetime::from_config(&app.config);
+    if !lifetime.extension_due(
+        session.session_created_at,
+        session.session_expires_at,
+        session.checked_at,
+    ) {
+        return;
+    }
+    if let Err(err) = crate::data::users::extend_session(&app.database, hashed, lifetime).await {
+        tracing::warn!(error = ?err, "failed to slide the session expiry; the session stays valid");
     }
 }
 
@@ -346,6 +370,67 @@ impl FromRequestParts<App> for OptionalAuthenticatedUser {
             Err((StatusCode::UNAUTHORIZED, _)) => Ok(OptionalAuthenticatedUser(None)),
             Err(err) => Err(err),
         }
+    }
+}
+
+#[cfg(test)]
+mod sliding_session_tests {
+    use axum::http::Request;
+    use sqlx::PgPool;
+
+    use super::*;
+
+    async fn authenticate(app: &App, token: &str) -> bool {
+        let request = Request::builder()
+            .header(
+                axum::http::header::COOKIE,
+                format!("{SESSION_COOKIE_NAME}={token}"),
+            )
+            .body(axum::body::Body::empty())
+            .expect("build request");
+        let (mut parts, _body) = request.into_parts();
+        AuthenticatedUser::from_request_parts(&mut parts, app)
+            .await
+            .is_ok()
+    }
+
+    async fn expires_in_hours(pool: &PgPool, token: &str) -> i64 {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT ROUND(EXTRACT(EPOCH FROM expires_at - NOW()) / 3600)::bigint \
+             FROM sessions WHERE id = $1",
+        )
+        .bind(hash_session_token(token))
+        .fetch_one(pool)
+        .await
+        .expect("read expiry")
+    }
+
+    /// An authenticated request slides a due session to 14 days from now,
+    /// and one inside the throttle leaves it where it is.
+    #[sqlx::test(migrations = "../ds-store/migrations")]
+    #[ignore = "needs DATABASE_URL (a role that can create databases)"]
+    async fn an_authenticated_request_slides_a_due_session(pool: PgPool) {
+        let app = crate::test_support::inert_app(pool.clone());
+        sqlx::query("INSERT INTO users (id) VALUES ('TEST-USER-SLIDE-EXTRACTOR')")
+            .execute(&pool)
+            .await
+            .expect("insert user");
+        for (token, expires_in) in [("due-token", "2 days"), ("fresh-token", "13 days 12 hours")] {
+            sqlx::query(&format!(
+                "INSERT INTO sessions (id, user_id, created_at, expires_at) \
+                 VALUES ($1, 'TEST-USER-SLIDE-EXTRACTOR', NOW() - INTERVAL '12 days', \
+                         NOW() + INTERVAL '{expires_in}')"
+            ))
+            .bind(hash_session_token(token))
+            .execute(&pool)
+            .await
+            .expect("insert session");
+        }
+
+        assert!(authenticate(&app, "due-token").await);
+        assert_eq!(expires_in_hours(&pool, "due-token").await, 14 * 24);
+        assert!(authenticate(&app, "fresh-token").await);
+        assert_eq!(expires_in_hours(&pool, "fresh-token").await, 13 * 24 + 12);
     }
 }
 
@@ -427,12 +512,12 @@ mod tests {
 
     #[test]
     fn set_cookie_header_includes_all_required_attributes_when_secure() {
-        let header = set_cookie_header("distant_signal_session", "abc123", 1_209_600, true);
+        let header = set_cookie_header("distant_signal_session", "abc123", 7_776_000, true);
         assert!(header.starts_with("distant_signal_session=abc123;"));
         assert!(header.contains("HttpOnly"));
         assert!(header.contains("Secure"));
         assert!(header.contains("SameSite=Lax"));
-        assert!(header.contains("Max-Age=1209600"));
+        assert!(header.contains("Max-Age=7776000"));
         assert!(header.contains("Path=/"));
     }
 
@@ -440,7 +525,7 @@ mod tests {
     fn set_cookie_header_omits_secure_over_plain_http() {
         // A `Secure` cookie is unconditionally rejected by the browser over
         // plain HTTP -- this is the live bug this parameter fixes.
-        let header = set_cookie_header("distant_signal_session", "abc123", 1_209_600, false);
+        let header = set_cookie_header("distant_signal_session", "abc123", 7_776_000, false);
         assert!(!header.contains("Secure"));
         assert!(header.contains("HttpOnly"));
         assert!(header.contains("SameSite=Lax"));

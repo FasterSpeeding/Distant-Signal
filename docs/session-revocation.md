@@ -1,6 +1,9 @@
 # Session revocation: admin revoke and Authentik back-channel logout
 
-A login creates a session that lasts `SESSION_TTL_DAYS` (default 14). The
+A login creates a session that ends after `SESSION_TTL_DAYS` (default 14)
+without use, or `SESSION_MAX_AGE_DAYS` (default 90) after the login however
+active it is: each authenticated request slides the expiry, at most once per
+`SESSION_EXTEND_THROTTLE_HOURS` (default 24). The
 session carries the user's Authentik `groups` claim as it was at login
 (`users.groups`), and every group-gated feature reads it from there. Today
 that is admin (`ADMIN_GROUP`) alone: the chatbot is open to any live
@@ -38,8 +41,10 @@ occasion. It is never merged, so a removed group disappears on the next login.
 - **Adding** someone to a group takes effect at their next login. They can log
   out and back in to get it straight away.
 - **Removing** someone from a group, or disabling them, does NOT take effect
-  on existing sessions by itself. Those sessions keep the old groups for up to
-  `SESSION_TTL_DAYS`. To make it take effect now:
+  on existing sessions by itself. Those sessions keep the old groups until
+  they end: `SESSION_TTL_DAYS` after their last use, and for a session in
+  daily use up to `SESSION_MAX_AGE_DAYS` after its login. To make it take
+  effect now:
   1. Remove the group (or disable the user) in Authentik.
   2. Revoke their sessions here, either through an admin revoke or through
      Authentik's back-channel logout (see below).
@@ -128,7 +133,10 @@ that user out of Distant Signal on their other devices. A token carrying only
   unexpired `AccessToken` rows of the ending session. The default
   `access_token_validity` is `hours=1`, so a session deleted more than an hour
   after the Distant Signal login produces no back-channel call. The provider
-  setting below raises it to match the session TTL. Distant Signal discards
+  setting below raises it to match the session's absolute lifetime
+  (`SESSION_MAX_AGE_DAYS`): a sliding session can outlive the idle timeout,
+  so a validity of only `SESSION_TTL_DAYS` would leave a session in daily use
+  past that point with no back-channel call. Distant Signal discards
   the access token at login and never uses it, so a longer validity doesn't
   widen what a leaked Distant Signal database or log can do.
 - It doesn't cover group changes. Removing a group ends no Authentik session.
@@ -152,8 +160,9 @@ behind the `distant-signal` application (issuer
      `https://ds.cursed.solutions/api/auth/backchannel-logout`
    - **Logout Method** (`logout_method`): `Back-channel` (`backchannel`, the
      model default)
-   - **Access token validity** (`access_token_validity`): `days=14`, equal to
-     `api.sessionTtlDays` / `SESSION_TTL_DAYS`. See Limits.
+   - **Access token validity** (`access_token_validity`): `days=90`, equal to
+     `api.sessionMaxAgeDays` / `SESSION_MAX_AGE_DAYS` (it was `days=14`,
+     `api.sessionTtlDays`, before sessions slid). See Limits.
    - **Signing Key** (`signing_key`): must be set to an RSA certificate. It
      almost certainly is already, since logins verify ID tokens against the
      JWKS.
