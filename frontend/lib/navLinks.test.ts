@@ -10,9 +10,11 @@ import {
   PLAN_JOURNEY_LABEL,
   PREFERENCES_DESTINATION,
   PRIMARY_NAV_DESTINATIONS,
+  primaryNavDestinations,
   JOURNEYS_DESTINATION,
   TRAINS_DESTINATION,
   TRANSIT_DESTINATION,
+  wideNavDestinations,
 } from './navLinks';
 
 describe('TRANSIT_DESTINATION', () => {
@@ -21,11 +23,27 @@ describe('TRANSIT_DESTINATION', () => {
     expect(navDrawerDestinations(true, false).map((d) => d.href)).not.toContain('/transit');
   });
 
-  it('sits straight after Lines, and never in the bar', () => {
-    const hrefs = navDrawerDestinations(false, true).map((d) => d.href);
-    expect(hrefs[hrefs.indexOf('/lines') + 1]).toBe(TRANSIT_DESTINATION.href);
+  it('sits straight after Lines, in the bar and the drawer alike', () => {
+    for (const list of [primaryNavDestinations(true), navDrawerDestinations(false, true)]) {
+      const hrefs = list.map((d) => d.href);
+      expect(hrefs[hrefs.indexOf('/lines') + 1]).toBe(TRANSIT_DESTINATION.href);
+    }
     expect(TRANSIT_DESTINATION.label).toBe('Trams and metros');
-    expect(PRIMARY_NAV_DESTINATIONS).not.toContain(TRANSIT_DESTINATION);
+    expect(primaryNavDestinations(false)).not.toContain(TRANSIT_DESTINATION);
+  });
+});
+
+// The drawer and the wide layout once drifted apart: "Trams and metros" was
+// in the drawer only, so from `md` up nothing in the chrome linked /transit.
+describe('the wide layout and the drawer', () => {
+  it('reach exactly the same pages, logged in or out, transit on or off', () => {
+    for (const authenticated of [false, true]) {
+      for (const transitOn of [false, true]) {
+        const wide = wideNavDestinations(authenticated, transitOn).map((d) => d.href);
+        const drawer = navDrawerDestinations(authenticated, transitOn).map((d) => d.href);
+        expect(new Set(wide), `authenticated=${authenticated} transitOn=${transitOn}`).toEqual(new Set(drawer));
+      }
+    }
   });
 });
 
@@ -130,6 +148,14 @@ describe('isActiveNavHref', () => {
       const current = PRIMARY_NAV_DESTINATIONS.filter((d) => isActiveNavHref(path, d));
       expect(current, path).toHaveLength(1);
     }
+  });
+
+  it('marks Trams and metros current on a network and its pages', () => {
+    for (const path of ['/transit', '/transit/metrolink', '/transit/tfl/lines/dlr']) {
+      expect(isActiveNavHref(path, TRANSIT_DESTINATION), path).toBe(true);
+    }
+    expect(isActiveNavHref('/transitx', TRANSIT_DESTINATION)).toBe(false);
+    expect(isActiveNavHref('/lines', TRANSIT_DESTINATION)).toBe(false);
   });
 
   it('marks Status current on the network history page', () => {

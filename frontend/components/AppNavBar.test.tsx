@@ -58,6 +58,23 @@ describe('AppNavBar', () => {
     }
   });
 
+  // The wide layout used to leave "Trams and metros" to the drawer alone,
+  // so from `md` up /transit had no link in the chrome at all.
+  it('links Trams and metros inline, after Lines, while transit is on', () => {
+    for (const session of [loggedOut, loggedIn]) {
+      const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} transitOn />);
+      expect(screen.getByRole('link', { name: 'Trams and metros' })).toHaveAttribute('href', '/transit');
+      const names = barLinkNames();
+      expect(names[names.indexOf('Lines') + 1]).toBe('Trams and metros');
+      unmount();
+    }
+  });
+
+  it('leaves Trams and metros out while no transit network is served', () => {
+    renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
+    expect(screen.queryByRole('link', { name: 'Trams and metros' })).toBeNull();
+  });
+
   it('has one Journeys entry, and no new-journey or tracked-trains link', () => {
     for (const session of [loggedOut, loggedIn]) {
       const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} />);

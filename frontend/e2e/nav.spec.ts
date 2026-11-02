@@ -143,6 +143,15 @@ test.describe('desktop nav bar (1440x900)', () => {
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
   });
 
+  // It used to be in the drawer only, leaving /transit unreachable from the
+  // chrome at desktop widths. The e2e api serves Metrolink, so it is on.
+  test('links Trams and metros inline', async ({ page }) => {
+    await page.goto('/lines');
+    const link = page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Trams and metros', exact: true });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute('href', '/transit');
+  });
+
   // The Trains section (DS-192) is its own entry: current on the timetable
   // and the train pages it opens, while Journeys keeps the tracking pages.
   test('marks Trains, not Journeys, current on the timetable and a train it opens', async ({ page }) => {
@@ -248,6 +257,7 @@ test.describe('phone nav bar (390x844)', () => {
       'Operators',
       'Stations',
       'Incidents',
+      'Trams and metros',
       'Preferences',
     ]) {
       await expect(drawer.getByRole('link', { name: label, exact: true })).toBeVisible();
@@ -303,6 +313,7 @@ test.describe('the md breakpoint the bar pivots on', () => {
     await page.goto('/lines');
     const nav = page.locator('nav[aria-label="Main"]');
     await expect(nav.getByRole('link', { name: 'Lines' })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Trams and metros' })).toBeVisible();
     // The logged-out bar's widest form: the Preferences gear sits beside
     // "Log in" from here up.
     await expect(nav.getByRole('link', { name: 'Preferences' })).toBeVisible();

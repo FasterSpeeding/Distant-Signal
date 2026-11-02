@@ -195,7 +195,11 @@ used, rather than as a literal in a component.
   have no account menu or drawer to reach it otherwise. Logged in, the
   account menu does that job, so the gear is left out.
 - Primary links show at `md` (62em) and up; below that they move into the
-  burger `Drawer` (`AppNavDrawer.tsx`).
+  burger `Drawer` (`AppNavDrawer.tsx`). Both render one list,
+  `primaryNavDestinations` in `lib/navLinks.ts` ("Trams and metros" joins it
+  after "Lines" while a transit network is served), and a unit test holds
+  everything the drawer offers equal to what the wide layout reaches (bar,
+  account menu or gear), so no page is drawer-only.
 
 ### Page widths
 

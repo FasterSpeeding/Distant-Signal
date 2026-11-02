@@ -109,7 +109,9 @@ describe('backend reachability threading', () => {
     // <AppNavBar> as a plain prop -- including on the Suspense fallback
     // path, which renders the same bar logged-out.
     const source = readFileSync('app/layout.tsx', 'utf8');
-    expect(source).toMatch(/<AppNavBar session=\{LOGGED_OUT_SESSION\} freshness=\{freshness\} \/>/);
+    expect(source).toMatch(
+      /<AppNavBar session=\{LOGGED_OUT_SESSION\} freshness=\{freshness\} transitOn=\{transitOn\} \/>/,
+    );
     expect(source).toMatch(/<NavBarWithSession freshness=\{freshness\} \/>/);
   });
 
@@ -118,7 +120,7 @@ describe('backend reachability threading', () => {
     // freshness it is not a connectivity oracle, and blocking first paint
     // on it would hand every route the session endpoint's latency.
     const source = readFileSync('app/layout.tsx', 'utf8');
-    expect(source).toMatch(/<Suspense fallback=\{<AppNavBar[^>]*>\}>\s*<NavBarWithSession/);
+    expect(source).toMatch(/<Suspense\s+fallback=\{<AppNavBar[^>]*>\}\s*>\s*<NavBarWithSession/);
   });
 
   it('makes exactly one getSessionOrLoggedOut() call for the whole nav', () => {
