@@ -71,8 +71,10 @@ describe('ChatPanel', () => {
     renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
-    const bubble = screen.getByText('when is the next train').closest('.mantine-Card-root');
-    expect(bubble).toHaveStyle({ background: 'var(--mantine-color-grape-0)' });
+    const bubble = screen.getByText('when is the next train').closest<HTMLElement>('.mantine-Card-root');
+    // The inline style itself: jsdom 26+ resolves `var()` in computed
+    // styles, and no Mantine CSS variables are defined under test.
+    expect(bubble?.style.background).toBe('var(--mantine-color-grape-0)');
   });
 
   it('renders streamed text-delta events as the assistant reply', async () => {
