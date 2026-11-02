@@ -133,6 +133,39 @@ export function transferLegLabel(
   return transferLabel(mode, leg.line);
 }
 
+/** A Tube hop with `stationWalks` (2026-11-02) as the three things it is:
+ * the walk from the National Rail station to its Tube station, the ride,
+ * and the walk out ("Walk VXH · Vauxhall (National Rail) to Vauxhall
+ * (Tube), 2 min"). The walks are `WALK` transfers naming the Tube station
+ * as their other end, and the ride keeps the rest of the minutes. Any
+ * other transfer is itself alone. */
+export function withStationWalks(leg: TransferLeg): TransferLeg[] {
+  const walks = leg.stationWalks;
+  if (!walks || !leg.originStop || !leg.destinationStop) return [leg];
+  const rideMinutes = leg.minutes - walks.originMinutes - walks.destinationMinutes;
+  if (rideMinutes <= 0) return [leg];
+  const { stationWalks: _walks, ...ride } = leg;
+  return [
+    {
+      kind: 'transfer',
+      mode: 'WALK',
+      originCrs: leg.originCrs,
+      destinationCrs: null,
+      destinationStop: leg.originStop,
+      minutes: walks.originMinutes,
+    },
+    { ...ride, minutes: rideMinutes },
+    {
+      kind: 'transfer',
+      mode: 'WALK',
+      originCrs: null,
+      originStop: leg.destinationStop,
+      destinationCrs: leg.destinationCrs,
+      minutes: walks.destinationMinutes,
+    },
+  ];
+}
+
 /** The note under a `/Trips/plan` access leg (DS-135): the leg between a
  * TfL stop From or To and a National Rail station, whose minutes are an
  * estimate. Says what the estimate is from. */

@@ -3,6 +3,39 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-11-02: Tube hops walk to and from their Tube stations (`stationWalks`)
+
+Additive, and some Tube hops take longer. A `/Trips/plan` Tube hop
+between two National Rail stations (`kind: "transfer"`, `mode: "TUBE"`,
+or a `TRANSFER` naming a Tube stop at both ends) that names both its
+Tube stations (`originStop`, `destinationStop`) gains `stationWalks`,
+`{originMinutes, destinationMinutes}`: the walks from the station to its
+Tube station and from the far Tube station to its station that the leg's
+`minutes` include. The ride is the rest. Each walk is timed as a
+`transitWalk`'s `walkMinutes` (the straight line, at the same speed, 2 to
+15 minutes); it is left out when the walks would leave no time to ride,
+or when a station is over a kilometre from its Tube station (a wrong
+position).
+
+The timetable's short Tube links have too few minutes to walk to the
+Tube, wait and walk out (Euston to Victoria is 9 minutes at the peak with
+7 on the train). Each London Underground link is now charged at least
+the two walks, 3 minutes' wait and `TfL`'s timetabled running time on one
+line between the two Tube stations. A link already that long is
+unchanged, and so is one whose running time alone exceeds the link.
+From prod's data, at the weekday peak: Euston to Victoria 9 to 15
+minutes, Euston to King's Cross 5 to 9, Euston to St Pancras 5 to 10,
+King's Cross to Victoria and to Liverpool Street 11 to 16, Marylebone to
+Paddington 7 to 10. Vauxhall to Euston (22), Euston to Waterloo (20),
+London Bridge to Euston (23) and the other long links are unchanged. Of
+prod's 4,710 Tube link rows (both ways, every time band), 137 rise, by 1
+to 8 minutes.
+Saved journeys' connection checks (`connection` on `GET /Journeys/{id}`)
+use the same minutes. The web app shows the walks as rows of their own
+("Walk VXH · Vauxhall (National Rail) to Vauxhall (Tube), 2 min") and
+saves them as walk legs around the Tube leg. DS-MCP: no change needed;
+to show the walks it can read `stationWalks` the same way.
+
 ## 2026-11-02: tram rides timed in both directions
 
 No shape change. TfL publishes London Trams timetables only from

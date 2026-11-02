@@ -20,7 +20,7 @@ use crate::app::App;
 use crate::data::station_groups::{self, StationChoice};
 use crate::data::{
     operator_groups, planner_operators, planner_snapshot, tfl_access, transit_planning,
-    trip_plan_live, trip_planning, trip_planning_itinerary,
+    trip_plan_live, trip_planning, trip_planning_itinerary, tube_link_walks,
 };
 
 /// Hard cap on `?waypoints=`, enforced before any database read (2026-09-25
@@ -1497,6 +1497,9 @@ async fn build_planning_graph(
     // Who runs each link (operator filtering spec §5.1), before the
     // transit graph copies the rail interchange data.
     let unattributed_links = planner_operators::attribute_fixed_links(&mut interchange);
+    // A Tube link too short to walk to the Tube, wait and walk out is
+    // charged that much (`tube_link_walks`), before the transit copy.
+    tube_link_walks::raise_or_warn(pool, &mut interchange).await;
     // The estimated walks a filter that rules the Tube out uses
     // instead (spec §5.1); no other request ever sees them.
     let positions = planner_operators::fetch_tube_station_positions(pool, &interchange).await?;
@@ -1786,6 +1789,8 @@ async fn plan_on_date(
         );
     }
     crate::data::tfl_stops::merge_transfer_rides(&app.database, &mut segments).await;
+    // After the merge, so a ride through a station walks at its two ends.
+    tube_link_walks::attach_station_walks(&app.database, &mut segments).await;
     // Transit legs (DS-164): `kind: "transit"`, the rail-link walks'
     // `transitWalk`, `scheduledOnly` and the lines' disruption notices.
     let transit_skipped = match graph.transit.as_ref().filter(|_| inputs.transit) {

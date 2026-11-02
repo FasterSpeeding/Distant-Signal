@@ -2004,8 +2004,21 @@ export type TripPlanLeg =
        * only a plan whose operator filter leaves out the Tube uses
        * (2026-10-31). */
       estimatedWalk?: boolean;
+      /** Only on a Tube hop between two National Rail stations naming
+       * both its Tube stations (2026-11-02): the walks between each
+       * station and its Tube station that `minutes` include, so the ride
+       * is the rest. */
+      stationWalks?: TripPlanStationWalks;
     }
   | TripPlanTransitLeg;
+
+/** The walks a Tube transfer's `minutes` include, at each end. */
+export interface TripPlanStationWalks {
+  /** From the National Rail station to the Tube station. */
+  originMinutes: number;
+  /** From the Tube station to the National Rail station. */
+  destinationMinutes: number;
+}
 
 /** A ride on a timetabled transit network (`kind: "transit"`, sent only
  * when the request says `transit=true` or names a tram stop): Metrolink's

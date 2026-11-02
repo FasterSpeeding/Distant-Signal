@@ -250,6 +250,43 @@ describe('ItineraryOption', () => {
     expect(screen.getByText(byVisibleText('Tube (Victoria line) VXH to EUS, 22 min'))).toBeInTheDocument();
   });
 
+  it("shows a Tube hop's walks to and from its Tube stations as rows of their own", () => {
+    const itinerary: TripPlanItinerary = {
+      legs: [
+        {
+          kind: 'transfer',
+          mode: 'TUBE',
+          originCrs: 'VXH',
+          destinationCrs: 'EUS',
+          minutes: 22,
+          line: 'Victoria',
+          operator: 'LT',
+          originStop: { id: '940GZZLUVXL', name: 'Vauxhall', modes: ['tube'], lines: [] },
+          destinationStop: { id: '940GZZLUEUS', name: 'Euston', modes: ['tube'], lines: [] },
+          stationWalks: { originMinutes: 2, destinationMinutes: 3 },
+        },
+      ],
+      changeCount: 0,
+      totalDurationMinutes: 22,
+    };
+    const stationNames = new Map([
+      ['VXH', 'Vauxhall'],
+      ['EUS', 'London Euston'],
+    ]);
+    renderWithMantine(
+      <ItineraryOption itinerary={itinerary} selected={false} onSelect={vi.fn()} stationNames={stationNames} />,
+    );
+    expect(
+      screen.getByText(byVisibleText('Walk VXH · Vauxhall (National Rail) to Vauxhall (Tube), 2 min')),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(byVisibleText('Tube (Victoria line) VXH · Vauxhall to EUS · London Euston, 17 min')),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(byVisibleText('Walk Euston (Tube) to EUS · London Euston (National Rail), 3 min')),
+    ).toBeInTheDocument();
+  });
+
   // #95: the card said "Change" for a TRANSFER between two stations, which
   // saves as a "Transfer" leg (or a Tube one, when it is a known Tube hop).
   it('says Transfer for a TRANSFER between stations, Tube for a known Tube hop, Change within a station', () => {

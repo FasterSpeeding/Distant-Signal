@@ -8,6 +8,7 @@ import {
   transferLabel,
   transferLegLabel,
   transferLegMode,
+  withStationWalks,
 } from './displayLabels';
 import type { TripPlanItinerary, TripPlanLeg } from './types';
 
@@ -146,5 +147,37 @@ describe('changesBadge', () => {
 
   it('falls back to TfL when the legs do not name every change', () => {
     expect(changesBadge(itinerary([ride('TUBE', false)], 0, 1)).breakdown).toBe('1 TfL change');
+  });
+});
+
+describe('withStationWalks', () => {
+  const euston = { id: '940GZZLUEUS', name: 'Euston', modes: ['tube'], lines: [] };
+  const victoria = { id: '940GZZLUVIC', name: 'Victoria', modes: ['tube'], lines: [] };
+  const hop = {
+    kind: 'transfer' as const,
+    mode: 'TUBE',
+    originCrs: 'EUS',
+    destinationCrs: 'VIC',
+    minutes: 15,
+    originStop: euston,
+    destinationStop: victoria,
+    stationWalks: { originMinutes: 2, destinationMinutes: 3 },
+  };
+
+  it('splits a Tube hop into the walk in, the ride and the walk out', () => {
+    const { stationWalks: _walks, ...ride } = hop;
+    expect(withStationWalks(hop)).toEqual([
+      { kind: 'transfer', mode: 'WALK', originCrs: 'EUS', destinationCrs: null, destinationStop: euston, minutes: 2 },
+      { ...ride, minutes: 10 },
+      { kind: 'transfer', mode: 'WALK', originCrs: null, originStop: victoria, destinationCrs: 'VIC', minutes: 3 },
+    ]);
+  });
+
+  it('leaves a leg with no walks, no stops or no time left to ride alone', () => {
+    const { stationWalks: _walks, ...plain } = hop;
+    expect(withStationWalks(plain)).toEqual([plain]);
+    const { originStop: _stop, ...oneStop } = hop;
+    expect(withStationWalks(oneStop)).toEqual([oneStop]);
+    expect(withStationWalks({ ...hop, minutes: 5 })).toEqual([{ ...hop, minutes: 5 }]);
   });
 });

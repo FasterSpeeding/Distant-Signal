@@ -787,6 +787,7 @@ mod tests {
             destination_stop: stops.then(|| Box::new(stop("940GZZLUVIC"))),
             access: None,
             transit_walk: None,
+            station_walks: None,
         }
     }
 

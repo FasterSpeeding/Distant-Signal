@@ -1891,7 +1891,7 @@ async fn read_headways(
 }
 
 /// Every `tfl_line_routes` row (about 80), with its running times.
-async fn load_routes(pool: &PgPool) -> Result<Vec<RouteRow>> {
+pub(crate) async fn load_routes(pool: &PgPool) -> Result<Vec<RouteRow>> {
     Ok(sqlx::query_as(
         "SELECT line_id, stop_ids, step_seconds FROM tfl_line_routes \
          ORDER BY line_id, direction, route_index",
